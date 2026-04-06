@@ -32,10 +32,6 @@ use crate::memory::MEMORY_OP_WINDOW;
 #[cfg(feature = "memory-sqlite")]
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 #[cfg(feature = "memory-sqlite")]
-use crate::memory::{
-    MemorySystem, MemorySystemCapability, MemorySystemMetadata, register_memory_system,
-};
-#[cfg(feature = "memory-sqlite")]
 use crate::session::repository::{
     NewSessionEvent, NewSessionRecord, SessionKind, SessionRepository, SessionState,
 };
@@ -81,25 +77,6 @@ enum FakeTurnResponse {
 }
 
 type CompactHook = Arc<dyn Fn(&str, &[Value]) -> Result<(), String> + Send + Sync>;
-
-#[cfg(feature = "memory-sqlite")]
-struct RegistryRetrieveOnlyConversationMemorySystem;
-
-#[cfg(feature = "memory-sqlite")]
-impl MemorySystem for RegistryRetrieveOnlyConversationMemorySystem {
-    fn id(&self) -> &'static str {
-        "registry-retrieve-only-conversation"
-    }
-
-    fn metadata(&self) -> MemorySystemMetadata {
-        MemorySystemMetadata::new(
-            "registry-retrieve-only-conversation",
-            [MemorySystemCapability::PromptHydration],
-            "Conversation test registry-selected memory system",
-        )
-        .with_supported_pre_assembly_stage_families([crate::memory::MemoryStageFamily::Retrieve])
-    }
-}
 
 struct TraitDefaultToolViewRuntime;
 struct NoopTurnMiddleware {
@@ -3126,21 +3103,31 @@ async fn default_runtime_kernel_build_context_preserves_profile_projection() {
 
 #[cfg(feature = "memory-sqlite")]
 #[tokio::test]
-async fn default_runtime_build_context_with_registry_selected_system_skips_builtin_memory_projection()
- {
-    register_memory_system("registry-retrieve-only-conversation", || {
-        Box::new(RegistryRetrieveOnlyConversationMemorySystem)
-    })
-    .expect("register conversation registry-selected memory system");
-
+async fn default_runtime_build_context_with_workspace_recall_system_reorders_memory_projection() {
     let runtime = DefaultConversationRuntime::default();
-    let session_id = unique_acp_test_id("default-runtime-context", "registry-selected-system");
-    let sqlite_path = unique_memory_sqlite_path("registry-selected-system");
+    let session_id = unique_acp_test_id("default-runtime-context", "workspace-recall-system");
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let workspace_root = temp_dir.path();
+    let memory_dir = workspace_root.join("memory");
+    std::fs::create_dir_all(&memory_dir).expect("create memory dir");
+    std::fs::write(
+        workspace_root.join("MEMORY.md"),
+        "# Durable Notes\n\nRemember the deploy freeze window.\n",
+    )
+    .expect("write curated durable memory");
+    std::fs::write(
+        memory_dir.join("2026-03-22.md"),
+        "## Durable Recall\n\nCustomer migration starts tomorrow.\n",
+    )
+    .expect("write daily durable memory");
+
+    let sqlite_path = unique_memory_sqlite_path("workspace-recall-system");
     let mut config = test_config();
-    config.memory.system_id = Some("registry-retrieve-only-conversation".to_owned());
+    config.memory.system = MemorySystemKind::WorkspaceRecall;
     config.memory.profile = MemoryProfile::WindowPlusSummary;
     config.memory.sliding_window = 2;
     config.memory.sqlite_path = sqlite_path.clone();
+    config.tools.file_root = Some(workspace_root.display().to_string());
 
     let runtime_config =
         crate::memory::runtime_config::MemoryRuntimeConfig::from_memory_config(&config.memory);
@@ -3179,13 +3166,22 @@ async fn default_runtime_build_context_with_registry_selected_system_skips_built
         ]
     );
     assert!(
+        assembled.messages.iter().any(|message| {
+            message["role"] == "system"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("Remember the deploy freeze window."))
+        }),
+        "workspace recall system should project durable recall into the runtime context"
+    );
+    assert!(
         !assembled.messages.iter().any(|message| {
             message["role"] == "system"
                 && message["content"]
                     .as_str()
                     .is_some_and(|content| content.contains("## Memory Summary"))
         }),
-        "registry-selected systems without executors should not reuse builtin summary projection"
+        "workspace recall system should suppress builtin summary projection after rank-stage reordering"
     );
 
     let _ = std::fs::remove_file(sqlite_path);
@@ -11744,6 +11740,7 @@ fn staged_memory_envelope_payload_from_window_turns(window_turns: &Value) -> Val
             kind: crate::memory::MemoryContextKind::Turn,
             role: turn.role.clone(),
             content: turn.content.clone(),
+            provenance: Vec::new(),
         })
         .collect::<Vec<_>>();
     let envelope = crate::memory::StageEnvelope {

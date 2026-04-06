@@ -8,7 +8,9 @@ use crate::runtime_identity;
 #[cfg(feature = "memory-sqlite")]
 use super::sqlite;
 use super::{
-    MEMORY_OP_READ_CONTEXT, MEMORY_OP_READ_STAGE_ENVELOPE, encode_stage_envelope_payload,
+    DEFAULT_MEMORY_SYSTEM_ID, MEMORY_OP_READ_CONTEXT, MEMORY_OP_READ_STAGE_ENVELOPE,
+    MemoryContextProvenance, MemoryProvenanceSourceKind, MemoryRecallMode, MemoryScope,
+    encode_stage_envelope_payload,
     orchestrator::hydrate_stage_envelope_with_workspace_root,
     protocol::{MemoryContextEntry, MemoryContextKind},
     runtime_config::MemoryRuntimeConfig,
@@ -175,6 +177,7 @@ pub fn load_prompt_context(
     config: &MemoryRuntimeConfig,
 ) -> Result<Vec<MemoryContextEntry>, String> {
     let mut entries = Vec::new();
+    let selected_system_id = selected_prompt_hydration_system_id(config);
 
     let profile_section =
         runtime_identity::render_session_profile_section(config.profile_note.as_deref());
@@ -185,6 +188,14 @@ pub fn load_prompt_context(
             kind: MemoryContextKind::Profile,
             role: "system".to_owned(),
             content: profile_section,
+            provenance: vec![MemoryContextProvenance::new(
+                selected_system_id.as_str(),
+                MemoryProvenanceSourceKind::ProfileNote,
+                None,
+                None,
+                Some(MemoryScope::Session),
+                MemoryRecallMode::PromptAssembly,
+            )],
         });
     }
 
@@ -201,6 +212,14 @@ pub fn load_prompt_context(
                 kind: MemoryContextKind::Summary,
                 role: "system".to_owned(),
                 content: summary,
+                provenance: vec![MemoryContextProvenance::new(
+                    selected_system_id.as_str(),
+                    MemoryProvenanceSourceKind::SummaryCheckpoint,
+                    Some(session_id.to_owned()),
+                    None,
+                    Some(MemoryScope::Session),
+                    MemoryRecallMode::PromptAssembly,
+                )],
             });
         }
         for turn in snapshot.window_turns {
@@ -208,6 +227,14 @@ pub fn load_prompt_context(
                 kind: MemoryContextKind::Turn,
                 role: turn.role,
                 content: turn.content,
+                provenance: vec![MemoryContextProvenance::new(
+                    selected_system_id.as_str(),
+                    MemoryProvenanceSourceKind::RecentWindowTurn,
+                    Some(session_id.to_owned()),
+                    None,
+                    Some(MemoryScope::Session),
+                    MemoryRecallMode::PromptAssembly,
+                )],
             });
         }
     }
@@ -218,6 +245,12 @@ pub fn load_prompt_context(
     }
 
     Ok(entries)
+}
+
+fn selected_prompt_hydration_system_id(config: &MemoryRuntimeConfig) -> String {
+    let selected_system_id = super::registered_memory_system_id(Some(config.selected_system_id()));
+
+    selected_system_id.unwrap_or_else(|| DEFAULT_MEMORY_SYSTEM_ID.to_owned())
 }
 
 #[cfg(test)]
@@ -273,6 +306,28 @@ mod tests {
                 .any(|entry| entry.content.contains("turn 1")),
             "expected summary to mention older turns"
         );
+        let summary_entry = hydrated
+            .iter()
+            .find(|entry| entry.kind == MemoryContextKind::Summary)
+            .expect("summary entry");
+        assert_eq!(summary_entry.provenance.len(), 1);
+        assert_eq!(
+            summary_entry.provenance[0].source_kind,
+            MemoryProvenanceSourceKind::SummaryCheckpoint
+        );
+        assert_eq!(
+            summary_entry.provenance[0].scope,
+            Some(MemoryScope::Session)
+        );
+        let turn_entry = hydrated
+            .iter()
+            .find(|entry| entry.kind == MemoryContextKind::Turn)
+            .expect("turn entry");
+        assert_eq!(turn_entry.provenance.len(), 1);
+        assert_eq!(
+            turn_entry.provenance[0].source_kind,
+            MemoryProvenanceSourceKind::RecentWindowTurn
+        );
 
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_dir(&tmp);
@@ -315,6 +370,19 @@ mod tests {
                 .iter()
                 .any(|entry| entry.content.contains("Imported ZeroClaw preferences")),
             "expected profile note content"
+        );
+        let profile_entry = hydrated
+            .iter()
+            .find(|entry| entry.kind == MemoryContextKind::Profile)
+            .expect("profile entry");
+        assert_eq!(profile_entry.provenance.len(), 1);
+        assert_eq!(
+            profile_entry.provenance[0].source_kind,
+            MemoryProvenanceSourceKind::ProfileNote
+        );
+        assert_eq!(
+            profile_entry.provenance[0].scope,
+            Some(MemoryScope::Session)
         );
 
         let _ = std::fs::remove_file(&db_path);
@@ -593,6 +661,35 @@ mod tests {
         assert!(
             has_durable_recall,
             "expected staged envelope payload to keep workspace durable recall"
+        );
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn load_prompt_context_uses_selected_memory_system_id_in_provenance() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let db_path = temp_dir.path().join("selected-system.sqlite3");
+
+        let mut config = MemoryRuntimeConfig {
+            sqlite_path: Some(db_path),
+            profile: crate::config::MemoryProfile::WindowOnly,
+            mode: crate::config::MemoryMode::WindowOnly,
+            ..MemoryRuntimeConfig::default()
+        };
+        config.resolved_system_id =
+            Some(crate::memory::WORKSPACE_RECALL_MEMORY_SYSTEM_ID.to_owned());
+
+        super::super::append_turn_direct("selected-system-session", "user", "hello", &config)
+            .expect("append turn should succeed");
+
+        let entries =
+            load_prompt_context("selected-system-session", &config).expect("load prompt context");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].provenance.len(), 1);
+        assert_eq!(
+            entries[0].provenance[0].memory_system_id,
+            crate::memory::WORKSPACE_RECALL_MEMORY_SYSTEM_ID
         );
     }
 }

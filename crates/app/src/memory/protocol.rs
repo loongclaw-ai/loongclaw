@@ -7,8 +7,9 @@ use serde_json::{Value, json};
 use crate::memory::runtime_config::MemoryRuntimeConfig;
 
 use super::{
-    DerivedMemoryKind, HydratedMemoryContext, MemoryDiagnostics, MemoryRetrievalRequest,
-    MemoryScope, MemoryStageFamily, StageDiagnostics, StageEnvelope, StageOutcome,
+    DerivedMemoryKind, HydratedMemoryContext, MemoryContextProvenance, MemoryDiagnostics,
+    MemoryRecallMode, MemoryRetrievalRequest, MemoryScope, MemoryStageFamily, StageDiagnostics,
+    StageEnvelope, StageOutcome,
 };
 
 pub const MEMORY_OP_APPEND_TURN: &str = "append_turn";
@@ -39,6 +40,8 @@ pub struct MemoryContextEntry {
     pub kind: MemoryContextKind,
     pub role: String,
     pub content: String,
+    #[serde(default)]
+    pub provenance: Vec<MemoryContextProvenance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,7 +86,11 @@ struct HydratedMemoryContextPayload {
 struct MemoryRetrievalRequestPayload {
     session_id: String,
     #[serde(default)]
+    memory_system_id: Option<String>,
+    #[serde(default)]
     query: Option<String>,
+    #[serde(default)]
+    recall_mode: Option<MemoryRecallMode>,
     #[serde(default)]
     scopes: Vec<String>,
     #[serde(default)]
@@ -313,7 +320,9 @@ impl From<&MemoryRetrievalRequest> for MemoryRetrievalRequestPayload {
     fn from(value: &MemoryRetrievalRequest) -> Self {
         Self {
             session_id: value.session_id.clone(),
+            memory_system_id: Some(value.memory_system_id.clone()),
             query: value.query.clone(),
+            recall_mode: Some(value.recall_mode),
             scopes: value
                 .scopes
                 .iter()
@@ -410,7 +419,11 @@ fn decode_memory_retrieval_request_payload(
 
     Some(MemoryRetrievalRequest {
         session_id: payload.session_id,
+        memory_system_id: payload
+            .memory_system_id
+            .unwrap_or_else(|| crate::memory::DEFAULT_MEMORY_SYSTEM_ID.to_owned()),
         query: payload.query,
+        recall_mode: payload.recall_mode.unwrap_or_default(),
         scopes: payload
             .scopes
             .into_iter()
@@ -518,7 +531,12 @@ mod tests {
             .retrieval_request
             .expect("retrieval request should decode");
         assert_eq!(retrieval_request.session_id, "session-123");
+        assert_eq!(retrieval_request.memory_system_id, "builtin");
         assert_eq!(retrieval_request.query, None);
+        assert_eq!(
+            retrieval_request.recall_mode,
+            MemoryRecallMode::PromptAssembly
+        );
         assert!(retrieval_request.scopes.is_empty());
         assert_eq!(retrieval_request.budget_items, 0);
         assert!(retrieval_request.allowed_kinds.is_empty());
