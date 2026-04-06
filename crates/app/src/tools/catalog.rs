@@ -4926,15 +4926,24 @@ mod tests {
 
     #[test]
     fn autonomy_capability_action_catalog_entries_expose_serializable_metadata() {
-        let entry =
+        let delegate_async =
             find_tool_catalog_entry("delegate_async").expect("delegate_async catalog entry");
-        let value = serde_json::to_value(entry).expect("serialize catalog entry");
+        let delegate_async_value =
+            serde_json::to_value(delegate_async).expect("serialize delegate_async catalog entry");
+        let search = find_tool_catalog_entry("tool.search").expect("tool.search catalog entry");
+        let search_value =
+            serde_json::to_value(search).expect("serialize tool.search catalog entry");
 
         assert_eq!(
-            entry.capability_action_class,
+            delegate_async.capability_action_class,
             CapabilityActionClass::TopologyExpand
         );
-        assert_eq!(value["capability_action_class"], "topology_expand");
+        assert_eq!(
+            delegate_async_value["capability_action_class"],
+            "topology_expand"
+        );
+        assert_eq!(delegate_async_value["concurrency_class"], "unknown");
+        assert_eq!(search_value["concurrency_class"], "read_only");
     }
 
     #[test]
