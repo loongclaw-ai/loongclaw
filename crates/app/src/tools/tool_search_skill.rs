@@ -1,6 +1,5 @@
-use super::{
-    SearchDocument, SearchableToolEntry, append_unique_sentence, build_argument_fragments,
-};
+use super::entry::SearchDocument;
+use super::{SearchableToolEntry, append_unique_sentence, build_argument_fragments};
 
 pub(super) fn enrich_searchable_entries_for_skill_hints(
     entries: Vec<SearchableToolEntry>,
