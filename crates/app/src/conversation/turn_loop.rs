@@ -1,7 +1,4 @@
-use std::sync::Arc;
-
 use crate::CliResult;
-use crate::acp::{AcpTurnEventSink, JsonlAcpTurnEventSink};
 use crate::session::store;
 
 use super::super::config::LoongConfig;
@@ -10,6 +7,7 @@ use super::runtime::{ConversationRuntime, load_default_conversation_runtime};
 use super::runtime_binding::ConversationRuntimeBinding;
 use super::turn_budget::TurnRoundBudget;
 use super::turn_engine::DefaultAppToolDispatcher;
+use super::turn_loop_request::{RequestedTurn, request_round_turn};
 use super::turn_loop_round::{
     apply_turn_loop_terminal_action, evaluate_round_kernel, initialize_turn_loop_session,
     resolve_round_kernel_terminal_action,
@@ -18,11 +16,7 @@ use super::turn_loop_state::{
     TurnLoopPolicy, TurnLoopTerminalAction, build_round_limit_terminal_action,
     decide_round_kernel_action,
 };
-use super::turn_observer::map_streaming_callback_data_to_token_event;
-use super::turn_shared::{
-    ProviderTurnRequestAction, ReplyPersistenceMode, decide_provider_turn_request_action,
-    tool_loop_circuit_breaker_reply,
-};
+use super::turn_shared::{ReplyPersistenceMode, tool_loop_circuit_breaker_reply};
 
 #[derive(Default)]
 pub struct ConversationTurnLoop;
@@ -73,66 +67,22 @@ impl ConversationTurnLoop {
         );
 
         for round_index in 0..policy.max_rounds {
-            let use_streaming = crate::provider::supports_turn_streaming_events(config);
-            let on_token: crate::provider::StreamingTokenCallback = if use_streaming {
-                let sink = JsonlAcpTurnEventSink::stderr_with_prefix("");
-                Some(Arc::new(
-                    move |data: crate::provider::StreamingCallbackData| {
-                        let event = map_streaming_callback_data_to_token_event(data);
-                        let _ = sink.on_event(&serde_json::to_value(&event).unwrap_or_default());
-                    },
-                ))
-            } else {
-                None
-            };
-            let turn = match decide_provider_turn_request_action(
-                if use_streaming {
-                    runtime
-                        .request_turn_streaming(
-                            config,
-                            session_id,
-                            turn_id.as_str(),
-                            &session.messages,
-                            &tool_view,
-                            binding,
-                            on_token,
-                        )
-                        .await
-                } else {
-                    runtime
-                        .request_turn(
-                            config,
-                            session_id,
-                            turn_id.as_str(),
-                            &session.messages,
-                            &tool_view,
-                            binding,
-                        )
-                        .await
-                },
+            let turn = match request_round_turn(
+                runtime,
+                config,
+                session_id,
+                turn_id.as_str(),
+                &session.messages,
+                &tool_view,
                 error_mode,
-            ) {
-                ProviderTurnRequestAction::Continue { turn } => turn,
-                ProviderTurnRequestAction::FinalizeInlineProviderError { reply } => {
+                binding,
+            )
+            .await?
+            {
+                RequestedTurn::Continue(turn) => turn,
+                RequestedTurn::Terminal(action) => {
                     return apply_turn_loop_terminal_action(
-                        runtime,
-                        session_id,
-                        user_input,
-                        TurnLoopTerminalAction::PersistReply {
-                            reply,
-                            persistence_mode: ReplyPersistenceMode::InlineProviderError,
-                        },
-                        binding,
-                    )
-                    .await;
-                }
-                ProviderTurnRequestAction::ReturnError { error } => {
-                    return apply_turn_loop_terminal_action(
-                        runtime,
-                        session_id,
-                        user_input,
-                        TurnLoopTerminalAction::ReturnError { error },
-                        binding,
+                        runtime, session_id, user_input, action, binding,
                     )
                     .await;
                 }
@@ -241,7 +191,8 @@ mod tests {
         ToolLoopSupervisorVerdict,
     };
     use crate::conversation::turn_shared::{
-        ToolDrivenFollowupLabel, ToolDrivenFollowupPayload, ToolDrivenFollowupTextRef,
+        ProviderTurnRequestAction, ToolDrivenFollowupLabel, ToolDrivenFollowupPayload,
+        ToolDrivenFollowupTextRef, decide_provider_turn_request_action,
     };
     use serde_json::{Value, json};
 
