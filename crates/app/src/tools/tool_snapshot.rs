@@ -30,7 +30,7 @@ pub fn tool_registry() -> Vec<ToolRegistryEntry> {
     tool_registry_with_config(Some(runtime_config::get_tool_runtime_config()))
 }
 
-pub(crate) fn tool_registry_with_config(
+pub fn tool_registry_with_config(
     config: Option<&runtime_config::ToolRuntimeConfig>,
 ) -> Vec<ToolRegistryEntry> {
     let default_runtime_config;
@@ -182,7 +182,7 @@ fn render_hidden_tool_surface_lines(surfaces: &[super::ToolSurfaceState]) -> Vec
         .collect()
 }
 
-pub(crate) fn runtime_discoverable_tool_surface_summary_with_config(
+pub fn runtime_discoverable_tool_surface_summary_with_config(
     config: &runtime_config::ToolRuntimeConfig,
     visible_tool_view: Option<&ToolView>,
 ) -> DiscoverableToolSurfaceSummary {

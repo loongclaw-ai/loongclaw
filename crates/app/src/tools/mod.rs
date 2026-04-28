@@ -120,9 +120,8 @@ pub(crate) use shell_request_prep::{
     normalize_shell_payload_for_request, normalize_shell_request_for_execution,
     prepare_kernel_tool_request,
 };
-pub(crate) use tool_dispatch::{
-    execute_discoverable_tool_core_with_config, execute_tool_core_with_config,
-};
+pub(crate) use tool_dispatch::execute_discoverable_tool_core_with_config;
+pub use tool_dispatch::execute_tool_core_with_config;
 #[cfg(test)]
 pub(crate) use tool_dispatch::{
     is_expected_tool_request_error, run_blocking_with_timeout, tool_uses_dedicated_timeout,
@@ -153,9 +152,8 @@ pub(crate) use tool_runtime_view::{
     model_visible_external_skill_roots_for_runtime_config, runtime_tool_view_with_runtime_config,
 };
 pub(crate) use tool_snapshot::capability_snapshot_for_view_with_config;
-pub use tool_snapshot::{DiscoverableToolSurfaceSummary, ToolRegistryEntry};
-#[cfg(test)]
-pub(crate) use tool_snapshot::{
+pub use tool_snapshot::{
+    DiscoverableToolSurfaceSummary, ToolRegistryEntry,
     runtime_discoverable_tool_surface_summary_with_config, tool_registry_with_config,
 };
 #[cfg(any(

@@ -78,10 +78,10 @@ fn tool_function_name(tool: &Value) -> &str {
 
 pub(super) fn provider_definition_for_view(descriptor: &ToolDescriptor, view: &ToolView) -> Value {
     let definition = descriptor.provider_definition();
-    let definition = if descriptor.name == "web" {
-        direct_web_provider_definition_for_view(definition, view)
-    } else {
-        definition
+    let definition = match descriptor.name {
+        "web" => direct_web_provider_definition_for_view(definition, view),
+        "browser" => direct_browser_provider_definition_for_view(definition, view),
+        _ => definition,
     };
 
     sanitize_provider_parameter_combinators(definition)
@@ -190,6 +190,104 @@ fn direct_web_provider_definition_for_view(mut definition: Value, view: &ToolVie
                 parameters.insert("anyOf".to_owned(), Value::Array(any_of));
             }
         }
+    }
+
+    definition
+}
+
+fn direct_browser_provider_definition_for_view(mut definition: Value, view: &ToolView) -> Value {
+    let browser_runtime_modes = tool_surface::direct_browser_runtime_modes_for_view(view);
+    let Some(description) = browser_runtime_modes.provider_description() else {
+        return definition;
+    };
+
+    if let Some(function) = definition
+        .get_mut("function")
+        .and_then(Value::as_object_mut)
+    {
+        function.insert(
+            "description".to_owned(),
+            Value::String(description.to_owned()),
+        );
+
+        let Some(parameters) = function
+            .get_mut("parameters")
+            .and_then(Value::as_object_mut)
+        else {
+            return definition;
+        };
+        let Some(properties) = parameters
+            .get_mut("properties")
+            .and_then(Value::as_object_mut)
+        else {
+            return definition;
+        };
+
+        let mut action_enum = Vec::new();
+        if browser_runtime_modes.page_inspection_available {
+            action_enum.extend(
+                ["open", "extract", "click"]
+                    .into_iter()
+                    .map(|value| Value::String(value.to_owned())),
+            );
+        }
+        if browser_runtime_modes.managed_session_available {
+            action_enum.extend(
+                ["start", "navigate", "snapshot", "wait", "stop", "type"]
+                    .into_iter()
+                    .map(|value| Value::String(value.to_owned())),
+            );
+            if !browser_runtime_modes.page_inspection_available {
+                action_enum.push(Value::String("click".to_owned()));
+            }
+        }
+
+        if action_enum.is_empty() {
+            properties.remove("action");
+        } else if let Some(action_property) =
+            properties.get_mut("action").and_then(Value::as_object_mut)
+        {
+            action_property.insert("enum".to_owned(), Value::Array(action_enum));
+            action_property.insert(
+                "description".to_owned(),
+                Value::String(
+                    "Optional browser action override. Leave it unset for the default route in this runtime."
+                        .to_owned(),
+                ),
+            );
+        }
+
+        if !browser_runtime_modes.page_inspection_available {
+            for key in ["max_bytes", "link_id"] {
+                properties.remove(key);
+            }
+            if let Some(mode_property) = properties.get_mut("mode").and_then(Value::as_object_mut) {
+                mode_property.insert("enum".to_owned(), json!(["summary", "html", "links"]));
+                mode_property.insert(
+                    "description".to_owned(),
+                    Value::String(
+                        "Managed-session snapshot mode. Defaults to `summary` when omitted."
+                            .to_owned(),
+                    ),
+                );
+            }
+        } else if !browser_runtime_modes.managed_session_available {
+            for key in ["text", "condition", "timeout_ms"] {
+                properties.remove(key);
+            }
+            if let Some(mode_property) = properties.get_mut("mode").and_then(Value::as_object_mut) {
+                mode_property.insert(
+                    "enum".to_owned(),
+                    json!(["page_text", "title", "links", "selector_text"]),
+                );
+                mode_property.insert(
+                    "description".to_owned(),
+                    Value::String("Read mode for browser inspection.".to_owned()),
+                );
+            }
+        }
+
+        parameters.remove("required");
     }
 
     definition

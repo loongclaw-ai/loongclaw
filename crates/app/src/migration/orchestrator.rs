@@ -1681,9 +1681,10 @@ mod tests {
             .expect("profile note should be present");
         assert!(profile_note.contains("Imported External Skills Artifacts"));
         assert!(profile_note.contains("kind=skills_catalog"));
-        assert!(
-            !merged_config.external_skills.enabled,
-            "metadata-only external skills imports should not enable the managed runtime"
+        assert_eq!(
+            merged_config.external_skills.enabled,
+            crate::config::ExternalSkillsConfig::default().enabled,
+            "metadata-only external skills imports should preserve the runtime default instead of forcing a different managed-skills state"
         );
         assert_eq!(
             result.external_skill_managed_install_count, 0,

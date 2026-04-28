@@ -204,13 +204,19 @@ fn direct_search_hint_for_runtime_view(
     view: Option<&ToolView>,
 ) -> Option<String> {
     let view = view?;
-    if descriptor.name != "web" {
-        return None;
+    match descriptor.name {
+        "web" => {
+            let web_runtime_modes = tool_surface::direct_web_runtime_modes_for_view(view);
+            let search_hint = web_runtime_modes.search_hint()?;
+            Some(search_hint.to_owned())
+        }
+        "browser" => {
+            let browser_runtime_modes = tool_surface::direct_browser_runtime_modes_for_view(view);
+            let search_hint = browser_runtime_modes.search_hint()?;
+            Some(search_hint.to_owned())
+        }
+        _ => None,
     }
-
-    let web_runtime_modes = tool_surface::direct_web_runtime_modes_for_view(view);
-    let search_hint = web_runtime_modes.search_hint()?;
-    Some(search_hint.to_owned())
 }
 
 fn direct_usage_guidance_for_runtime_view(

@@ -90,6 +90,75 @@ impl DirectWebRuntimeModes {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DirectBrowserRuntimeModes {
+    pub(crate) page_inspection_available: bool,
+    pub(crate) managed_session_available: bool,
+}
+
+impl DirectBrowserRuntimeModes {
+    pub(crate) fn from_view(view: &ToolView) -> Self {
+        Self {
+            page_inspection_available: view.contains("browser.open")
+                || view.contains("browser.extract")
+                || view.contains("browser.click"),
+            managed_session_available: view
+                .tool_names()
+                .any(|tool_name| tool_name.starts_with("browser.companion.")),
+        }
+    }
+
+    pub(crate) fn provider_description(self) -> Option<&'static str> {
+        match (
+            self.page_inspection_available,
+            self.managed_session_available,
+        ) {
+            (true, true) => {
+                Some("Open pages, inspect page structure, or drive a managed browser session")
+            }
+            (true, false) => Some("Open pages and inspect page structure"),
+            (false, true) => Some("Drive a managed browser session"),
+            (false, false) => None,
+        }
+    }
+
+    pub(crate) fn search_hint(self) -> Option<&'static str> {
+        match (
+            self.page_inspection_available,
+            self.managed_session_available,
+        ) {
+            (true, true) => Some(
+                "open pages, inspect page structure, or drive a managed browser session through one direct tool",
+            ),
+            (true, false) => Some(
+                "open pages or inspect page structure through one direct tool; managed browser session mode is unavailable in this runtime",
+            ),
+            (false, true) => Some(
+                "drive a managed browser session through one direct tool; page-inspection mode is unavailable in this runtime",
+            ),
+            (false, false) => None,
+        }
+    }
+
+    fn prompt_state(self, surface: ToolSurfaceDescriptor) -> (&'static str, &'static str) {
+        match (
+            self.page_inspection_available,
+            self.managed_session_available,
+        ) {
+            (true, true) => (surface.prompt_snippet, surface.prompt_guidance),
+            (true, false) => (
+                "open pages and inspect page structure.",
+                "Use browser for bounded page reads and structure-aware inspection. Managed browser session mode is unavailable in this runtime.",
+            ),
+            (false, true) => (
+                "drive a managed browser session.",
+                "Use browser for live page interaction through managed sessions. Page-inspection mode is unavailable in this runtime.",
+            ),
+            (false, false) => (surface.prompt_snippet, surface.prompt_guidance),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolSurfaceDescriptor {
     pub(crate) id: &'static str,
     pub(crate) prompt_snippet: &'static str,
@@ -215,6 +284,7 @@ const WEB_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
     ("max_results", "integer"),
 ];
 const BROWSER_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
+    ("action", "string"),
     ("url", "string"),
     ("max_bytes", "integer"),
     ("session_id", "string"),
@@ -270,8 +340,8 @@ const WEB_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata
     tags: &["surface", "web", "fetch", "search"],
 };
 const BROWSER_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata {
-    argument_hint: "url?:string,max_bytes?:integer,session_id?:string,mode?:string,selector?:string,limit?:integer,link_id?:integer,text?:string,condition?:string,timeout_ms?:integer",
-    search_hint: "open pages, inspect structure, follow links, wait on page state, or interact with browser sessions through one direct tool",
+    argument_hint: "action?:string,url?:string,max_bytes?:integer,session_id?:string,mode?:string,selector?:string,limit?:integer,link_id?:integer,text?:string,condition?:string,timeout_ms?:integer",
+    search_hint: "open pages, inspect structure, or drive managed browser sessions through one direct tool",
     parameter_types: BROWSER_DIRECT_PARAMETER_TYPES,
     required_fields: &[],
     tags: &["surface", "browser", "navigation", "extract"],
@@ -725,6 +795,9 @@ fn direct_surface_state_for_view(
     if surface.id == WEB_SURFACE.id {
         return web_surface_state_for_view(surface, view);
     }
+    if surface.id == BROWSER_SURFACE.id {
+        return browser_surface_state_for_view(surface, view);
+    }
 
     surface.into_state(Vec::new())
 }
@@ -733,9 +806,28 @@ pub(crate) fn direct_web_runtime_modes_for_view(view: &ToolView) -> DirectWebRun
     DirectWebRuntimeModes::from_view(view)
 }
 
+pub(crate) fn direct_browser_runtime_modes_for_view(view: &ToolView) -> DirectBrowserRuntimeModes {
+    DirectBrowserRuntimeModes::from_view(view)
+}
+
 fn web_surface_state_for_view(surface: ToolSurfaceDescriptor, view: &ToolView) -> ToolSurfaceState {
     let web_runtime_modes = direct_web_runtime_modes_for_view(view);
     let (prompt_snippet, usage_guidance) = web_runtime_modes.prompt_state(surface);
+
+    ToolSurfaceState {
+        surface_id: surface.id.to_owned(),
+        prompt_snippet: prompt_snippet.to_owned(),
+        usage_guidance: usage_guidance.to_owned(),
+        tool_ids: Vec::new(),
+    }
+}
+
+fn browser_surface_state_for_view(
+    surface: ToolSurfaceDescriptor,
+    view: &ToolView,
+) -> ToolSurfaceState {
+    let browser_runtime_modes = direct_browser_runtime_modes_for_view(view);
+    let (prompt_snippet, usage_guidance) = browser_runtime_modes.prompt_state(surface);
 
     ToolSurfaceState {
         surface_id: surface.id.to_owned(),

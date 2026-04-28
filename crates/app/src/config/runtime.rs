@@ -3804,26 +3804,45 @@ model = "gpt-5"
 
     #[test]
     #[cfg(feature = "config-toml")]
-    fn write_default_config_keeps_external_skills_guardrails() {
+    fn write_default_config_keeps_external_skills_defaults() {
         let path = unique_config_path("loong-config-runtime-external-skills");
         let path_string = path.display().to_string();
+        let defaults = crate::config::ExternalSkillsConfig::default();
 
         write(Some(&path_string), &LoongConfig::default(), true)
             .expect("default config write should pass");
 
         let raw = fs::read_to_string(&path).expect("read written config");
         assert!(raw.contains("[external_skills]"));
-        assert!(raw.contains("enabled = false"));
-        assert!(raw.contains("require_download_approval = false"));
-        assert!(raw.contains("auto_expose_installed = false"));
+        assert!(raw.contains(&format!("enabled = {}", defaults.enabled)));
+        assert!(raw.contains(&format!(
+            "require_download_approval = {}",
+            defaults.require_download_approval
+        )));
+        assert!(raw.contains(&format!(
+            "auto_expose_installed = {}",
+            defaults.auto_expose_installed
+        )));
 
         let (_, loaded) = load(Some(&path_string)).expect("config load should pass");
-        assert!(!loaded.external_skills.enabled);
-        assert!(!loaded.external_skills.require_download_approval);
-        assert!(loaded.external_skills.allowed_domains.is_empty());
-        assert!(loaded.external_skills.blocked_domains.is_empty());
-        assert!(loaded.external_skills.install_root.is_none());
-        assert!(!loaded.external_skills.auto_expose_installed);
+        assert_eq!(loaded.external_skills.enabled, defaults.enabled);
+        assert_eq!(
+            loaded.external_skills.require_download_approval,
+            defaults.require_download_approval
+        );
+        assert_eq!(
+            loaded.external_skills.allowed_domains,
+            defaults.allowed_domains
+        );
+        assert_eq!(
+            loaded.external_skills.blocked_domains,
+            defaults.blocked_domains
+        );
+        assert_eq!(loaded.external_skills.install_root, defaults.install_root);
+        assert_eq!(
+            loaded.external_skills.auto_expose_installed,
+            defaults.auto_expose_installed
+        );
 
         let _ = fs::remove_file(path);
     }

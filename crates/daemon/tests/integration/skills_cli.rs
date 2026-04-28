@@ -2130,7 +2130,7 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
     .expect("policy reset should succeed");
     assert_eq!(reset.outcome.payload["persisted"], true);
     assert_eq!(reset.outcome.payload["config_updated"], true);
-    assert_eq!(reset.outcome.payload["policy"]["enabled"], false);
+    assert_eq!(reset.outcome.payload["policy"]["enabled"], true);
     assert_eq!(
         reset.outcome.payload["policy"]["require_download_approval"],
         false
@@ -2154,7 +2154,7 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
         },
     )
     .expect("policy get after reset should succeed");
-    assert_eq!(final_get.outcome.payload["policy"]["enabled"], false);
+    assert_eq!(final_get.outcome.payload["policy"]["enabled"], true);
     assert_eq!(
         final_get.outcome.payload["policy"]["require_download_approval"],
         false
@@ -2170,7 +2170,7 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
 
     let (_, reloaded_after_reset) = mvp::config::load(Some(config_path.to_string_lossy().as_ref()))
         .expect("reload reset config");
-    assert!(!reloaded_after_reset.external_skills.enabled);
+    assert!(reloaded_after_reset.external_skills.enabled);
     assert!(
         !reloaded_after_reset
             .external_skills

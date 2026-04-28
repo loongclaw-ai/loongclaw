@@ -362,6 +362,11 @@ pub(super) fn direct_browser_definition(descriptor: &ToolDescriptor) -> Value {
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["open", "start", "navigate", "extract", "snapshot", "wait", "stop", "click", "type"],
+                        "description": "Optional browser action override. Leave it unset for the default route."
+                    },
                     "url": {
                         "type": "string",
                         "description": "Open a page or continue a browser session at this HTTP or HTTPS URL."

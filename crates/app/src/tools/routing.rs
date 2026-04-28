@@ -77,8 +77,45 @@ fn route_direct_tool_name_for_view(
 ) -> Result<&'static str, String> {
     match tool_name {
         "web" => route_direct_web_tool_name_for_view(payload, view),
+        "browser" => route_direct_browser_tool_name_for_view(payload, view),
         _ => route_direct_tool_name(tool_name, payload),
     }
+}
+
+fn route_direct_browser_tool_name_for_view(
+    payload: &Value,
+    view: &ToolView,
+) -> Result<&'static str, String> {
+    let browser_runtime_modes = tool_surface::direct_browser_runtime_modes_for_view(view);
+    let routed_tool_name = route_direct_browser_tool_name(payload)?;
+
+    if routed_tool_name.starts_with("browser.companion.") {
+        if browser_runtime_modes.managed_session_available {
+            return Ok(routed_tool_name);
+        }
+        return Err(
+            "managed browser session mode is unavailable in this runtime; read-only browser inspection still works"
+                .to_owned(),
+        );
+    }
+
+    if browser_runtime_modes.page_inspection_available {
+        return Ok(routed_tool_name);
+    }
+
+    if browser_runtime_modes.managed_session_available {
+        return match routed_tool_name {
+            "browser.open" => Ok("browser.companion.session.start"),
+            "browser.extract" => Ok("browser.companion.snapshot"),
+            "browser.click" => Err(
+                "page-link browser click is unavailable in this runtime; managed browser session mode still works with `selector`-based actions"
+                    .to_owned(),
+            ),
+            _ => Ok(routed_tool_name),
+        };
+    }
+
+    Err("browser page inspection is unavailable in this runtime".to_owned())
 }
 
 pub(crate) fn route_direct_tool_name(
@@ -1018,7 +1055,7 @@ mod tests {
             route_direct_tool_request(request, &runtime_config::ToolRuntimeConfig::default())
                 .expect_err("managed browser type should be unavailable in default runtime");
 
-        assert!(error.contains("managed browser actions"));
+        assert!(error.contains("managed browser session mode is unavailable"));
         assert!(error.contains("read-only browser inspection"));
         assert!(
             unavailable_runtime_hint(managed_browser_route, &runtime_view)

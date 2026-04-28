@@ -390,7 +390,7 @@ fn tool_registry_returns_runtime_discoverable_tools_for_default_config() {
         .iter()
         .map(|entry| entry.name.as_str())
         .collect::<BTreeSet<_>>();
-    let expected = BTreeSet::from([
+    let mut expected = BTreeSet::from([
         "approval_request_resolve",
         "approval_request_status",
         "approval_requests_list",
@@ -429,6 +429,20 @@ fn tool_registry_returns_runtime_discoverable_tools_for_default_config() {
         "sessions_history",
         "sessions_list",
     ]);
+    if config.external_skills.enabled {
+        expected.extend([
+            "external_skills.fetch",
+            "external_skills.inspect",
+            "external_skills.install",
+            "external_skills.invoke",
+            "external_skills.list",
+            "external_skills.recommend",
+            "external_skills.remove",
+            "external_skills.resolve",
+            "external_skills.search",
+            "external_skills.source_search",
+        ]);
+    }
     assert_eq!(names, expected);
 }
 
@@ -446,7 +460,7 @@ fn tool_registry_returns_runtime_discoverable_tools_for_default_config_no_websea
         .iter()
         .map(|entry| entry.name.as_str())
         .collect::<BTreeSet<_>>();
-    let expected = BTreeSet::from([
+    let mut expected = BTreeSet::from([
         "approval_request_resolve",
         "approval_request_status",
         "approval_requests_list",
@@ -485,6 +499,20 @@ fn tool_registry_returns_runtime_discoverable_tools_for_default_config_no_websea
         "sessions_history",
         "sessions_list",
     ]);
+    if config.external_skills.enabled {
+        expected.extend([
+            "external_skills.fetch",
+            "external_skills.inspect",
+            "external_skills.install",
+            "external_skills.invoke",
+            "external_skills.list",
+            "external_skills.recommend",
+            "external_skills.remove",
+            "external_skills.resolve",
+            "external_skills.search",
+            "external_skills.source_search",
+        ]);
+    }
 
     assert_eq!(names, expected);
 }
@@ -888,13 +916,10 @@ fn provider_tool_definitions_are_stable_and_cover_direct_surface() {
         .expect("browser properties should be an object");
     assert!(browser_properties.contains_key("url"));
     assert!(browser_properties.contains_key("session_id"));
-    assert!(browser_properties.contains_key("text"));
-    assert!(browser_properties.contains_key("condition"));
-    assert!(browser_properties.contains_key("timeout_ms"));
-    assert!(
-        !browser_properties.contains_key("action"),
-        "browser should stay payload-shape-driven instead of teaching sub-action names"
-    );
+    assert!(browser_properties.contains_key("action"));
+    assert!(!browser_properties.contains_key("text"));
+    assert!(!browser_properties.contains_key("condition"));
+    assert!(!browser_properties.contains_key("timeout_ms"));
 }
 
 #[test]
@@ -1145,6 +1170,44 @@ fn provider_tool_definitions_trim_web_query_mode_when_search_is_runtime_disabled
 }
 
 #[test]
+fn provider_tool_definitions_trim_managed_browser_modes_when_companion_is_runtime_disabled() {
+    let defs =
+        provider_tool_definitions_with_config(Some(&runtime_config::ToolRuntimeConfig::default()));
+    let browser = defs
+        .iter()
+        .find(|item| {
+            item.get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                == Some("browser")
+        })
+        .expect("browser definition should exist");
+    let properties = browser["function"]["parameters"]["properties"]
+        .as_object()
+        .expect("browser properties should be an object");
+
+    let action_enum = properties["action"]["enum"]
+        .as_array()
+        .expect("browser action enum should exist");
+    assert!(action_enum.contains(&json!("open")));
+    assert!(action_enum.contains(&json!("extract")));
+    assert!(action_enum.contains(&json!("click")));
+    assert!(!action_enum.contains(&json!("start")));
+    assert!(!action_enum.contains(&json!("navigate")));
+    assert!(!properties.contains_key("text"));
+    assert!(!properties.contains_key("condition"));
+    assert!(!properties.contains_key("timeout_ms"));
+
+    let mode_enum = properties["mode"]["enum"]
+        .as_array()
+        .expect("browser mode enum should exist");
+    assert!(mode_enum.contains(&json!("page_text")));
+    assert!(mode_enum.contains(&json!("selector_text")));
+    assert!(!mode_enum.contains(&json!("summary")));
+    assert!(!mode_enum.contains(&json!("html")));
+}
+
+#[test]
 fn runtime_tool_search_entries_trim_web_search_mode_when_query_mode_is_disabled() {
     let config = runtime_config::ToolRuntimeConfig {
         web_search: runtime_config::WebSearchRuntimePolicy {
@@ -1166,6 +1229,37 @@ fn runtime_tool_search_entries_trim_web_search_mode_when_query_mode_is_disabled(
         web.usage_guidance
             .as_deref()
             .is_some_and(|guidance| guidance.contains("Query search mode is unavailable"))
+    );
+}
+
+#[test]
+fn runtime_tool_search_entries_trim_managed_browser_mode_when_companion_is_runtime_disabled() {
+    let entries =
+        runtime_tool_search_entries(&runtime_config::ToolRuntimeConfig::default(), None, false);
+    let browser = entries
+        .iter()
+        .find(|entry| entry.tool_id == "browser")
+        .expect("browser direct search entry");
+
+    assert!(
+        browser
+            .summary
+            .contains("Open pages and inspect page structure")
+    );
+    assert!(!browser.argument_hint.contains("text"));
+    assert!(!browser.argument_hint.contains("condition"));
+    assert!(!browser.argument_hint.contains("timeout_ms"));
+    assert!(
+        browser
+            .search_hint
+            .contains("managed browser session mode is unavailable"),
+        "search_hint={}",
+        browser.search_hint
+    );
+    assert!(
+        browser.usage_guidance.as_deref().is_some_and(
+            |guidance| guidance.contains("Managed browser session mode is unavailable")
+        )
     );
 }
 
@@ -2258,6 +2352,42 @@ fn browser_companion_protocol_start_issues_managed_session_id_and_records_reques
     assert_eq!(request["session_id"], session_id);
 
     std::fs::remove_dir_all(&root).ok();
+}
+
+#[cfg(feature = "tool-browser")]
+#[test]
+fn direct_browser_url_starts_managed_session_when_companion_is_runtime_ready_and_page_browser_is_disabled()
+ {
+    let _subprocess_guard = crate::test_support::acquire_subprocess_test_guard();
+    let root = unique_tool_temp_dir("loongclaw-browser-companion-direct-browser-start");
+    std::fs::create_dir_all(&root).expect("create fixture root");
+    let log_path = root.join("request.json");
+    let script_path = write_browser_companion_script(
+        &root,
+        "browser-companion-direct-browser-start",
+        r#"{"ok":true,"result":{"page_url":"https://example.com","title":"Example Domain"}}"#,
+        &log_path,
+    );
+    let mut config = browser_companion_runtime_config(&root, script_path.display().to_string());
+    config.browser.enabled = false;
+
+    let outcome = routing::execute_direct_tool_core_with_config(
+        ToolCoreRequest {
+            tool_name: "browser".to_owned(),
+            payload: json!({
+                "url": "https://example.com"
+            }),
+        },
+        &config,
+    )
+    .expect("browser direct surface should start a managed session when that is the only browser lane left");
+
+    assert_eq!(outcome.status, "ok");
+    assert_eq!(
+        outcome.payload["tool_name"],
+        "browser.companion.session.start"
+    );
+    assert_eq!(outcome.payload["result"]["page_url"], "https://example.com");
 }
 
 #[cfg(feature = "tool-browser")]

@@ -861,15 +861,33 @@ mod tests {
     }
 
     #[test]
-    fn browser_open_rejects_private_hosts_by_default() {
+    fn browser_open_allows_private_hosts_in_yolo_default_mode() {
         let config = super::super::runtime_config::ToolRuntimeConfig::default();
+        let base_url = "http://127.0.0.1:6553".to_owned();
+
+        let outcome = execute_browser_tool_with_config(
+            request("browser.open", json!({"url": base_url})),
+            &config,
+        );
+        assert!(
+            outcome.is_err(),
+            "the local fixture still lacks a listener, but the yolo default should no longer fail at the private-host guard"
+        );
+        let error = outcome.expect_err("localhost fixture should still fail without a listener");
+        assert!(!error.contains("private or special-use"));
+    }
+
+    #[test]
+    fn browser_open_rejects_private_hosts_when_runtime_policy_disables_them() {
+        let mut config = super::super::runtime_config::ToolRuntimeConfig::default();
+        config.web_fetch.allow_private_hosts = false;
         let base_url = "http://127.0.0.1:6553".to_owned();
 
         let error = execute_browser_tool_with_config(
             request("browser.open", json!({"url": base_url})),
             &config,
         )
-        .expect_err("private hosts should be blocked by default");
+        .expect_err("private hosts should be blocked when the runtime policy disables them");
 
         assert!(error.contains("private or special-use"));
     }

@@ -1283,9 +1283,12 @@ mod tests {
     #[test]
     fn execution_discipline_section_emphasizes_continued_execution_over_progress_chatter() {
         let section = render_execution_discipline_section();
-        assert!(section.contains("Prefer continuing through bounded intermediate steps"));
+        assert!(section.contains(
+            "Default to the best bounded action already allowed by the current runtime authority."
+        ));
+        assert!(section.contains("Continue from tool results and retrieved evidence until no useful bounded action remains."));
         assert!(section.contains("Do not emit incremental progress chatter"));
-        assert!(section.contains("intermediate runtime states, not final completion"));
+        assert!(section.contains("Only stop for a verified completion condition, a concrete blocker, or a real approval boundary."));
     }
 
     #[cfg(feature = "memory-sqlite")]
