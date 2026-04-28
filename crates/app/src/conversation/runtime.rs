@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::CliResult;
 use crate::KernelContext;
-use crate::runtime_self_continuity::{self, RuntimeSelfContinuity};
+use crate::runtime_self_continuity::RuntimeSelfContinuity;
 use crate::tools::runtime_config::ToolRuntimeNarrowing;
 use crate::tools::ToolView;
 
@@ -16,11 +16,12 @@ use super::super::memory;
 use super::super::{config::LoongConfig, provider};
 #[cfg(feature = "memory-sqlite")]
 use super::active_external_skills;
-use super::context_engine::ContextArtifactKind;
 use super::context_engine::{
     AssembledConversationContext, ContextEngineBootstrapResult, ContextEngineIngestResult,
     ContextEngineMetadata, ConversationContextEngine, DefaultContextEngine,
 };
+#[cfg(test)]
+use super::context_engine::ContextArtifactKind;
 use super::context_engine_registry::{
     DEFAULT_CONTEXT_ENGINE_ID, context_engine_id_from_env, describe_context_engine,
     list_context_engine_metadata, resolve_context_engine,
@@ -45,11 +46,19 @@ use super::{PromptFragment, PromptFrameAuthority, PromptLane};
 
 #[path = "runtime_session.rs"]
 mod session_runtime;
+#[path = "runtime_prompt.rs"]
+mod runtime_prompt;
 #[cfg(feature = "memory-sqlite")]
 use session_runtime::{
     apply_active_external_skill_blocked_tools_to_tool_view, apply_session_tool_policy_to_tool_view,
     build_base_tool_view_from_snapshot, build_session_context_from_snapshot,
     load_persisted_session_context, load_persisted_session_snapshot, open_session_repository,
+};
+use runtime_prompt::{
+    active_external_skills_prompt_summary, append_runtime_prompt_fragment,
+    delegate_child_profile_prompt_summary, delegate_child_runtime_contract_prompt_summary,
+    normalize_turn_middleware_ids, provider_runtime_binding,
+    runtime_self_continuity_prompt_summary,
 };
 
 #[cfg(feature = "memory-sqlite")]
@@ -1853,117 +1862,6 @@ where
     }
 }
 
-fn provider_runtime_binding(
-    binding: ConversationRuntimeBinding<'_>,
-) -> provider::ProviderRuntimeBinding<'_> {
-    match binding {
-        ConversationRuntimeBinding::Kernel(kernel_ctx) => {
-            provider::ProviderRuntimeBinding::kernel(kernel_ctx)
-        }
-        ConversationRuntimeBinding::Direct => provider::ProviderRuntimeBinding::advisory_only(),
-    }
-}
-
-fn delegate_child_runtime_contract_prompt_summary(
-    config: &LoongConfig,
-    session_context: &SessionContext,
-) -> Option<String> {
-    session_context.parent_session_id.as_ref()?;
-    session_context.subagent_runtime_narrowing()?;
-    let subagent_contract = session_context.resolved_subagent_contract();
-    crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None)
-        .delegate_child_prompt_summary(subagent_contract.as_ref())
-}
-
-fn delegate_child_profile_prompt_summary(session_context: &SessionContext) -> Option<String> {
-    let _parent_session_id = session_context.parent_session_id.as_ref()?;
-    let profile = session_context.profile?;
-    let summary = match profile {
-        DelegateBuiltinProfile::Research => concat!(
-            "[delegate_child_profile]\n",
-            "You are running with the `research` delegate profile.\n",
-            "- Gather evidence before conclusions.\n",
-            "- Prefer reading files, web sources, and browser extraction over proposing edits.\n",
-            "- Return concise findings, concrete references, and unresolved risks."
-        ),
-        DelegateBuiltinProfile::Plan => concat!(
-            "[delegate_child_profile]\n",
-            "You are running with the `plan` delegate profile.\n",
-            "- Turn findings into an execution plan.\n",
-            "- Prefer ordered steps, explicit assumptions, and acceptance criteria.\n",
-            "- Do not claim implementation is complete when you only have a proposal."
-        ),
-        DelegateBuiltinProfile::Verify => concat!(
-            "[delegate_child_profile]\n",
-            "You are running with the `verify` delegate profile.\n",
-            "- Try to falsify success claims before accepting them.\n",
-            "- Prefer concrete checks, observed failures, and residual risk notes.\n",
-            "- Report a clear verdict with evidence."
-        ),
-    };
-    let rendered = summary.to_owned();
-    Some(rendered)
-}
-
-fn runtime_self_continuity_prompt_summary(
-    config: &LoongConfig,
-    session_context: &SessionContext,
-) -> Option<String> {
-    let stored_continuity = session_context.runtime_self_continuity.as_ref()?;
-    let live_continuity =
-        runtime_self_continuity::resolve_runtime_self_continuity_for_config(config);
-    let missing_continuity = runtime_self_continuity::missing_runtime_self_continuity(
-        stored_continuity,
-        live_continuity.as_ref(),
-    )?;
-    let inherited = session_context.parent_session_id.is_some();
-    runtime_self_continuity::render_runtime_self_continuity_section(&missing_continuity, inherited)
-}
-
-#[cfg(feature = "memory-sqlite")]
-fn active_external_skills_prompt_summary(config: &LoongConfig, session_id: &str) -> Option<String> {
-    let repo = open_session_repository(config).ok()?;
-    let active_skills =
-        active_external_skills::load_persisted_active_external_skills(&repo, session_id)
-            .ok()
-            .flatten()?;
-    active_external_skills::render_active_external_skills_section(&active_skills)
-}
-
-fn append_runtime_prompt_fragment(
-    assembled: &mut AssembledConversationContext,
-    source_id: &'static str,
-    content: Option<String>,
-    frame_authority: PromptFrameAuthority,
-) {
-    let Some(content) = content else {
-        return;
-    };
-
-    let fragment = PromptFragment::new(
-        source_id,
-        PromptLane::Continuity,
-        source_id,
-        content,
-        ContextArtifactKind::RuntimeContract,
-    )
-    .with_dedupe_key(source_id)
-    .with_cacheable(true)
-    .with_frame_authority(frame_authority);
-
-    assembled.prompt_fragments.push(fragment);
-}
-
-fn normalize_turn_middleware_ids(ids: Vec<String>) -> Vec<String> {
-    let mut seen = BTreeSet::new();
-    let mut normalized = Vec::new();
-    for id in ids {
-        if seen.insert(id.clone()) {
-            normalized.push(id);
-        }
-    }
-    normalized
-}
 
 #[cfg(test)]
 mod tests {
@@ -2100,6 +1998,19 @@ mod tests {
             provider::ProviderRuntimeBinding::Kernel(kernel_ctx)
                 if std::ptr::eq(kernel_ctx, &harness.kernel_ctx)
         ));
+    }
+
+    #[test]
+    fn normalize_turn_middleware_ids_preserves_first_occurrence_order() {
+        let normalized = normalize_turn_middleware_ids(vec![
+            "alpha".to_owned(),
+            "beta".to_owned(),
+            "alpha".to_owned(),
+            "gamma".to_owned(),
+            "beta".to_owned(),
+        ]);
+
+        assert_eq!(normalized, vec!["alpha", "beta", "gamma"]);
     }
 
     #[cfg(feature = "memory-sqlite")]
