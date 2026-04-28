@@ -61,6 +61,8 @@ mod support;
 mod target;
 #[path = "turn_engine_trace.rs"]
 mod trace;
+#[path = "turn_engine_visibility.rs"]
+mod visibility;
 use payload::augment_tool_payload_for_kernel;
 pub(crate) use payload::render_kernel_error_reason;
 pub(crate) use result::{
@@ -81,6 +83,10 @@ pub(crate) use trace::{
     ToolBatchExecutionIntentStatus, ToolBatchExecutionIntentTrace, ToolBatchExecutionMode,
     ToolBatchExecutionSegmentTrace, ToolBatchExecutionTrace, ToolDecisionTraceRecord,
     ToolOutcomeTraceRecord, elapsed_ms_u64, observe_peak_in_flight,
+};
+use visibility::{
+    concealed_provider_tool_denial, effective_visible_tool_name, provider_tool_denial_reason,
+    provider_tool_denial_should_conceal_name, tool_intent_is_visible,
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1784,76 +1790,6 @@ impl AppToolDispatcher for DefaultAppToolDispatcher {
     }
 }
 
-fn effective_visible_tool_name(
-    intent: &ToolIntent,
-    descriptor: &crate::tools::ToolDescriptor,
-) -> String {
-    if descriptor.name != "tool.invoke" {
-        return descriptor.name.to_owned();
-    }
-
-    crate::tools::invoked_discoverable_tool_request(&intent.args_json)
-        .map(|(tool_name, _arguments)| tool_name.to_owned())
-        .unwrap_or_else(|| descriptor.name.to_owned())
-}
-
-fn provider_tool_denial_should_conceal_name(
-    intent: &ToolIntent,
-    descriptor: &crate::tools::ToolDescriptor,
-    tool_is_visible: bool,
-) -> bool {
-    if !intent.source.starts_with("provider_") {
-        return false;
-    }
-
-    if !descriptor.is_provider_exposed() {
-        return true;
-    }
-
-    !tool_is_visible
-        && descriptor.name == "tool.invoke"
-        && effective_visible_tool_name(intent, descriptor) != descriptor.name
-}
-
-fn concealed_provider_tool_denial() -> TurnFailure {
-    let base_reason = "tool_not_found: requested tool is not available";
-    let reason = provider_tool_denial_reason(base_reason, "provider_tool_call");
-    TurnFailure::policy_denied_with_discovery_recovery("tool_not_found", reason)
-}
-
-fn provider_tool_denial_reason(reason: &str, source: &str) -> String {
-    let is_provider_source = source.starts_with("provider_");
-    if !is_provider_source {
-        return reason.to_owned();
-    }
-
-    let mut message = reason.to_owned();
-    message.push_str(tool_search_recovery_hint());
-    message
-}
-
-fn tool_intent_is_visible(
-    session_context: &SessionContext,
-    intent: &ToolIntent,
-    descriptor: &crate::tools::ToolDescriptor,
-) -> bool {
-    if descriptor.is_provider_exposed() {
-        if descriptor.name != "tool.invoke" {
-            return true;
-        }
-        let effective_name = effective_visible_tool_name(intent, descriptor);
-        return effective_name == descriptor.name
-            || session_context.tool_view.contains(effective_name.as_str());
-    }
-
-    let provider_origin = intent.source.starts_with("provider_");
-    if provider_origin {
-        return false;
-    }
-
-    session_context.tool_view.contains(descriptor.name)
-}
-
 async fn execute_tool_intent_via_kernel(
     request: ToolCoreRequest,
     kernel_ctx: &KernelContext,
@@ -3210,6 +3146,42 @@ mod tests {
             failure.reason
         );
         assert!(failure.supports_discovery_recovery);
+    }
+
+    #[test]
+    fn validate_turn_in_context_reports_direct_tool_not_visible_for_non_provider_hidden_alias() {
+        let turn = ProviderTurn {
+            assistant_text: String::new(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "tool_invoke".to_owned(),
+                args_json: json!({
+                    "tool_id": "shell.exec",
+                    "arguments": {"command": "echo hello"},
+                }),
+                source: "operator".to_owned(),
+                session_id: "session-non-provider-hidden-tool-invoke".to_owned(),
+                turn_id: "turn-non-provider-hidden-tool-invoke".to_owned(),
+                tool_call_id: "call-non-provider-hidden-tool-invoke".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        };
+        let session_context = SessionContext::root_with_tool_view(
+            "session-non-provider-hidden-tool-invoke",
+            crate::tools::ToolView::from_tool_names(std::iter::empty::<&str>()),
+        );
+
+        let failure = TurnEngine::new(4)
+            .validate_turn_in_context(&turn, &session_context)
+            .expect_err("non-provider hidden tool.invoke alias should stay direct");
+
+        assert_eq!(failure.code, "tool_not_visible");
+        assert_eq!(failure.reason, "tool_not_visible: shell.exec");
+        assert!(!failure.supports_discovery_recovery);
+        assert!(
+            !failure.reason.contains("tool.search"),
+            "non-provider denial should not advertise provider discovery recovery: {}",
+            failure.reason
+        );
     }
 
     #[test]
