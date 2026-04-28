@@ -3056,7 +3056,7 @@ fn build_doctor_next_steps_with_channel_surfaces_and_path_env(
                 crate::next_actions::SetupNextActionKind::Ask => "Get a first answer",
                 crate::next_actions::SetupNextActionKind::Chat => "Continue in chat",
                 crate::next_actions::SetupNextActionKind::Personalize => {
-                    "Set your working preferences"
+                    "Teach Loong your working style"
                 }
                 crate::next_actions::SetupNextActionKind::Channel => "Open a channel",
                 crate::next_actions::SetupNextActionKind::BrowserPreview => {
@@ -6988,7 +6988,8 @@ mod tests {
         );
         assert!(
             next_steps.iter().any(|step| {
-                step == "Set your working preferences: loong personalize --config '/tmp/loong.toml'"
+                step
+                    == "Teach Loong your working style: loong personalize --config '/tmp/loong.toml'"
             }),
             "green doctor runs should surface personalization as the third healthy-path suggestion: {next_steps:#?}"
         );
@@ -7095,7 +7096,8 @@ mod tests {
 
         assert!(
             next_steps.iter().any(|step| {
-                step == "Set your working preferences: loong personalize --config '/tmp/loong.toml'"
+                step
+                    == "Teach Loong your working style: loong personalize --config '/tmp/loong.toml'"
             }),
             "doctor should prioritize personalization ahead of generic browser preview when the healthy-path list is capped: {next_steps:#?}"
         );
