@@ -109,7 +109,10 @@ impl TurnEngine {
                 if intent.source.starts_with("provider_") {
                     return Err(concealed_provider_tool_denial());
                 }
-                if !session_context.tool_view.contains(resolved_tool.canonical_name) {
+                if !session_context
+                    .tool_view
+                    .contains(resolved_tool.canonical_name)
+                {
                     let reason = format!("tool_not_visible: {}", intent.tool_name);
                     return Err(TurnFailure::policy_denied("tool_not_visible", reason));
                 }

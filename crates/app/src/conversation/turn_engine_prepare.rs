@@ -1,4 +1,3 @@
-use loong_contracts::ToolCoreRequest;
 use super::super::ingress::{ConversationIngressContext, inject_internal_tool_ingress};
 use super::payload::augment_tool_payload_for_kernel;
 use super::support::{
@@ -11,6 +10,7 @@ use super::{
     SessionStoreConfig, ToolDecisionTelemetry, ToolExecutionKind, ToolExecutionPreflight,
     ToolIntent, ToolPreflightOutcome, TurnResult, effective_denied_tool_name,
 };
+use loong_contracts::ToolCoreRequest;
 
 #[derive(Debug, Clone)]
 pub(super) struct PreparedToolIntent {
@@ -315,8 +315,10 @@ impl<'a, 'b, D: AppToolDispatcher + ?Sized> ToolIntentPreparationHarness<'a, 'b,
                 });
             }
             Err(reason) => {
-                let turn_result =
-                    TurnResult::non_retryable_tool_error("app_tool_preflight_failed", reason.clone());
+                let turn_result = TurnResult::non_retryable_tool_error(
+                    "app_tool_preflight_failed",
+                    reason.clone(),
+                );
                 let denial_decision = ToolDecisionTelemetry::deny(
                     effective_tool_name.as_str(),
                     reason,
