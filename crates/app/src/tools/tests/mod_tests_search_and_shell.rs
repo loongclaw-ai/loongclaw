@@ -1,5 +1,6 @@
 use super::*;
-use std::collections::BTreeMap;
+use loong_contracts::Capability;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc;
 use std::time::Duration;
 

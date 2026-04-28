@@ -1,3 +1,4 @@
+use super::routing::route_hidden_discoverable_tool_name;
 use super::*;
 
 pub(crate) fn merge_trusted_internal_tool_context_into_arguments(
@@ -56,7 +57,7 @@ pub(crate) fn resolve_tool_invoke_request(
         }
     }
 
-    let routed_hidden_tool_name = super::route_hidden_discoverable_tool_name(tool_id, &arguments);
+    let routed_hidden_tool_name = route_hidden_discoverable_tool_name(tool_id, &arguments);
     let tool_lease_id = match routed_hidden_tool_name {
         Ok(_resolved_hidden_tool_name)
             if matches!(

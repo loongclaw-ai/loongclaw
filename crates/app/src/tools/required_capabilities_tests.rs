@@ -201,6 +201,19 @@ fn required_capabilities_follow_effective_tool_request() {
         BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
     );
 
+    let invoked_browser_click = ToolCoreRequest {
+        tool_name: "tool.invoke".to_owned(),
+        payload: json!({
+            "tool_id": "browser.click",
+            "lease": "unused",
+            "arguments": {"selector": "#submit"}
+        }),
+    };
+    assert_eq!(
+        required_capabilities_for_request(&invoked_browser_click),
+        BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
+    );
+
     let invoked_bash_exec = ToolCoreRequest {
         tool_name: "tool.invoke".to_owned(),
         payload: json!({

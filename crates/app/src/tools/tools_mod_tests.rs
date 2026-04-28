@@ -3,7 +3,8 @@ use crate::config::ToolConfig;
 use crate::test_support::{ScopedEnv, ScopedLoongHome, unique_temp_dir};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use std::collections::BTreeMap;
+use loong_contracts::Capability;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 
