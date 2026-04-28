@@ -112,6 +112,12 @@ fn execute_tool_core_with_test_context(
 }
 
 #[test]
+fn normalize_without_fs_preserves_relative_parent_segments() {
+    let normalized = normalize_without_fs(Path::new("../../workspace/./src/../README.md"));
+    assert_eq!(normalized, PathBuf::from("../../workspace/README.md"));
+}
+
+#[test]
 fn take_trusted_internal_tool_context_extracts_reserved_payload_map() {
     let mut payload = serde_json::Map::from_iter([(
         LOONG_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),

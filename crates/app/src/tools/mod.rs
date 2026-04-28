@@ -1,7 +1,4 @@
-use std::{
-    ffi::OsString,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use loong_contracts::{ToolCoreOutcome, ToolCoreRequest};
 use serde_json::{Value, json};
@@ -82,6 +79,8 @@ mod tool_identity;
 mod tool_internal_context;
 mod tool_lease;
 mod tool_lease_authority;
+mod tool_path;
+mod tool_runtime_view;
 mod tool_search;
 mod tool_snapshot;
 mod tool_surface;
@@ -145,6 +144,13 @@ pub(crate) use tool_lease::{
 #[cfg(test)]
 pub(crate) use tool_lease::{
     synthesize_test_provider_tool_call, synthesize_test_provider_tool_call_with_scope,
+};
+pub(crate) use tool_path::normalize_without_fs;
+pub use tool_runtime_view::runtime_tool_view_from_loong_config;
+pub(crate) use tool_runtime_view::{
+    effective_runtime_visible_tool_view, full_runtime_tool_view_for_runtime_config,
+    model_visible_external_skill_context_payload_for_path,
+    model_visible_external_skill_roots_for_runtime_config, runtime_tool_view_with_runtime_config,
 };
 pub(crate) use tool_snapshot::capability_snapshot_for_view_with_config;
 pub use tool_snapshot::{DiscoverableToolSurfaceSummary, ToolRegistryEntry};
@@ -288,96 +294,6 @@ pub use tool_app_runtime::{
     execute_app_tool_with_config, wait_for_session_with_config, wait_for_task_with_config,
 };
 
-/// Normalize a path by resolving `.` and `..` components without filesystem access.
-///
-/// - `Prefix` and `RootDir` are tracked separately so `..` can never "eat" them.
-/// - `..` past the filesystem root (or volume root on Windows) is silently dropped.
-/// - Relative paths preserve leading `..` components (e.g. `../../foo` stays as-is).
-///
-/// All three path-handling modules (`file`, `config_import`, `file_policy_ext`) use
-/// this single implementation to avoid divergence.
-pub(super) fn normalize_without_fs(path: &Path) -> PathBuf {
-    use std::path::Component;
-
-    let mut parts: Vec<OsString> = Vec::new();
-    let mut prefix: Option<OsString> = None;
-    let mut has_root = false;
-
-    for component in path.components() {
-        match component {
-            Component::Prefix(value) => prefix = Some(value.as_os_str().to_owned()),
-            Component::RootDir => has_root = true,
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if let Some(last) = parts.last() {
-                    if last != ".." {
-                        let _ = parts.pop();
-                    } else if !has_root {
-                        parts.push(OsString::from(".."));
-                    }
-                } else if !has_root {
-                    parts.push(OsString::from(".."));
-                }
-            }
-            Component::Normal(value) => parts.push(value.to_owned()),
-        }
-    }
-
-    let mut normalized = PathBuf::new();
-    if let Some(prefix) = prefix {
-        normalized.push(prefix);
-    }
-    if has_root {
-        normalized.push(Path::new(std::path::MAIN_SEPARATOR_STR));
-    }
-    for part in parts {
-        normalized.push(part);
-    }
-    if normalized.as_os_str().is_empty() {
-        if has_root {
-            PathBuf::from(std::path::MAIN_SEPARATOR_STR)
-        } else {
-            PathBuf::from(".")
-        }
-    } else {
-        normalized
-    }
-}
-
-pub(crate) fn model_visible_external_skill_roots_for_runtime_config(
-    config: &runtime_config::ToolRuntimeConfig,
-) -> Vec<PathBuf> {
-    external_skills::model_visible_skill_roots_with_config(config)
-}
-
-pub(crate) fn model_visible_external_skill_context_payload_for_path(
-    config: &runtime_config::ToolRuntimeConfig,
-    raw_path: &Path,
-) -> Result<Option<Value>, String> {
-    external_skills::model_visible_skill_context_payload_for_path(config, raw_path)
-}
-
-pub fn runtime_tool_view_from_loong_config(config: &crate::config::LoongConfig) -> ToolView {
-    let runtime_config = runtime_config::ToolRuntimeConfig::from_loong_config(config, None);
-    runtime_tool_view_with_runtime_config(&config.tools, &runtime_config)
-}
-
-pub(crate) fn runtime_tool_view_with_runtime_config(
-    _tool_config: &crate::config::ToolConfig,
-    runtime_config: &runtime_config::ToolRuntimeConfig,
-) -> ToolView {
-    runtime_tool_view_for_runtime_config(runtime_config)
-}
-
-/// Build a tool view from runtime config (respecting runtime toggles) plus
-/// feishu entries when the feishu integration is configured. This avoids
-/// using `ToolConfig::default()` which ignores runtime-disabled tools.
-fn full_runtime_tool_view_for_runtime_config(
-    config: &runtime_config::ToolRuntimeConfig,
-) -> ToolView {
-    runtime_tool_view_for_runtime_config(config)
-}
-
 /// Tool registry entry for capability snapshot disclosure.
 #[cfg(all(test, feature = "feishu-integration"))]
 fn feishu_searchable_entries() -> Vec<SearchableToolEntry> {
@@ -416,23 +332,6 @@ fn feishu_searchable_entries() -> Vec<SearchableToolEntry> {
             ))
         })
         .collect()
-}
-
-fn effective_runtime_visible_tool_view(
-    config: &runtime_config::ToolRuntimeConfig,
-    visible_tool_view: Option<&ToolView>,
-) -> ToolView {
-    let runtime_view = full_runtime_tool_view_for_runtime_config(config);
-
-    match visible_tool_view {
-        Some(injected) => {
-            // Intersect the injected view with the runtime-visible surface so that
-            // trusted _loong.tool_search.visible_tool_ids cannot re-expose
-            // tools disabled by runtime config (browser.*, session_*, etc.).
-            injected.intersect(&runtime_view)
-        }
-        None => runtime_view,
-    }
 }
 
 #[cfg(test)]
