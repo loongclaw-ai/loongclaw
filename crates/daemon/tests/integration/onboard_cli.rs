@@ -1833,8 +1833,8 @@ async fn interactive_onboard_web_search_custom_env_persists_explicit_env_referen
 
     let joined = transcript.join("\n");
     assert!(
-        joined.contains("choose web search credential"),
-        "interactive onboarding should prompt for a web-search credential source when the selected provider requires one: {transcript:#?}"
+        joined.contains("choose query search credential"),
+        "interactive onboarding should prompt for a query-search credential source when the selected provider requires one: {transcript:#?}"
     );
 
     let (_, config) =
@@ -1902,8 +1902,8 @@ async fn interactive_onboard_firecrawl_web_search_custom_env_persists_explicit_e
 
     let joined = transcript.join("\n");
     assert!(
-        joined.contains("choose web search credential"),
-        "interactive onboarding should prompt for a web-search credential source when Firecrawl is selected: {transcript:#?}"
+        joined.contains("choose query search credential"),
+        "interactive onboarding should prompt for a query-search credential source when Firecrawl is selected: {transcript:#?}"
     );
 
     let (_, config) =
@@ -7616,13 +7616,13 @@ fn onboard_review_lines_include_core_setup_summary_for_fresh_setup() {
         lines
             .iter()
             .any(|line| line.contains("- web search: DuckDuckGo")),
-        "review should surface the selected web-search provider during onboarding: {lines:#?}"
+        "review should surface the selected query-search provider during onboarding: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("- web search credential: not required")),
-        "review should explain when the chosen web-search provider does not require credentials: {lines:#?}"
+            .any(|line| line.contains("- query search credential: not required")),
+        "review should explain when the chosen query-search provider does not require credentials: {lines:#?}"
     );
 }
 
@@ -8033,7 +8033,7 @@ fn onboarding_success_summary_reports_existing_config_kept() {
         memory_profile: "window_only".to_owned(),
         web_search_provider: "DuckDuckGo".to_owned(),
         web_search_credential: Some(loong_daemon::onboard_cli::OnboardingCredentialSummary {
-            label: "web search credential",
+            label: "query search credential",
             value: "not required".to_owned(),
         }),
         memory_path: None,
@@ -8118,13 +8118,13 @@ fn onboarding_success_summary_reports_web_search_provider_and_credential() {
 
     assert!(
         lines.iter().any(|line| line == "- web search: DuckDuckGo"),
-        "success summary should surface the selected web-search provider: {lines:#?}"
+        "success summary should surface the selected query-search provider: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "- web search credential: not required"),
-        "success summary should explain when the selected web-search provider does not need a credential: {lines:#?}"
+            .any(|line| line == "- query search credential: not required"),
+        "success summary should explain when the selected query-search provider does not need a credential: {lines:#?}"
     );
 }
 
@@ -8230,7 +8230,7 @@ fn onboarding_success_summary_groups_domain_outcomes_by_decision() {
         memory_profile: "profile_plus_window".to_owned(),
         web_search_provider: "DuckDuckGo".to_owned(),
         web_search_credential: Some(loong_daemon::onboard_cli::OnboardingCredentialSummary {
-            label: "web search credential",
+            label: "query search credential",
             value: "not required".to_owned(),
         }),
         memory_path: None,
@@ -8311,7 +8311,7 @@ fn onboarding_success_summary_wraps_domain_outcomes_for_narrow_width() {
         memory_profile: "profile_plus_window".to_owned(),
         web_search_provider: "DuckDuckGo".to_owned(),
         web_search_credential: Some(loong_daemon::onboard_cli::OnboardingCredentialSummary {
-            label: "web search credential",
+            label: "query search credential",
             value: "not required".to_owned(),
         }),
         memory_path: None,

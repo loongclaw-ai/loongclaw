@@ -2494,14 +2494,14 @@ async fn resolve_web_search_provider_selection(
         ),
     )?;
     let idx = ui.select_one(
-        "Web search provider",
+        "Query search provider",
         &select_options,
         default_idx,
         SelectInteractionMode::List,
     )?;
     let selected = select_options
         .get(idx)
-        .ok_or_else(|| format!("web search provider selection index {idx} out of range"))?;
+        .ok_or_else(|| format!("query search provider selection index {idx} out of range"))?;
     Ok(selected.slug.clone())
 }
 
@@ -2571,7 +2571,8 @@ fn resolve_web_search_credential_selection(
                 true,
             ),
         )?;
-        let value = ui.prompt_with_default("Web search credential env var name", initial_value)?;
+        let value =
+            ui.prompt_with_default("Query search credential env var name", initial_value)?;
         if is_explicit_onboard_clear_input(&value) {
             return Ok(WebSearchCredentialSelection::ClearConfigured);
         }
@@ -2586,7 +2587,7 @@ fn resolve_web_search_credential_selection(
                 print_message(
                     ui,
                     format!(
-                        "enter the environment variable name only, for example {example_env_name}, or type :clear to remove the configured web search credential"
+                        "enter the environment variable name only, for example {example_env_name}, or type :clear to remove the configured query search credential"
                     ),
                 )?;
             }
@@ -2640,8 +2641,8 @@ fn render_web_search_provider_selection_screen_lines_with_style(
     render_onboard_choice_screen(
         OnboardHeaderStyle::Compact,
         width,
-        "choose web search",
-        "choose web search provider",
+        "choose query search",
+        "choose query search provider",
         Some((GuidedOnboardStep::WebSearchProvider, guided_prompt_path)),
         vec![
             format!("- current provider: {current_provider_label}"),
@@ -2710,7 +2711,7 @@ fn validate_selected_web_search_credential_env(
         .unwrap_or("WEB_SEARCH_API_KEY");
 
     Err(format!(
-        "web search credential source must be an environment variable name like {example_env_name}"
+        "query search credential source must be an environment variable name like {example_env_name}"
     ))
 }
 
@@ -4909,13 +4910,13 @@ fn render_web_search_credential_selection_screen_lines_with_style(
         .is_some_and(|value| !value.is_empty())
     {
         hint_lines.push(render_clear_input_hint_line(
-            "clear the configured web search credential",
+            "clear the configured query search credential",
         ));
     }
 
     render_onboard_input_screen(
         width,
-        "choose web search credential",
+        "choose query search credential",
         GuidedOnboardStep::WebSearchProvider,
         guided_prompt_path,
         context_lines,

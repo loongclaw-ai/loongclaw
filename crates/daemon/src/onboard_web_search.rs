@@ -207,12 +207,12 @@ pub(crate) fn recommend_web_search_provider_from_available_credentials(
     let credential_summary = summarize_web_search_provider_credential(config, descriptor.id);
     let reason = if let Some(summary) = credential_summary {
         format!(
-            "found exactly one ready web search credential for {} ({})",
+            "found exactly one ready query-search credential for {} ({})",
             descriptor.display_name, summary.value
         )
     } else {
         format!(
-            "found exactly one ready web search provider with credentials: {}",
+            "found exactly one ready query-search provider with credentials: {}",
             descriptor.display_name
         )
     };
@@ -450,7 +450,7 @@ pub(crate) fn summarize_web_search_provider_credential(
     let descriptor = mvp::config::web_search_provider_descriptor(provider)?;
     if !descriptor.requires_api_key {
         return Some(OnboardingCredentialSummary {
-            label: "web search credential",
+            label: "query search credential",
             value: "not required".to_owned(),
         });
     }
@@ -463,13 +463,13 @@ pub(crate) fn summarize_web_search_provider_credential(
                 let env_present = env_var_has_non_empty_value(env_name.as_str());
                 let suffix = if env_present { "" } else { " (missing in env)" };
                 return Some(OnboardingCredentialSummary {
-                    label: "web search credential source",
+                    label: "query search credential source",
                     value: format!("{env_name}{suffix}"),
                 });
             }
             if secret_ref.inline_literal_value().is_some() {
                 return Some(OnboardingCredentialSummary {
-                    label: "web search credential",
+                    label: "query search credential",
                     value: "inline api key".to_owned(),
                 });
             }
@@ -482,7 +482,7 @@ pub(crate) fn summarize_web_search_provider_credential(
         .find(|env_name| env_var_has_non_empty_value(env_name))
     {
         return Some(OnboardingCredentialSummary {
-            label: "web search credential source",
+            label: "query search credential source",
             value: (*env_name).to_owned(),
         });
     }
@@ -490,7 +490,7 @@ pub(crate) fn summarize_web_search_provider_credential(
     descriptor
         .default_api_key_env
         .map(|env_name| OnboardingCredentialSummary {
-            label: "web search credential source",
+            label: "query search credential source",
             value: format!("{env_name} (expected)"),
         })
 }
