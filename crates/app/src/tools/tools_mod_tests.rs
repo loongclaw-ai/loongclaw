@@ -111,6 +111,28 @@ fn execute_tool_core_with_test_context(
 }
 
 #[test]
+fn take_trusted_internal_tool_context_extracts_reserved_payload_map() {
+    let mut payload = serde_json::Map::from_iter([(
+        LOONG_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
+        json!({
+            "tool_search": {
+                "visible_tool_ids": ["read", "write"]
+            }
+        }),
+    )]);
+
+    let trusted = take_trusted_internal_tool_context(&mut payload);
+
+    assert!(payload.is_empty());
+    assert_eq!(
+        trusted.get("tool_search"),
+        Some(&json!({
+            "visible_tool_ids": ["read", "write"]
+        }))
+    );
+}
+
+#[test]
 fn expected_tool_request_error_classifies_validation_failures() {
     assert!(super::is_expected_tool_request_error(
         "tool_not_found: unknown tool `missing`"
