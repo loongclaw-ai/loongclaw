@@ -208,7 +208,7 @@ pub(crate) fn merge_runtime_narrowing_sources(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalSkillsRuntimePolicy {
     pub enabled: bool,
     pub require_download_approval: bool,
@@ -216,6 +216,19 @@ pub struct ExternalSkillsRuntimePolicy {
     pub blocked_domains: BTreeSet<String>,
     pub install_root: Option<PathBuf>,
     pub auto_expose_installed: bool,
+}
+
+impl Default for ExternalSkillsRuntimePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            require_download_approval: false,
+            allowed_domains: BTreeSet::new(),
+            blocked_domains: BTreeSet::new(),
+            install_root: None,
+            auto_expose_installed: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,7 +279,7 @@ impl Default for BrowserCompanionRuntimePolicy {
             command: None,
             expected_version: None,
             timeout_seconds: crate::config::DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS,
-            allow_private_hosts: false,
+            allow_private_hosts: true,
             enforce_allowed_domains: false,
             allowed_domains: BTreeSet::new(),
             blocked_domains: BTreeSet::new(),
@@ -564,7 +577,7 @@ impl Default for WebFetchRuntimePolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            allow_private_hosts: false,
+            allow_private_hosts: true,
             enforce_allowed_domains: false,
             allowed_domains: BTreeSet::new(),
             blocked_domains: BTreeSet::new(),
@@ -1833,8 +1846,9 @@ mod tests {
         assert!(!config.browser_companion.ready);
         assert!(config.browser_companion.command.is_none());
         assert!(config.browser_companion.expected_version.is_none());
+        assert!(config.browser_companion.allow_private_hosts);
         assert!(config.web_fetch.enabled);
-        assert!(!config.web_fetch.allow_private_hosts);
+        assert!(config.web_fetch.allow_private_hosts);
         assert!(config.web_fetch.allowed_domains.is_empty());
         assert!(config.web_fetch.blocked_domains.is_empty());
         assert_eq!(config.web_fetch.timeout_seconds, 15);
@@ -1858,7 +1872,7 @@ mod tests {
             config.web_search.max_results,
             crate::config::DEFAULT_WEB_SEARCH_MAX_RESULTS
         );
-        assert!(!config.external_skills.enabled);
+        assert!(config.external_skills.enabled);
         assert!(!config.external_skills.require_download_approval);
         assert!(config.external_skills.allowed_domains.is_empty());
         assert!(config.external_skills.blocked_domains.is_empty());

@@ -571,7 +571,7 @@ impl Default for BrowserCompanionToolConfig {
             command: None,
             expected_version: None,
             timeout_seconds: default_browser_companion_timeout_seconds(),
-            allow_private_hosts: false,
+            allow_private_hosts: true,
             allowed_domains: Vec::new(),
             blocked_domains: Vec::new(),
         }
@@ -631,7 +631,7 @@ impl Default for WebToolConfig {
     fn default() -> Self {
         Self {
             enabled: default_enabled(),
-            allow_private_hosts: false,
+            allow_private_hosts: true,
             allowed_domains: Vec::new(),
             blocked_domains: Vec::new(),
             max_bytes: default_web_fetch_max_bytes(),
@@ -655,7 +655,7 @@ impl Default for BrowserToolConfig {
 impl Default for ExternalSkillsConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             require_download_approval: default_require_download_approval(),
             allowed_domains: Vec::new(),
             blocked_domains: default_external_skills_blocked_domains(),
@@ -1487,8 +1487,9 @@ mod tests {
             config.browser_companion.timeout_seconds,
             DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS
         );
+        assert!(config.browser_companion.allow_private_hosts);
         assert!(config.web.enabled);
-        assert!(!config.web.allow_private_hosts);
+        assert!(config.web.allow_private_hosts);
         assert!(config.web.allowed_domains.is_empty());
         assert!(config.web.blocked_domains.is_empty());
         assert_eq!(config.web.timeout_seconds, 15);
@@ -2139,10 +2140,10 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
     }
 
     #[test]
-    fn browser_companion_defaults_to_safe_public_mode() {
+    fn browser_companion_defaults_to_yolo_local_mode() {
         let config = BrowserCompanionToolConfig::default();
         assert!(!config.enabled);
-        assert!(!config.allow_private_hosts);
+        assert!(config.allow_private_hosts);
         assert!(config.allowed_domains.is_empty());
         assert!(config.blocked_domains.is_empty());
         assert_eq!(
@@ -2179,9 +2180,9 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
     }
 
     #[test]
-    fn external_skills_defaults_to_yolo_off_mode() {
+    fn external_skills_defaults_to_yolo_enabled_mode() {
         let config = ExternalSkillsConfig::default();
-        assert!(!config.enabled);
+        assert!(config.enabled);
         assert!(!config.require_download_approval);
         assert!(config.allowed_domains.is_empty());
         assert!(config.blocked_domains.is_empty());
@@ -2389,10 +2390,10 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
     }
 
     #[test]
-    fn web_tool_defaults_to_safe_public_fetch_mode() {
+    fn web_tool_defaults_to_yolo_private_fetch_mode() {
         let config = WebToolConfig::default();
         assert!(config.enabled);
-        assert!(!config.allow_private_hosts);
+        assert!(config.allow_private_hosts);
         assert!(config.allowed_domains.is_empty());
         assert!(config.blocked_domains.is_empty());
         assert_eq!(config.timeout_seconds, 15);
