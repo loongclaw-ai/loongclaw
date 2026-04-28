@@ -33,6 +33,7 @@ mod profile_health_runtime;
 mod profile_state_backend;
 mod profile_state_store;
 mod provider_keyspace;
+mod provider_runtime_status;
 mod provider_validation_runtime;
 mod rate_limit;
 mod request_dispatch_runtime;
@@ -54,6 +55,12 @@ pub use copilot_auth::device_code_login as copilot_device_code_login;
 pub use failover::parse_provider_failover_snapshot_payload;
 pub use failover_telemetry_runtime::ProviderFailoverMetricsSnapshot;
 pub use http_client_runtime::ProviderHttpClientRuntimeMetricsSnapshot;
+pub use provider_runtime_status::{
+    ProviderToolSchemaReadiness, fetch_available_models, is_auth_style_failure_message,
+    provider_auth_ready, provider_failover_metrics_snapshot,
+    provider_http_client_runtime_metrics_snapshot, provider_tool_schema_readiness,
+    supports_turn_streaming_events,
+};
 pub use rate_limit::RateLimitObservation;
 pub use request_executor::{
     ProviderRetryProgress, ProviderRetryProgressCallback, StreamingCallbackData,
@@ -66,56 +73,8 @@ pub use shape::{
     extract_provider_turn_with_scope_and_messages,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderToolSchemaReadiness {
-    pub active_model: String,
-    pub structured_tool_schema_enabled: bool,
-    pub effective_tool_schema_mode: String,
-}
-
-pub fn provider_tool_schema_readiness(config: &LoongConfig) -> ProviderToolSchemaReadiness {
-    let provider = &config.provider;
-    let runtime_contract = provider_runtime_contract(provider);
-    let capability_profile = capability_profile_runtime::ProviderCapabilityProfile::from_provider(
-        provider,
-        runtime_contract,
-    );
-    let active_model = provider.model.clone();
-    let capability = capability_profile.resolve_for_model(active_model.as_str());
-    let effective_tool_schema_mode = match capability.tool_schema_mode {
-        contracts::ProviderToolSchemaMode::Disabled => "disabled",
-        contracts::ProviderToolSchemaMode::EnabledStrict => "enabled_strict",
-        contracts::ProviderToolSchemaMode::EnabledWithDowngradeOnUnsupported => {
-            "enabled_with_downgrade"
-        }
-    };
-    let structured_tool_schema_enabled = capability.turn_tool_schema_enabled();
-
-    ProviderToolSchemaReadiness {
-        active_model,
-        structured_tool_schema_enabled,
-        effective_tool_schema_mode: effective_tool_schema_mode.to_owned(),
-    }
-}
-
-pub fn provider_http_client_runtime_metrics_snapshot() -> ProviderHttpClientRuntimeMetricsSnapshot {
-    http_client_runtime::provider_http_client_runtime_metrics_snapshot()
-}
-
-pub fn provider_failover_metrics_snapshot() -> ProviderFailoverMetricsSnapshot {
-    failover_telemetry_runtime::provider_failover_metrics_snapshot()
-}
-
-pub fn is_auth_style_failure_message(message: &str) -> bool {
-    matches!(
-        profile_health_policy::classify_profile_failure_reason_from_message(message),
-        ProviderFailoverReason::AuthRejected
-    )
-}
-
 #[cfg(test)]
 use auth_profile_runtime::{ProviderAuthProfile, resolve_provider_auth_profiles};
-use catalog_query_runtime::fetch_available_models_with_profiles;
 #[cfg(test)]
 use catalog_runtime::{
     ModelCatalogCache, clear_model_catalog_singleflight_slot,
@@ -127,6 +86,7 @@ use catalog_runtime::{ModelCatalogCacheLookup, fetch_model_catalog_singleflight}
 use contracts::ProviderApiError;
 #[cfg(test)]
 use contracts::ProviderFeatureFamily;
+#[cfg(test)]
 use contracts::provider_runtime_contract;
 #[cfg(test)]
 use contracts::should_disable_tool_schema_for_error;
@@ -417,11 +377,6 @@ pub async fn request_turn_streaming_in_view_with_retry_progress(
     .await
 }
 
-pub fn supports_turn_streaming_events(config: &LoongConfig) -> bool {
-    let runtime_contract = provider_runtime_contract(&config.provider);
-    runtime_contract.supports_turn_streaming_events()
-}
-
 pub async fn request_turn_streaming_in_view(
     config: &LoongConfig,
     session_id: &str,
@@ -435,34 +390,6 @@ pub async fn request_turn_streaming_in_view(
         config, session_id, turn_id, messages, tool_view, binding, on_token, None,
     )
     .await
-}
-
-pub async fn fetch_available_models(config: &LoongConfig) -> CliResult<Vec<String>> {
-    fetch_available_models_with_profiles(config).await
-}
-
-pub async fn provider_auth_ready(config: &LoongConfig) -> bool {
-    if config.provider.resolved_auth_secret().is_some() {
-        return true;
-    }
-
-    for header_name in ["authorization", "x-api-key"] {
-        if config
-            .provider
-            .header_value(header_name)
-            .is_some_and(|value| !value.trim().is_empty())
-        {
-            return true;
-        }
-    }
-
-    if config.provider.kind == crate::config::ProviderKind::Bedrock
-        && let Ok(auth_context) = transport::resolve_request_auth_context(&config.provider).await
-    {
-        return auth_context.has_bedrock_sigv4_fallback();
-    }
-
-    false
 }
 
 #[cfg(test)]

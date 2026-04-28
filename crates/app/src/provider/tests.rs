@@ -239,6 +239,20 @@ async fn provider_auth_ready_accepts_manual_auth_headers_for_custom_provider() {
     assert!(provider_auth_ready(&config).await);
 }
 
+#[tokio::test]
+async fn provider_auth_ready_rejects_blank_manual_auth_headers_for_custom_provider() {
+    let config = LoongConfig {
+        provider: ProviderConfig {
+            kind: ProviderKind::Custom,
+            headers: BTreeMap::from([("authorization".to_owned(), "   ".to_owned())]),
+            ..ProviderConfig::default()
+        },
+        ..LoongConfig::default()
+    };
+
+    assert!(!provider_auth_ready(&config).await);
+}
+
 #[cfg(feature = "provider-bedrock")]
 #[tokio::test]
 async fn provider_auth_ready_accepts_bedrock_sigv4_credentials() {
