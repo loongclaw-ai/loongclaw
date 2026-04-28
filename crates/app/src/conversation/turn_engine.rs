@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use loong_contracts::{KernelError, ToolCoreOutcome, ToolCoreRequest, ToolPlaneError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -20,9 +18,6 @@ use crate::session::repository::{
 use crate::session::store::{self, SessionStoreConfig};
 #[cfg(all(feature = "memory-sqlite", test))]
 use crate::task_progress::TASK_PROGRESS_EVENT_KIND;
-use crate::tools::runtime_events::{
-    ToolRuntimeEvent, ToolRuntimeEventSink, with_tool_runtime_event_sink,
-};
 use crate::tools::{
     ToolApprovalMode, ToolDescriptor, ToolExecutionKind, ToolView,
     delegate_child_tool_view_for_contract, governance_profile_for_descriptor, runtime_tool_view,
@@ -51,6 +46,8 @@ mod decision;
 mod dispatch_default;
 #[path = "turn_engine_dispatcher.rs"]
 mod dispatcher;
+#[path = "turn_engine_execute.rs"]
+mod execute;
 #[path = "turn_engine_outcome.rs"]
 mod outcome;
 #[path = "turn_engine_payload.rs"]
@@ -76,6 +73,7 @@ use dispatcher::GovernedToolPreflight;
 pub use dispatcher::{
     AppToolDispatcher, DefaultAppToolDispatcher, NoopAppToolDispatcher, ToolExecutionPreflight,
 };
+use execute::session_context_from_turn;
 pub(crate) use outcome::KernelFailureClass;
 pub use outcome::{
     ApprovalRequirement, ApprovalRequirementKind, ToolPreflightOutcome, ToolResultEnvelope,
@@ -189,68 +187,6 @@ fn tool_is_auto_eligible(
             && governance.approval_mode == ToolApprovalMode::Never)
 }
 
-async fn execute_tool_intent_via_kernel(
-    request: ToolCoreRequest,
-    kernel_ctx: &KernelContext,
-    trusted_internal_context: bool,
-) -> Result<ToolCoreOutcome, TurnFailure> {
-    let requested_tool_name =
-        crate::tools::canonical_tool_name(request.tool_name.as_str()).to_owned();
-    crate::tools::execute_kernel_tool_request(kernel_ctx, request, trusted_internal_context)
-        .await
-        .map_err(|error| {
-            if requested_tool_name == "tool.invoke"
-                && let KernelError::ToolPlane(ToolPlaneError::Execution(reason)) = &error
-                && let Some(recovery_failure) = tool_invoke_recovery_failure(reason)
-            {
-                return recovery_failure;
-            }
-            if let KernelError::ToolPlane(ToolPlaneError::Execution(reason)) = &error
-                && let Some(stripped) = RepairableToolPreflight::parse(reason.as_str())
-            {
-                let human_reason = RepairableToolPreflight::render(stripped);
-                return TurnFailure::retryable("tool_preflight_denied", human_reason);
-            }
-
-            let reason = render_kernel_error_reason(&error);
-            match classify_kernel_error(&error) {
-                KernelFailureClass::PolicyDenied => {
-                    TurnFailure::policy_denied("kernel_policy_denied", reason)
-                }
-                KernelFailureClass::RetryableExecution => {
-                    TurnFailure::retryable("tool_execution_failed", reason)
-                }
-                KernelFailureClass::NonRetryable => {
-                    TurnFailure::non_retryable("kernel_execution_failed", reason)
-                }
-            }
-        })
-}
-
-struct ObserverToolRuntimeEventSink {
-    observer: ConversationTurnObserverHandle,
-    tool_call_id: String,
-}
-
-impl ToolRuntimeEventSink for ObserverToolRuntimeEventSink {
-    fn emit(&self, event: ToolRuntimeEvent) {
-        let runtime_event = ConversationTurnRuntimeEvent::new(self.tool_call_id.clone(), event);
-
-        self.observer.on_runtime(runtime_event);
-    }
-}
-
-fn build_observer_tool_runtime_event_sink(
-    observer: &ConversationTurnObserverHandle,
-    tool_call_id: &str,
-) -> Arc<dyn ToolRuntimeEventSink> {
-    let observer_sink = ObserverToolRuntimeEventSink {
-        observer: Arc::clone(observer),
-        tool_call_id: tool_call_id.to_owned(),
-    };
-    Arc::new(observer_sink)
-}
-
 /// Single orchestration boundary for tool-call evaluation and execution.
 ///
 /// `evaluate_turn` performs synchronous validation (no execution).
@@ -300,268 +236,6 @@ impl TurnEngine {
             parallel_tool_execution_max_in_flight: parallel_tool_execution_max_in_flight.max(1),
         }
     }
-
-    fn tool_batch_harness(&self) -> ToolBatchHarness<'_> {
-        ToolBatchHarness::new(self)
-    }
-
-    /// Execute a provider turn with policy-gated tool execution through the kernel.
-    ///
-    /// Flow:
-    /// 1. No tool intents → `FinalText`
-    /// 2. Too many intents → `ToolDenied("max_tool_steps_exceeded")`
-    /// 3. Unknown tool → `ToolDenied("tool_not_found: ...")`
-    /// 4. Policy/capability check via kernel → `ToolDenied`
-    /// 5. Execute tool → map result to `TurnResult`
-    pub async fn execute_turn(
-        &self,
-        turn: &ProviderTurn,
-        kernel_ctx: &KernelContext,
-    ) -> TurnResult {
-        self.execute_turn_in_view(
-            turn,
-            &runtime_tool_view(),
-            ConversationRuntimeBinding::kernel(kernel_ctx),
-        )
-        .await
-    }
-
-    pub async fn execute_turn_in_view(
-        &self,
-        turn: &ProviderTurn,
-        tool_view: &ToolView,
-        binding: ConversationRuntimeBinding<'_>,
-    ) -> TurnResult {
-        self.execute_turn_in_context(
-            turn,
-            &session_context_from_turn(turn, tool_view.clone()),
-            &DefaultAppToolDispatcher::runtime(),
-            binding,
-            None,
-        )
-        .await
-    }
-
-    pub async fn execute_turn_with_ingress(
-        &self,
-        turn: &ProviderTurn,
-        binding: ConversationRuntimeBinding<'_>,
-        ingress: Option<&ConversationIngressContext>,
-    ) -> TurnResult {
-        self.execute_turn_in_context(
-            turn,
-            &session_context_from_turn(turn, runtime_tool_view()),
-            &DefaultAppToolDispatcher::runtime(),
-            binding,
-            ingress,
-        )
-        .await
-    }
-
-    pub async fn execute_turn_in_context<D: AppToolDispatcher + ?Sized>(
-        &self,
-        turn: &ProviderTurn,
-        session_context: &SessionContext,
-        app_dispatcher: &D,
-        binding: ConversationRuntimeBinding<'_>,
-        ingress: Option<&ConversationIngressContext>,
-    ) -> TurnResult {
-        self.execute_turn_in_context_with_trace(
-            turn,
-            session_context,
-            app_dispatcher,
-            binding,
-            ingress,
-            None,
-        )
-        .await
-        .0
-    }
-
-    pub(crate) async fn execute_turn_in_context_with_trace<D: AppToolDispatcher + ?Sized>(
-        &self,
-        turn: &ProviderTurn,
-        session_context: &SessionContext,
-        app_dispatcher: &D,
-        binding: ConversationRuntimeBinding<'_>,
-        ingress: Option<&ConversationIngressContext>,
-        observer: Option<&ConversationTurnObserverHandle>,
-    ) -> (TurnResult, Option<ToolBatchExecutionTrace>) {
-        match self.validate_turn_in_context(turn, session_context) {
-            Ok(TurnValidation::FinalText(text)) => return (TurnResult::FinalText(text), None),
-            Err(failure) => return (TurnResult::ToolDenied(failure), None),
-            Ok(TurnValidation::ToolExecutionRequired) => {}
-        }
-
-        let tool_batch_harness = self.tool_batch_harness();
-        let mut trace = tool_batch_harness.trace_empty_batch(turn.tool_intents.len());
-        let mut prepared = Vec::new();
-        let mut autonomy_budget_state = AutonomyTurnBudgetState::default();
-        for (intent_sequence, intent) in turn.tool_intents.iter().enumerate() {
-            match self
-                .prepare_tool_intent(
-                    intent,
-                    intent_sequence,
-                    session_context,
-                    app_dispatcher,
-                    binding,
-                    &autonomy_budget_state,
-                    ingress,
-                )
-                .await
-            {
-                Ok(prepared_intent) => {
-                    let decision_record = build_tool_decision_trace_record(
-                        &prepared_intent.intent,
-                        prepared_intent.decision.clone(),
-                    );
-                    trace.decision_records.push(decision_record);
-                    autonomy_budget_state.record_action(prepared_intent.capability_action_class);
-                    prepared.push(prepared_intent);
-                }
-                Err(failure) => {
-                    let decision_record =
-                        build_tool_decision_trace_record(&failure.intent, failure.decision);
-                    trace.decision_records.push(decision_record);
-                    let intent_outcome =
-                        build_tool_intent_failure_trace(&failure.intent, &failure.turn_result);
-                    if let Some(intent_outcome) = intent_outcome {
-                        trace.intent_outcomes.push(intent_outcome);
-                    }
-                    return (failure.turn_result, Some(trace));
-                }
-            }
-        }
-        let batch_segments = tool_batch_harness.prepared_batch_segments(&prepared);
-        tool_batch_harness.populate_trace_segments(&mut trace, &batch_segments);
-
-        let outputs = match tool_batch_harness
-            .execute_prepared_batch(
-                &prepared,
-                &batch_segments,
-                session_context,
-                app_dispatcher,
-                binding,
-                &mut trace,
-                observer,
-            )
-            .await
-        {
-            Ok(outputs) => outputs,
-            Err(result) => return (result, Some(trace)),
-        };
-
-        (TurnResult::FinalText(outputs.join("\n")), Some(trace))
-    }
-
-    async fn prepare_tool_intent<D: AppToolDispatcher + ?Sized>(
-        &self,
-        intent: &ToolIntent,
-        intent_sequence: usize,
-        session_context: &SessionContext,
-        app_dispatcher: &D,
-        binding: ConversationRuntimeBinding<'_>,
-        budget_state: &AutonomyTurnBudgetState,
-        ingress: Option<&ConversationIngressContext>,
-    ) -> Result<PreparedToolIntent, PreparedToolIntentFailure> {
-        let memory_config = app_dispatcher
-            .memory_config()
-            .unwrap_or(store::current_session_store_config());
-        let preparation_harness = ToolIntentPreparationHarness::new(
-            session_context,
-            memory_config,
-            app_dispatcher,
-            binding,
-            budget_state,
-            ingress,
-        );
-        preparation_harness.prepare(intent, intent_sequence).await
-    }
-
-    async fn execute_prepared_tool_intent<D: AppToolDispatcher + ?Sized>(
-        &self,
-        prepared_intent: &PreparedToolIntent,
-        session_context: &SessionContext,
-        app_dispatcher: &D,
-        binding: ConversationRuntimeBinding<'_>,
-        observer: Option<&ConversationTurnObserverHandle>,
-    ) -> Result<ToolCoreOutcome, TurnResult> {
-        match prepared_intent.execution_kind {
-            ToolExecutionKind::Core => {
-                let Some(kernel_ctx) = binding.kernel_context() else {
-                    return Err(TurnResult::policy_denied(
-                        "no_kernel_context",
-                        "no_kernel_context",
-                    ));
-                };
-                let execution = execute_tool_intent_via_kernel(
-                    prepared_intent.request.clone(),
-                    kernel_ctx,
-                    prepared_intent.trusted_internal_context,
-                );
-                let outcome = match observer {
-                    Some(observer) => {
-                        let sink = build_observer_tool_runtime_event_sink(
-                            observer,
-                            prepared_intent.intent.tool_call_id.as_str(),
-                        );
-
-                        with_tool_runtime_event_sink(sink, execution).await
-                    }
-                    None => execution.await,
-                };
-
-                outcome.map_err(turn_result_from_tool_execution_failure)
-            }
-            ToolExecutionKind::App => match app_dispatcher
-                .execute_app_tool(session_context, prepared_intent.request.clone(), binding)
-                .await
-            {
-                Ok(outcome) => Ok(outcome),
-                Err(reason) if reason.starts_with("tool_not_visible:") => {
-                    Err(TurnResult::policy_denied("tool_not_visible", reason))
-                }
-                Err(reason)
-                    if reason.starts_with("tool_not_found:")
-                        || reason.starts_with("app_tool_not_found:") =>
-                {
-                    let policy_reason = provider_tool_denial_reason(
-                        reason.as_str(),
-                        prepared_intent.intent.source.as_str(),
-                    );
-                    let failure = if prepared_intent.intent.source.starts_with("provider_") {
-                        TurnFailure::policy_denied_with_discovery_recovery(
-                            "tool_not_found",
-                            policy_reason,
-                        )
-                    } else {
-                        TurnFailure::policy_denied("tool_not_found", policy_reason)
-                    };
-                    Err(TurnResult::ToolDenied(failure))
-                }
-                Err(reason) if reason.starts_with("app_tool_disabled:") => {
-                    Err(TurnResult::policy_denied("app_tool_disabled", reason))
-                }
-                Err(reason) if reason.starts_with("app_tool_denied:") => {
-                    let human_reason = render_app_tool_denied_reason(reason.as_str());
-                    Err(TurnResult::policy_denied("app_tool_denied", human_reason))
-                }
-                Err(reason) => Err(TurnResult::non_retryable_tool_error(
-                    "app_tool_execution_failed",
-                    reason,
-                )),
-            },
-        }
-    }
-}
-
-fn session_context_from_turn(turn: &ProviderTurn, tool_view: ToolView) -> SessionContext {
-    let session_id = turn
-        .tool_intents
-        .first()
-        .map(|intent| intent.session_id.as_str())
-        .unwrap_or("default");
-    SessionContext::root_with_tool_view(session_id, tool_view)
 }
 
 #[cfg(test)]
@@ -686,6 +360,25 @@ mod tests {
                 .visibility,
             SessionVisibility::SelfOnly
         );
+    }
+
+    #[test]
+    fn session_context_from_turn_uses_first_intent_session_id() {
+        let turn = ProviderTurn {
+            assistant_text: String::new(),
+            tool_intents: vec![ToolIntent {
+                tool_name: "shell.exec".to_owned(),
+                args_json: json!({"command": "echo hello"}),
+                source: "assistant".to_owned(),
+                session_id: "session-from-first-intent".to_owned(),
+                turn_id: "turn-1".to_owned(),
+                tool_call_id: "call-1".to_owned(),
+            }],
+            raw_meta: Value::Null,
+        };
+
+        let session_context = session_context_from_turn(&turn, runtime_tool_view());
+        assert_eq!(session_context.session_id, "session-from-first-intent");
     }
 
     #[test]
