@@ -32,10 +32,9 @@ use crate::tools::runtime_events::{
     ToolRuntimeEvent, ToolRuntimeEventSink, with_tool_runtime_event_sink,
 };
 use crate::tools::{
-    ResolvedToolExecution, ToolApprovalMode, ToolDescriptor, ToolExecutionKind,
-    ToolSchedulingClass, ToolView, delegate_child_tool_view_for_contract,
-    governance_profile_for_descriptor, runtime_tool_view, runtime_tool_view_for_config,
-    tool_catalog,
+    ToolApprovalMode, ToolDescriptor, ToolExecutionKind, ToolSchedulingClass, ToolView,
+    delegate_child_tool_view_for_contract, governance_profile_for_descriptor, runtime_tool_view,
+    runtime_tool_view_for_config, tool_catalog,
 };
 #[cfg(feature = "memory-sqlite")]
 use crate::trust::{approval_required_trust_event, embed_trust_event_payload};
@@ -58,6 +57,8 @@ mod payload;
 mod result;
 #[path = "turn_engine_support.rs"]
 mod support;
+#[path = "turn_engine_target.rs"]
+mod target;
 #[path = "turn_engine_trace.rs"]
 mod trace;
 use payload::augment_tool_payload_for_kernel;
@@ -75,6 +76,7 @@ use support::{
     generic_allow_tool_decision, render_app_tool_denied_reason,
     with_runtime_ready_browser_companion_tools,
 };
+use target::{prepare_conversation_kernel_tool_request, resolve_effective_tool_metadata};
 pub(crate) use trace::{
     ToolBatchExecutionIntentStatus, ToolBatchExecutionIntentTrace, ToolBatchExecutionMode,
     ToolBatchExecutionSegmentTrace, ToolBatchExecutionTrace, ToolDecisionTraceRecord,
@@ -2647,163 +2649,6 @@ impl<'a> ToolBatchHarness<'a> {
 
         Ok(results.into_iter().map(|(_, output)| output).collect())
     }
-}
-
-#[derive(Debug, Clone)]
-struct EffectiveToolTarget {
-    execution_kind: ToolExecutionKind,
-    request: ToolCoreRequest,
-    intent: ToolIntent,
-    tool_name: String,
-}
-
-#[derive(Debug, Clone)]
-struct EffectiveToolMetadata {
-    execution_kind: ToolExecutionKind,
-    request: ToolCoreRequest,
-    intent: ToolIntent,
-    tool_name: String,
-    descriptor: ToolDescriptor,
-    capability_action_class: crate::tools::CapabilityActionClass,
-    scheduling_class: ToolSchedulingClass,
-}
-
-#[derive(Debug, Clone)]
-struct EffectiveToolMetadataError {
-    effective_target: EffectiveToolTarget,
-}
-
-/// Resolve the runtime execution target for one provider-emitted tool intent.
-///
-/// Most tools execute as-is. `tool.invoke` is special: it may need to borrow
-/// metadata from the discovered inner tool and, for app tools or shell exec,
-/// rebind the executable request itself so downstream governance sees the real
-/// operation rather than only the wrapper.
-fn resolve_effective_tool_target(
-    resolved_tool: ResolvedToolExecution,
-    request: ToolCoreRequest,
-    normalized_intent: ToolIntent,
-    original_intent: &ToolIntent,
-) -> EffectiveToolTarget {
-    if resolved_tool.canonical_name != "tool.invoke" {
-        let execution_kind = resolved_tool.execution_kind;
-        let tool_name = resolved_tool.canonical_name.to_owned();
-
-        return EffectiveToolTarget {
-            execution_kind,
-            request,
-            intent: normalized_intent,
-            tool_name,
-        };
-    }
-
-    let invoke_resolution = crate::tools::resolve_tool_invoke_request(&request);
-
-    let Ok((inner_resolved, inner_request)) = invoke_resolution else {
-        let execution_kind = resolved_tool.execution_kind;
-        let tool_name = resolved_tool.canonical_name.to_owned();
-
-        return EffectiveToolTarget {
-            execution_kind,
-            request,
-            intent: normalized_intent,
-            tool_name,
-        };
-    };
-
-    let inner_intent = ToolIntent {
-        tool_name: inner_resolved.canonical_name.to_owned(),
-        args_json: inner_request.payload.clone(),
-        source: original_intent.source.clone(),
-        session_id: original_intent.session_id.clone(),
-        turn_id: original_intent.turn_id.clone(),
-        tool_call_id: original_intent.tool_call_id.clone(),
-    };
-
-    let rebind_for_app_tool = inner_resolved.execution_kind == ToolExecutionKind::App;
-    let inner_tool_name = inner_resolved.canonical_name;
-    let rebind_for_shell_exec = inner_tool_name == crate::tools::SHELL_EXEC_TOOL_NAME;
-    let should_rebind_request = rebind_for_app_tool || rebind_for_shell_exec;
-
-    if should_rebind_request {
-        let execution_kind = inner_resolved.execution_kind;
-        let tool_name = inner_resolved.canonical_name.to_owned();
-
-        return EffectiveToolTarget {
-            execution_kind,
-            request: inner_request,
-            intent: inner_intent,
-            tool_name,
-        };
-    }
-
-    let execution_kind = resolved_tool.execution_kind;
-    let tool_name = inner_resolved.canonical_name.to_owned();
-
-    EffectiveToolTarget {
-        execution_kind,
-        request,
-        intent: inner_intent,
-        tool_name,
-    }
-}
-
-fn resolve_effective_tool_descriptor(effective_tool_name: &str) -> Option<ToolDescriptor> {
-    let catalog = crate::tools::tool_catalog();
-    let direct_descriptor = catalog.resolve(effective_tool_name);
-    direct_descriptor.copied()
-}
-
-fn resolve_effective_tool_metadata(
-    resolved_tool: ResolvedToolExecution,
-    request: ToolCoreRequest,
-    normalized_intent: ToolIntent,
-    original_intent: &ToolIntent,
-) -> Result<EffectiveToolMetadata, Box<EffectiveToolMetadataError>> {
-    let effective_target =
-        resolve_effective_tool_target(resolved_tool, request, normalized_intent, original_intent);
-    let descriptor = resolve_effective_tool_descriptor(effective_target.tool_name.as_str());
-    let Some(descriptor) = descriptor else {
-        let error = EffectiveToolMetadataError { effective_target };
-
-        return Err(Box::new(error));
-    };
-
-    let capability_action_class = descriptor.capability_action_class();
-    let scheduling_class = descriptor.scheduling_class();
-
-    Ok(EffectiveToolMetadata {
-        execution_kind: effective_target.execution_kind,
-        request: effective_target.request,
-        intent: effective_target.intent,
-        tool_name: effective_target.tool_name,
-        descriptor,
-        capability_action_class,
-        scheduling_class,
-    })
-}
-
-fn prepare_conversation_kernel_tool_request(
-    request: ToolCoreRequest,
-    binding: ConversationRuntimeBinding<'_>,
-    _intent: &ToolIntent,
-) -> ToolCoreRequest {
-    let Some(kernel_ctx) = binding.kernel_context() else {
-        return request;
-    };
-
-    let canonical_tool_name = crate::tools::canonical_tool_name(request.tool_name.as_str());
-    if canonical_tool_name != "tool.search" {
-        return request;
-    }
-
-    crate::tools::prepare_kernel_tool_request(
-        request,
-        &kernel_ctx.token.allowed_capabilities,
-        None,
-        None,
-        None,
-    )
 }
 
 impl TurnEngine {
