@@ -594,7 +594,7 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
                 value: query_search_detail,
             },
             loong_app::tui_surface::TuiKeyValueSpec::Plain {
-                key: "web boundary".to_owned(),
+                key: "access boundary".to_owned(),
                 value: web_boundary_note,
             },
         ],
@@ -1324,7 +1324,7 @@ mod tests {
         assert!(rendered.contains("browser page"));
         assert!(rendered.contains("managed browser"));
         assert!(rendered.contains("governance"));
-        assert!(rendered.contains("web boundary"));
+        assert!(rendered.contains("access boundary"));
         assert!(
             rendered.contains("ordinary network access and browser lanes stay separately governed")
         );

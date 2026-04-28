@@ -2135,7 +2135,7 @@ fn provider_credentials_doctor_check(
 fn web_search_provider_doctor_check(config: &mvp::config::LoongConfig) -> DoctorCheck {
     if !config.tools.web_search.enabled {
         return DoctorCheck {
-            name: "web search provider".to_owned(),
+            name: "query search provider".to_owned(),
             level: DoctorCheckLevel::Pass,
             detail: "tools.web_search.enabled=false".to_owned(),
         };
@@ -2156,7 +2156,7 @@ fn web_search_provider_doctor_check(config: &mvp::config::LoongConfig) -> Doctor
             .unwrap_or_else(|| provider_label.clone());
 
         return DoctorCheck {
-            name: "web search provider".to_owned(),
+            name: "query search provider".to_owned(),
             level: DoctorCheckLevel::Pass,
             detail,
         };
@@ -2172,7 +2172,7 @@ fn web_search_provider_doctor_check(config: &mvp::config::LoongConfig) -> Doctor
         .unwrap_or_else(|| provider_label.clone());
 
     DoctorCheck {
-        name: "web search provider".to_owned(),
+        name: "query search provider".to_owned(),
         level: DoctorCheckLevel::Warn,
         detail,
     }
@@ -2775,7 +2775,7 @@ fn build_doctor_next_steps_with_channel_surfaces_and_path_env(
 
     if checks
         .iter()
-        .any(|check| check.name == "web search provider" && check.level != DoctorCheckLevel::Pass)
+        .any(|check| check.name == "query search provider" && check.level != DoctorCheckLevel::Pass)
     {
         let configured_provider = config.tools.web_search.default_provider.as_str();
         let normalized_provider = mvp::config::normalize_web_search_provider(configured_provider);
@@ -2786,14 +2786,14 @@ fn build_doctor_next_steps_with_channel_surfaces_and_path_env(
         if let Some(default_env_name) = default_env_name {
             push_unique_step(
                 &mut steps,
-                format!("Set web search credential in env: {default_env_name}"),
+                format!("Set query search credential in env: {default_env_name}"),
             );
         }
 
         push_unique_step(
             &mut steps,
             format!(
-                "Or rerun onboarding to review the web search provider choice: {rerun_onboard_command}"
+                "Or rerun onboarding to review the query search provider choice: {rerun_onboard_command}"
             ),
         );
     }
@@ -6419,7 +6419,7 @@ mod tests {
 
         let check = web_search_provider_doctor_check(&config);
 
-        assert_eq!(check.name, "web search provider");
+        assert_eq!(check.name, "query search provider");
         assert_eq!(check.level, DoctorCheckLevel::Warn);
         assert!(check.detail.contains("Firecrawl Search"));
         assert!(check.detail.contains("FIRECRAWL_API_KEY"));
@@ -6439,7 +6439,7 @@ mod tests {
 
         let check = web_search_provider_doctor_check(&config);
 
-        assert_eq!(check.name, "web search provider");
+        assert_eq!(check.name, "query search provider");
         assert_eq!(check.level, DoctorCheckLevel::Pass);
         assert!(check.detail.contains("Firecrawl Search"));
         assert!(check.detail.contains("FIRECRAWL_API_KEY"));
@@ -6455,7 +6455,7 @@ mod tests {
 
         let check = web_search_provider_doctor_check(&config);
 
-        assert_eq!(check.name, "web search provider");
+        assert_eq!(check.name, "query search provider");
         assert_eq!(check.level, DoctorCheckLevel::Pass);
         assert_eq!(check.detail, "tools.web_search.enabled=false");
     }
@@ -6537,7 +6537,7 @@ mod tests {
     #[test]
     fn build_doctor_next_steps_guides_missing_web_search_credentials() {
         let checks = vec![DoctorCheck {
-            name: "web search provider".to_owned(),
+            name: "query search provider".to_owned(),
             level: DoctorCheckLevel::Warn,
             detail: "Firecrawl Search: FIRECRAWL_API_KEY (expected). web.search will stay unavailable until the provider credential is supplied".to_owned(),
         }];
@@ -6557,18 +6557,18 @@ mod tests {
         let rerun_onboard_command =
             crate::cli_handoff::format_subcommand_with_config("onboard", "/tmp/loong.toml");
         let expected_onboard_step = format!(
-            "Or rerun onboarding to review the web search provider choice: {rerun_onboard_command}"
+            "Or rerun onboarding to review the query search provider choice: {rerun_onboard_command}"
         );
 
         assert!(
             next_steps
                 .iter()
-                .any(|step| step == "Set web search credential in env: FIRECRAWL_API_KEY"),
+                .any(|step| step == "Set query search credential in env: FIRECRAWL_API_KEY"),
             "doctor should surface the missing Firecrawl env binding as a concrete next step: {next_steps:#?}"
         );
         assert!(
             next_steps.iter().any(|step| step == &expected_onboard_step),
-            "doctor should keep the onboarding recovery path explicit for web search credentials: {next_steps:#?}"
+            "doctor should keep the onboarding recovery path explicit for query search credentials: {next_steps:#?}"
         );
     }
 
