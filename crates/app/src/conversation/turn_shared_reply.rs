@@ -6,7 +6,9 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolDrivenReplyBaseDecision {
-    FinalizeDirect { reply: String },
+    FinalizeDirect {
+        reply: String,
+    },
     RequireFollowup {
         raw_reply: String,
         payload: ToolDrivenFollowupPayload,

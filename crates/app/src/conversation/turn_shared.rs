@@ -26,78 +26,77 @@ mod external_skill;
 mod followup_tail;
 #[path = "turn_shared_payload.rs"]
 mod payload;
-#[path = "turn_shared_request.rs"]
-mod request;
+#[path = "turn_shared_prompt.rs"]
+mod prompt;
 #[path = "turn_shared_reply.rs"]
 mod reply;
+#[path = "turn_shared_request.rs"]
+mod request;
 #[path = "turn_shared_tool_result.rs"]
 mod tool_result;
 pub use approval::{
-    ApprovalPromptActionId, ApprovalPromptActionView, ApprovalPromptLocale,
-    ApprovalPromptMarker, ApprovalPromptView, format_approval_required_reply,
-    normalize_approval_prompt_control_input, parse_approval_prompt_action_input,
-    parse_approval_prompt_view,
+    ApprovalPromptActionId, ApprovalPromptActionView, ApprovalPromptLocale, ApprovalPromptMarker,
+    ApprovalPromptView, format_approval_required_reply, normalize_approval_prompt_control_input,
+    parse_approval_prompt_action_input, parse_approval_prompt_view,
 };
+pub(crate) use control::sanitize_reply_text;
+#[cfg(test)]
+pub(crate) use control::{MISSING_TOOL_CALL_REPLY_EXCERPT_CHARS, strip_think_tags};
 pub use control::{
     ParsedToolDrivenContinuationReply, ToolDrivenContinuationState,
     missing_tool_call_followup_payload, next_conversation_turn_id,
     parse_tool_driven_continuation_reply, tool_loop_circuit_breaker_reply,
 };
+pub(crate) use control::{
+    ToolDrivenFollowupContractMode, render_tool_followup_continuation_contract,
+};
 pub use external_skill::{
     ExternalSkillInvokeContext, external_skill_invoke_context_from_payload_summary,
     parse_external_skill_invoke_context,
 };
-pub(crate) use control::{
-    ToolDrivenFollowupContractMode, render_tool_followup_continuation_contract,
-};
-#[cfg(test)]
-pub(crate) use control::{MISSING_TOOL_CALL_REPLY_EXCERPT_CHARS, strip_think_tags};
-pub use payload::{
-    ToolDrivenFollowupKind, ToolDrivenFollowupLabel, ToolDrivenFollowupPayload,
-    ToolDrivenFollowupTextRef, ToolResultLine, tool_driven_followup_payload,
-};
-#[cfg(test)]
-pub use payload::turn_failure_supports_discovery_recovery;
-#[cfg(test)]
-pub use payload::ToolDrivenFollowupMessageOwned;
-pub use reply::{
-    ToolDrivenReplyBaseDecision, ToolDrivenReplyPhase, user_requested_raw_tool_output,
-};
-pub(crate) use request::{
-    effective_followup_tool_name, effective_followup_visible_tool_name,
-    summarize_provider_lane_tool_request, summarize_single_tool_followup_request,
-};
-#[cfg(test)]
-pub(crate) use request::summarize_failed_provider_lane_tool_request;
-#[cfg(test)]
-pub use reply::{ToolDrivenReplyKernel, compose_assistant_reply};
-pub use followup_tail::{build_tool_driven_followup_tail_with_request_summary, build_tool_loop_guard_tail};
+pub(crate) use followup_tail::build_tool_driven_followup_tail_with_request_summary_and_contract;
 #[cfg(test)]
 pub use followup_tail::{
     build_tool_driven_followup_tail, build_tool_failure_followup_tail,
     build_tool_result_followup_tail,
 };
-pub(crate) use followup_tail::{
-    build_tool_driven_followup_tail_with_request_summary_and_contract,
+pub use followup_tail::{
+    build_tool_driven_followup_tail_with_request_summary, build_tool_loop_guard_tail,
 };
+#[cfg(test)]
+pub use payload::ToolDrivenFollowupMessageOwned;
+#[cfg(test)]
+pub use payload::turn_failure_supports_discovery_recovery;
+pub use payload::{
+    ToolDrivenFollowupKind, ToolDrivenFollowupLabel, ToolDrivenFollowupPayload,
+    ToolDrivenFollowupTextRef, ToolResultLine, tool_driven_followup_payload,
+};
+#[cfg(test)]
+pub use prompt::build_tool_followup_user_prompt;
+pub use prompt::{
+    EXTERNAL_SKILL_FOLLOWUP_PROMPT, TOOL_LOOP_GUARD_PROMPT, TOOL_TRUNCATION_HINT_PROMPT,
+    build_discovery_recovery_followup_user_prompt, build_tool_followup_user_prompt_with_context,
+    join_non_empty_lines,
+};
+pub(crate) use prompt::{
+    append_followup_preface, append_followup_warning, combine_followup_extra_context,
+};
+pub use reply::{
+    ToolDrivenReplyBaseDecision, ToolDrivenReplyPhase, user_requested_raw_tool_output,
+};
+#[cfg(test)]
+pub use reply::{ToolDrivenReplyKernel, compose_assistant_reply};
+#[cfg(test)]
+pub(crate) use request::summarize_failed_provider_lane_tool_request;
+pub(crate) use request::{
+    effective_followup_tool_name, effective_followup_visible_tool_name,
+    summarize_provider_lane_tool_request, summarize_single_tool_followup_request,
+};
+use tool_result::{parse_tool_result_continuation, parse_tool_result_followup_context};
 pub use tool_result::{reduce_followup_payload_for_model, tool_result_contains_truncation_signal};
-use tool_result::{
-    followup_prompt_needs_truncation_hint, followup_prompt_uses_discovery_guidance,
-    parse_tool_result_continuation, parse_tool_result_followup_context,
-    proactive_followup_continuation_context,
-};
-pub(crate) use control::sanitize_reply_text;
-
-pub const TOOL_FOLLOWUP_PROMPT: &str = "Use the tool result above to continue satisfying the original user request. Prefer the next bounded tool call or completion step over narrating intermediate status. Only stop to answer in natural language when the request is actually complete, blocked on a real approval or input gate, or the available evidence is already sufficient. Do not include raw JSON, payload wrappers, or status markers unless the user explicitly asks for raw output.";
-pub const DISCOVERY_RESULT_FOLLOWUP_PROMPT: &str = "The tool result above is a discovery result, not the final evidence. Choose the best matching discovered tool, reuse its lease when invoking it, continue with the next tool call needed to satisfy the original user request, and only answer directly if the discovery results already contain the final user-facing information.";
-pub const TOOL_TRUNCATION_HINT_PROMPT: &str = "One or more tool results were truncated for context safety. If exact missing details are needed, explicitly state the truncation and request a narrower rerun.";
-pub const EXTERNAL_SKILL_FOLLOWUP_PROMPT: &str = "An external skill has been loaded into runtime context. Follow its instructions while answering the original user request. Do not restate the skill verbatim unless the user explicitly asks for it.";
-pub const DISCOVERY_RECOVERY_FOLLOWUP_PROMPT: &str = "The previous tool call could not be executed as requested. If you still need a hidden or discoverable capability, call tool.search with a short natural-language description of the missing capability. If tool.search returns a grouped hidden surface such as `skills`, `agent`, or `channel`, do not call that surface name directly; reuse its fresh lease through tool.invoke and place the requested operation inside payload.arguments. Otherwise, provide the best possible answer with the currently available evidence.";
-pub const TOOL_LOOP_GUARD_PROMPT: &str = "Detected tool-loop behavior across rounds. Do not repeat identical or cyclical tool calls without new evidence. Adjust strategy (different tool, arguments, or decomposition) or provide the best possible final answer and clearly state remaining gaps.";
 const FILE_READ_FOLLOWUP_CONTENT_PREVIEW_CHARS: usize = 384;
 const SHELL_FOLLOWUP_STDIO_PREVIEW_CHARS: usize = 384;
 const SHELL_FOLLOWUP_STDIO_OMISSION_MARKER: &str = "\n[... omitted ...]\n";
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -136,86 +135,6 @@ pub fn decide_provider_turn_request_action(
         },
     }
 }
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub fn build_tool_followup_user_prompt(
-    user_input: &str,
-    loop_warning_reason: Option<&str>,
-    tool_result_text: Option<&str>,
-    rendered_tool_result_text: Option<&str>,
-    _tool_request_summary: Option<&str>,
-) -> String {
-    build_tool_followup_user_prompt_with_context(
-        user_input,
-        loop_warning_reason,
-        tool_result_text,
-        rendered_tool_result_text,
-        None,
-    )
-}
-
-pub fn build_tool_followup_user_prompt_with_context(
-    user_input: &str,
-    loop_warning_reason: Option<&str>,
-    tool_result_text: Option<&str>,
-    rendered_tool_result_text: Option<&str>,
-    extra_context: Option<&str>,
-) -> String {
-    let prompt =
-        if followup_prompt_uses_discovery_guidance(tool_result_text, rendered_tool_result_text) {
-            DISCOVERY_RESULT_FOLLOWUP_PROMPT
-        } else {
-            TOOL_FOLLOWUP_PROMPT
-        };
-
-    let mut sections = vec![prompt.to_owned()];
-    if let Some(reason) = loop_warning_reason {
-        sections.push(format!(
-            "Loop warning:\n{reason}\nAvoid repeating the same tool call with unchanged results. Try a different tool, adjust arguments, or provide a best-effort final answer if evidence is sufficient."
-        ));
-    }
-    if followup_prompt_needs_truncation_hint(tool_result_text, rendered_tool_result_text) {
-        sections.push(TOOL_TRUNCATION_HINT_PROMPT.to_owned());
-    }
-    if let Some(continuation_guidance) =
-        proactive_followup_continuation_context(tool_result_text, rendered_tool_result_text)
-    {
-        sections.push(continuation_guidance);
-    }
-    if let Some(extra_context) = extra_context {
-        sections.push(extra_context.to_owned());
-    }
-    sections.push(format!("Original request:\n{user_input}"));
-    sections.join("\n\n")
-}
-
-fn combine_followup_extra_context(parts: &[Option<&str>]) -> Option<String> {
-    let joined = parts
-        .iter()
-        .flatten()
-        .map(|part| part.trim())
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    (!joined.is_empty()).then(|| joined.join("\n\n"))
-}
-
-pub fn build_discovery_recovery_followup_user_prompt(
-    user_input: &str,
-    loop_warning_reason: Option<&str>,
-    recovery_reason: &str,
-) -> String {
-    let mut sections = vec![DISCOVERY_RECOVERY_FOLLOWUP_PROMPT.to_owned()];
-    sections.push(format!("Recovery reason:\n{recovery_reason}"));
-    if let Some(reason) = loop_warning_reason {
-        sections.push(format!(
-            "Loop warning:\n{reason}\nAvoid repeating identical unavailable tool calls. Search for the missing capability or change strategy."
-        ));
-    }
-    sections.push(format!("Original request:\n{user_input}"));
-    sections.join("\n\n")
-}
-
 
 pub async fn request_completion_with_raw_fallback_detailed<R: ConversationRuntime + ?Sized>(
     runtime: &R,
@@ -266,35 +185,6 @@ pub async fn request_completion_with_raw_fallback<R: ConversationRuntime + ?Size
     .reply
 }
 
-pub fn join_non_empty_lines(parts: &[&str]) -> String {
-    parts
-        .iter()
-        .map(|part| part.trim())
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn append_followup_preface(messages: &mut Vec<Value>, assistant_preface: &str) {
-    let preface = assistant_preface.trim();
-    if !preface.is_empty() {
-        messages.push(serde_json::json!({
-            "role": "assistant",
-            "content": preface,
-        }));
-    }
-}
-
-fn append_followup_warning(messages: &mut Vec<Value>, loop_warning_reason: Option<&str>) {
-    if let Some(reason) = loop_warning_reason {
-        messages.push(serde_json::json!({
-            "role": "assistant",
-            "content": format!("[tool_loop_warning]\n{reason}"),
-        }));
-    }
-}
-
-
 #[cfg(test)]
 pub(crate) fn parse_tool_result_followup_for_test(messages: &[Value]) -> (Value, Value) {
     let assistant_tool_result = messages
@@ -330,10 +220,10 @@ pub(crate) fn parse_tool_result_followup_for_test(messages: &[Value]) -> (Value,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use crate::conversation::turn_engine::{
         ApprovalRequirement, ApprovalRequirementKind, TurnFailure, TurnResult,
     };
+    use async_trait::async_trait;
     use serde_json::json;
 
     #[test]
@@ -560,7 +450,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_completion_with_raw_fallback_detailed_preserves_state_and_uses_raw_reply_body() {
+    async fn request_completion_with_raw_fallback_detailed_preserves_state_and_uses_raw_reply_body()
+    {
         #[derive(Clone)]
         struct StateOnlyRuntime;
 
@@ -1345,7 +1236,7 @@ mod tests {
             .and_then(|message| message.get("content"))
             .and_then(Value::as_str)
             .expect("user followup prompt should exist");
-        assert!(user_prompt.contains(DISCOVERY_RECOVERY_FOLLOWUP_PROMPT));
+        assert!(user_prompt.contains(prompt::DISCOVERY_RECOVERY_FOLLOWUP_PROMPT));
         assert!(user_prompt.contains("Recovery reason:\nbounded-recovery"));
         assert!(!user_prompt.contains("tool_not_found"));
         assert!(
@@ -1692,6 +1583,20 @@ mod tests {
     }
 
     #[test]
+    fn followup_prompt_appends_extra_context_without_dropping_original_request() {
+        let prompt = build_tool_followup_user_prompt_with_context(
+            "summarize this result",
+            None,
+            None,
+            None,
+            Some("External skill context:\nUse terse output."),
+        );
+
+        assert!(prompt.contains("External skill context:\nUse terse output."));
+        assert!(prompt.contains("Original request:\nsummarize this result"));
+    }
+
+    #[test]
     fn followup_prompt_uses_discovery_guidance_for_discovery_shaped_results() {
         let payload_summary = json!({
             "query": "latest ai news",
@@ -1723,7 +1628,7 @@ mod tests {
             None,
         );
 
-        assert!(prompt.contains(DISCOVERY_RESULT_FOLLOWUP_PROMPT));
+        assert!(prompt.contains(prompt::DISCOVERY_RESULT_FOLLOWUP_PROMPT));
         assert!(prompt.contains("Original request:\nfind the latest ai news and summarize it"));
     }
 

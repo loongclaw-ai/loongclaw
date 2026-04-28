@@ -1,8 +1,8 @@
 use serde_json::Value;
 use std::path::PathBuf;
 
-use super::tool_result::envelope_uses_external_skill_context;
 use super::ToolResultLine;
+use super::tool_result::envelope_uses_external_skill_context;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalSkillInvokeContext {

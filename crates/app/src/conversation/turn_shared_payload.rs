@@ -2,7 +2,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::super::turn_engine::{ToolResultEnvelope, TurnFailure, TurnResult};
-use super::{parse_tool_result_continuation, parse_tool_result_followup_context, sanitize_reply_text};
+use super::{
+    parse_tool_result_continuation, parse_tool_result_followup_context, sanitize_reply_text,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolDrivenFollowupPayload {

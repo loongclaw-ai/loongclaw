@@ -4,14 +4,12 @@ use super::super::tool_input_contract::{
     render_tool_input_repair_guidance, render_tool_input_repair_guidance_from_reason,
     repair_guidance_visible_tool_name,
 };
-use super::tool_result::{
-    followup_prompt_needs_truncation_hint,
-};
+use super::tool_result::followup_prompt_needs_truncation_hint;
 use super::{
     EXTERNAL_SKILL_FOLLOWUP_PROMPT, TOOL_LOOP_GUARD_PROMPT, TOOL_TRUNCATION_HINT_PROMPT,
-    ToolDrivenFollowupLabel,
-    ToolDrivenFollowupPayload, ToolDrivenFollowupTextRef, append_followup_preface,
-    append_followup_warning, combine_followup_extra_context, parse_external_skill_invoke_context,
+    ToolDrivenFollowupLabel, ToolDrivenFollowupPayload, ToolDrivenFollowupTextRef,
+    append_followup_preface, append_followup_warning, combine_followup_extra_context,
+    parse_external_skill_invoke_context,
 };
 
 pub fn build_external_skill_system_message(
