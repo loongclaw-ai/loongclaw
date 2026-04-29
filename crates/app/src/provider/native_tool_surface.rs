@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 
 use crate::config::{LoongConfig, ProviderKind, ProviderWireApi};
+use crate::tools::{self, ToolSurfaceState, ToolView};
 
 pub(super) fn openai_responses_native_web_search_active(config: &LoongConfig) -> bool {
     config.tools.web_search.enabled
@@ -41,6 +42,19 @@ pub(super) fn native_web_search_prompt_section(config: &LoongConfig) -> Option<S
     )
 }
 
+pub(super) fn provider_capability_snapshot(
+    config: &LoongConfig,
+    view: &ToolView,
+    tool_runtime_config: &tools::runtime_config::ToolRuntimeConfig,
+) -> String {
+    let direct_states = provider_visible_direct_tool_states(config, view);
+    tools::capability_snapshot_for_direct_states_with_config(
+        view,
+        tool_runtime_config,
+        direct_states,
+    )
+}
+
 fn trim_function_web_query_mode_for_native_web_search(tools: &mut [Value]) {
     for tool in tools {
         let Some(function) = tool.get_mut("function").and_then(Value::as_object_mut) else {
@@ -76,4 +90,26 @@ fn trim_function_web_query_mode_for_native_web_search(tools: &mut [Value]) {
         parameters.remove("anyOf");
         parameters.insert("required".to_owned(), json!(["url"]));
     }
+}
+
+fn provider_visible_direct_tool_states(
+    config: &LoongConfig,
+    view: &ToolView,
+) -> Vec<ToolSurfaceState> {
+    let mut states = tools::visible_direct_tool_states_for_view(view);
+    if !openai_responses_native_web_search_active(config) {
+        return states;
+    }
+
+    for state in &mut states {
+        if state.surface_id != "web" {
+            continue;
+        }
+
+        state.prompt_snippet = "fetch a URL or send an HTTP request.".to_owned();
+        state.usage_guidance =
+            "Use web for direct URL fetches and low-level HTTP requests.".to_owned();
+    }
+
+    states
 }

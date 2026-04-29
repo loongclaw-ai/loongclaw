@@ -73,12 +73,20 @@ pub(crate) fn capability_snapshot_for_view_with_config(
     view: &ToolView,
     config: &runtime_config::ToolRuntimeConfig,
 ) -> String {
+    let visible_direct_states = tool_surface::visible_direct_tool_states_for_view(view);
+    capability_snapshot_for_direct_states_with_config(view, config, visible_direct_states)
+}
+
+pub(crate) fn capability_snapshot_for_direct_states_with_config(
+    view: &ToolView,
+    config: &runtime_config::ToolRuntimeConfig,
+    visible_direct_states: Vec<super::ToolSurfaceState>,
+) -> String {
     let mut lines = vec![
         "[tool_discovery_runtime]".to_owned(),
         "Available tools:".to_owned(),
     ];
 
-    let visible_direct_states = tool_surface::visible_direct_tool_states_for_view(view);
     let visible_direct_lines = render_visible_direct_tool_lines(visible_direct_states.as_slice());
     lines.extend(visible_direct_lines);
 

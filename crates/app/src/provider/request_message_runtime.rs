@@ -263,8 +263,11 @@ fn build_prompt_fragments_from_prompt_sources(
 ) -> Vec<PromptFragment> {
     let system_prompt = config.cli.resolved_system_prompt();
     let system_text = system_prompt.trim().to_owned();
-    let capability_snapshot =
-        tools::capability_snapshot_for_view_with_config(tool_view, tool_runtime_config);
+    let capability_snapshot = super::native_tool_surface::provider_capability_snapshot(
+        config,
+        tool_view,
+        tool_runtime_config,
+    );
     let native_web_search_section =
         super::native_tool_surface::native_web_search_prompt_section(config);
     let deferred_tool_text_workflow = render_deferred_tool_text_workflow_section_if_needed(config);
@@ -1934,6 +1937,8 @@ mod tests {
         assert!(content.contains("## Native Query Search"));
         assert!(content.contains("native `web_search`"));
         assert!(content.contains("Use `web` for direct URL fetches and low-level HTTP requests."));
+        assert!(content.contains("- web: fetch a URL or send an HTTP request."));
+        assert!(!content.contains("- web: fetch a URL, search the web, or send an HTTP request."));
     }
 
     #[test]
