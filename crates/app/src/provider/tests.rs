@@ -2418,8 +2418,9 @@ fn provider_request_tool_definitions_include_native_web_search_for_openai_respon
     );
     assert!(
         provider_tool_surface
-            .prompt_section()
-            .is_some_and(|section| section.contains("native `web_search`"))
+            .prompt_sections()
+            .iter()
+            .any(|section| section.content.contains("native `web_search`"))
     );
     let capability_snapshot = provider_tool_surface
         .capability_snapshot(&crate::tools::runtime_tool_view(), &runtime_config);

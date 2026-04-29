@@ -266,7 +266,7 @@ fn build_prompt_fragments_from_prompt_sources(
     let provider_tool_surface = super::native_tool_surface::provider_tool_surface(config);
     let capability_snapshot =
         provider_tool_surface.capability_snapshot(tool_view, tool_runtime_config);
-    let native_web_search_section = provider_tool_surface.prompt_section();
+    let native_tool_sections = provider_tool_surface.prompt_sections();
     let deferred_tool_text_workflow = render_deferred_tool_text_workflow_section_if_needed(config);
     let execution_discipline_section = render_execution_discipline_section();
     let workspace_guidance_section = workspace_guidance_model
@@ -374,12 +374,12 @@ fn build_prompt_fragments_from_prompt_sources(
 
     prompt_fragments.push(capability_fragment);
 
-    if let Some(section) = native_web_search_section {
+    for section in native_tool_sections {
         let native_web_search_fragment = PromptFragment::new(
-            "native-web-search",
+            section.id,
             PromptLane::CapabilitySnapshot,
-            "native-web-search",
-            section,
+            section.id,
+            section.content,
             ContextArtifactKind::RuntimeContract,
         )
         .with_cacheable(true);

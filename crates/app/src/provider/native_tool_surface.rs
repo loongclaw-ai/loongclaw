@@ -4,6 +4,17 @@ use crate::config::{LoongConfig, ProviderKind, ProviderWireApi};
 use crate::tools::{self, ToolSurfaceState, ToolView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderNativeToolKind {
+    WebSearch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProviderNativePromptSection {
+    pub(super) id: &'static str,
+    pub(super) content: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderWebSurfaceMode {
     StandardQuerySearch,
     NativeQuerySearch,
@@ -12,18 +23,23 @@ enum ProviderWebSurfaceMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ProviderToolSurface {
     web_surface_mode: ProviderWebSurfaceMode,
+    native_tools: &'static [ProviderNativeToolKind],
 }
 
 pub(super) fn provider_tool_surface(config: &LoongConfig) -> ProviderToolSurface {
+    let native_query_search = config.tools.web_search.enabled
+        && matches!(config.provider.kind, ProviderKind::Openai)
+        && matches!(config.provider.wire_api, ProviderWireApi::Responses);
+    if native_query_search {
+        return ProviderToolSurface {
+            web_surface_mode: ProviderWebSurfaceMode::NativeQuerySearch,
+            native_tools: &[ProviderNativeToolKind::WebSearch],
+        };
+    }
+
     ProviderToolSurface {
-        web_surface_mode: if config.tools.web_search.enabled
-            && matches!(config.provider.kind, ProviderKind::Openai)
-            && matches!(config.provider.wire_api, ProviderWireApi::Responses)
-        {
-            ProviderWebSurfaceMode::NativeQuerySearch
-        } else {
-            ProviderWebSurfaceMode::StandardQuerySearch
-        },
+        web_surface_mode: ProviderWebSurfaceMode::StandardQuerySearch,
+        native_tools: &[],
     }
 }
 
@@ -42,13 +58,17 @@ impl ProviderToolSurface {
             tools::try_provider_tool_definitions_for_view(tool_view)?
         };
 
-        Ok(self
+        let tools = self
             .web_surface_mode
-            .apply_to_tool_definitions(base_tool_definitions))
+            .apply_to_tool_definitions(base_tool_definitions);
+        Ok(self.append_native_tool_specs(tools))
     }
 
-    pub(super) fn prompt_section(self) -> Option<String> {
-        self.web_surface_mode.prompt_section()
+    pub(super) fn prompt_sections(self) -> Vec<ProviderNativePromptSection> {
+        self.native_tools
+            .iter()
+            .filter_map(|kind| kind.prompt_section())
+            .collect()
     }
 
     pub(super) fn capability_snapshot(
@@ -62,6 +82,13 @@ impl ProviderToolSurface {
             tool_runtime_config,
             direct_states,
         )
+    }
+
+    fn append_native_tool_specs(self, mut tools: Vec<Value>) -> Vec<Value> {
+        for kind in self.native_tools {
+            tools.push(kind.request_tool_spec());
+        }
+        tools
     }
 }
 
@@ -106,26 +133,7 @@ impl ProviderWebSurfaceMode {
             parameters.insert("required".to_owned(), json!(["url"]));
         }
 
-        tools.push(json!({ "type": "web_search" }));
         tools
-    }
-
-    fn prompt_section(self) -> Option<String> {
-        match self {
-            Self::StandardQuerySearch => None,
-            Self::NativeQuerySearch => Some(
-                [
-                    "## Native Query Search".to_owned(),
-                    "- This OpenAI Responses profile exposes native `web_search` for query-style public web search."
-                        .to_owned(),
-                    "- Use native `web_search` for search queries."
-                        .to_owned(),
-                    "- Use `web` for direct URL fetches and low-level HTTP requests."
-                        .to_owned(),
-                ]
-                .join("\n"),
-            ),
-        }
     }
 
     fn visible_direct_tool_states(self, view: &ToolView) -> Vec<ToolSurfaceState> {
@@ -145,5 +153,31 @@ impl ProviderWebSurfaceMode {
         }
 
         states
+    }
+}
+
+impl ProviderNativeToolKind {
+    fn request_tool_spec(self) -> Value {
+        match self {
+            Self::WebSearch => json!({ "type": "web_search" }),
+        }
+    }
+
+    fn prompt_section(self) -> Option<ProviderNativePromptSection> {
+        match self {
+            Self::WebSearch => Some(ProviderNativePromptSection {
+                id: "native-web-search",
+                content: [
+                    "## Native Query Search".to_owned(),
+                    "- This OpenAI Responses profile exposes native `web_search` for query-style public web search."
+                        .to_owned(),
+                    "- Use native `web_search` for search queries."
+                        .to_owned(),
+                    "- Use `web` for direct URL fetches and low-level HTTP requests."
+                        .to_owned(),
+                ]
+                .join("\n"),
+            }),
+        }
     }
 }
