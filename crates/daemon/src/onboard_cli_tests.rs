@@ -1446,8 +1446,8 @@ fn render_web_search_provider_selection_screen_uses_actual_default_provider_in_f
     let config = mvp::config::LoongConfig::default();
     let current_provider = mvp::config::WEB_SEARCH_PROVIDER_DUCKDUCKGO;
     let recommended_provider = mvp::config::WEB_SEARCH_PROVIDER_TAVILY;
-    let current_provider_label = web_search_provider_display_name(current_provider);
-    let recommended_provider_label = web_search_provider_display_name(recommended_provider);
+    let current_provider_label = query_search_provider_display_name(current_provider);
+    let recommended_provider_label = query_search_provider_display_name(recommended_provider);
     let footer_description = format!("keep {current_provider_label}");
     let expected_footer = render_default_choice_footer_line("Enter", footer_description.as_str());
     let lines = render_web_search_provider_selection_screen_lines_with_style(

@@ -2144,11 +2144,11 @@ fn web_search_provider_doctor_check(config: &mvp::config::LoongConfig) -> Doctor
     let configured_provider = config.tools.web_search.default_provider.as_str();
     let normalized_provider = mvp::config::normalize_web_search_provider(configured_provider);
     let provider = normalized_provider.unwrap_or(mvp::config::DEFAULT_WEB_SEARCH_PROVIDER);
-    let provider_label = crate::onboard_web_search::web_search_provider_display_name(provider);
+    let provider_label = crate::query_search_guidance::query_search_provider_display_name(provider);
     let credential_summary =
-        crate::onboard_web_search::summarize_web_search_provider_credential(config, provider);
+        crate::query_search_guidance::summarize_query_search_credential(config, provider);
     let credential_available =
-        crate::onboard_web_search::web_search_provider_has_available_credential(config, provider);
+        crate::query_search_guidance::query_search_has_available_credential(config, provider);
 
     if credential_available {
         let detail = credential_summary
@@ -2777,25 +2777,12 @@ fn build_doctor_next_steps_with_channel_surfaces_and_path_env(
         check.name == crate::access_terms::QUERY_SEARCH_PROVIDER_LABEL
             && check.level != DoctorCheckLevel::Pass
     }) {
-        let configured_provider = config.tools.web_search.default_provider.as_str();
-        let normalized_provider = mvp::config::normalize_web_search_provider(configured_provider);
-        let provider = normalized_provider.unwrap_or(mvp::config::DEFAULT_WEB_SEARCH_PROVIDER);
-        let descriptor = mvp::config::web_search_provider_descriptor(provider);
-        let default_env_name = descriptor.and_then(|value| value.default_api_key_env);
-
-        if let Some(default_env_name) = default_env_name {
-            push_unique_step(
-                &mut steps,
-                crate::access_terms::set_query_search_credential_step(default_env_name),
-            );
+        for step in crate::query_search_guidance::query_search_repair_steps(
+            config,
+            rerun_onboard_command.as_str(),
+        ) {
+            push_unique_step(&mut steps, step);
         }
-
-        push_unique_step(
-            &mut steps,
-            crate::access_terms::review_query_search_provider_choice_step(
-                rerun_onboard_command.as_str(),
-            ),
-        );
     }
 
     let provider_model_probe_recovery =

@@ -246,11 +246,11 @@ fn web_search_provider_check(config: &mvp::config::LoongConfig) -> OnboardCheck 
         config.tools.web_search.default_provider.as_str(),
     );
     let provider = normalized_provider.unwrap_or(mvp::config::DEFAULT_WEB_SEARCH_PROVIDER);
-    let provider_label = crate::onboard_web_search::web_search_provider_display_name(provider);
+    let provider_label = crate::query_search_guidance::query_search_provider_display_name(provider);
     let credential_summary =
-        crate::onboard_web_search::summarize_web_search_provider_credential(config, provider);
+        crate::query_search_guidance::summarize_query_search_credential(config, provider);
     let has_available_credential =
-        crate::onboard_web_search::web_search_provider_has_available_credential(config, provider);
+        crate::query_search_guidance::query_search_has_available_credential(config, provider);
     if has_available_credential {
         let detail = credential_summary
             .map(|summary| format!("{provider_label}: {}", summary.value))

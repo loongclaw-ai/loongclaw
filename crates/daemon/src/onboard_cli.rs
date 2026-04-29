@@ -43,15 +43,17 @@ use crate::onboard_web_search::{
     recommend_web_search_provider_from_available_credentials,
 };
 use crate::onboard_web_search::{
-    configured_web_search_provider_credential_source_value,
-    configured_web_search_provider_env_name, configured_web_search_provider_secret,
-    current_web_search_provider, preferred_web_search_credential_env_default,
-    resolve_effective_web_search_default_provider, resolve_web_search_provider_recommendation,
-    summarize_web_search_provider_credential, web_search_provider_display_name,
-    web_search_provider_has_inline_credential,
+    current_web_search_provider, resolve_effective_web_search_default_provider,
+    resolve_web_search_provider_recommendation,
 };
 use crate::onboarding_model_policy;
 use crate::provider_credential_policy;
+use crate::query_search_guidance::{
+    configured_query_search_credential_env_name, configured_query_search_credential_source_value,
+    configured_query_search_secret, preferred_query_search_credential_env_default,
+    query_search_has_inline_credential, query_search_provider_display_name,
+    summarize_query_search_credential,
+};
 use mvp::tui_surface::{
     TuiCalloutTone, TuiChoiceSpec, TuiHeaderStyle, TuiScreenSpec, TuiSectionSpec,
     render_onboard_screen_spec,
@@ -2538,7 +2540,7 @@ fn resolve_web_search_credential_selection(
         None
     };
 
-    let prompt_default = preferred_web_search_credential_env_default(config, provider);
+    let prompt_default = preferred_query_search_credential_env_default(config, provider);
     if non_interactive {
         if let Some(explicit_env_name) = explicit_selection {
             return Ok(WebSearchCredentialSelection::UseEnv(explicit_env_name));
@@ -2605,9 +2607,7 @@ fn build_web_search_provider_screen_options(
         .iter()
         .map(|descriptor| {
             let mut detail_lines = vec![descriptor.description.to_owned()];
-            if let Some(credential) =
-                summarize_web_search_provider_credential(config, descriptor.id)
-            {
+            if let Some(credential) = summarize_query_search_credential(config, descriptor.id) {
                 detail_lines.push(format!("{}: {}", credential.label, credential.value));
             }
             OnboardScreenOption {
@@ -2630,9 +2630,9 @@ fn render_web_search_provider_selection_screen_lines_with_style(
     color_enabled: bool,
 ) -> Vec<String> {
     let current_provider = current_web_search_provider(config);
-    let current_provider_label = web_search_provider_display_name(current_provider);
-    let recommended_provider_label = web_search_provider_display_name(recommended_provider);
-    let default_provider_label = web_search_provider_display_name(default_provider);
+    let current_provider_label = query_search_provider_display_name(current_provider);
+    let recommended_provider_label = query_search_provider_display_name(recommended_provider);
+    let default_provider_label = query_search_provider_display_name(default_provider);
     let options = build_web_search_provider_screen_options(config, recommended_provider);
     let default_footer_description = if default_provider == current_provider {
         format!("keep {current_provider_label}")
@@ -3978,7 +3978,7 @@ fn render_web_search_credential_selection_default_hint_line(
         })
         .unwrap_or_default();
     let current_env =
-        configured_web_search_provider_env_name(config, provider).and_then(|env_name| {
+        configured_query_search_credential_env_name(config, provider).and_then(|env_name| {
             provider_credential_policy::render_provider_credential_source_value(Some(
                 env_name.as_str(),
             ))
@@ -4857,11 +4857,9 @@ fn render_web_search_credential_selection_screen_lines_with_style(
     width: usize,
     color_enabled: bool,
 ) -> Vec<String> {
-    let provider_label = web_search_provider_display_name(provider);
+    let provider_label = query_search_provider_display_name(provider);
     let mut context_lines = vec![format!("- provider: {provider_label}")];
-    if let Some(current_value) =
-        configured_web_search_provider_credential_source_value(config, provider)
-    {
+    if let Some(current_value) = configured_query_search_credential_source_value(config, provider) {
         let label = if current_value == "inline api key" {
             "- current credential: "
         } else {
@@ -4900,12 +4898,10 @@ fn render_web_search_credential_selection_screen_lines_with_style(
         })
         .unwrap_or("WEB_SEARCH_API_KEY");
     hint_lines.push(format!("- example: {example_env_name}"));
-    if prompt_default.trim().is_empty()
-        && web_search_provider_has_inline_credential(config, provider)
-    {
+    if prompt_default.trim().is_empty() && query_search_has_inline_credential(config, provider) {
         hint_lines.push("- leave this blank to keep inline credentials".to_owned());
     }
-    if configured_web_search_provider_secret(config, provider)
+    if configured_query_search_secret(config, provider)
         .map(str::trim)
         .is_some_and(|value| !value.is_empty())
     {
@@ -5292,13 +5288,12 @@ fn build_onboard_review_digest_display_lines(config: &mvp::config::LoongConfig) 
     ));
 
     let web_search_provider =
-        web_search_provider_display_name(config.tools.web_search.default_provider.as_str());
+        query_search_provider_display_name(config.tools.web_search.default_provider.as_str());
     lines.push(onboard_display_line("- web search: ", &web_search_provider));
 
-    if let Some(web_search_credential) = summarize_web_search_provider_credential(
-        config,
-        config.tools.web_search.default_provider.as_str(),
-    ) {
+    if let Some(web_search_credential) =
+        summarize_query_search_credential(config, config.tools.web_search.default_provider.as_str())
+    {
         let credential_prefix = format!("- {}: ", web_search_credential.label);
         lines.push(onboard_display_line(
             &credential_prefix,
