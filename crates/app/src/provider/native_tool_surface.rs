@@ -4,15 +4,26 @@ use crate::config::{LoongConfig, ProviderKind, ProviderWireApi};
 use crate::tools::{self, ToolSurfaceState, ToolView};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderWebSurfaceMode {
+    StandardQuerySearch,
+    NativeQuerySearch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ProviderToolSurface {
-    native_query_search: bool,
+    web_surface_mode: ProviderWebSurfaceMode,
 }
 
 pub(super) fn provider_tool_surface(config: &LoongConfig) -> ProviderToolSurface {
     ProviderToolSurface {
-        native_query_search: config.tools.web_search.enabled
+        web_surface_mode: if config.tools.web_search.enabled
             && matches!(config.provider.kind, ProviderKind::Openai)
-            && matches!(config.provider.wire_api, ProviderWireApi::Responses),
+            && matches!(config.provider.wire_api, ProviderWireApi::Responses)
+        {
+            ProviderWebSurfaceMode::NativeQuerySearch
+        } else {
+            ProviderWebSurfaceMode::StandardQuerySearch
+        },
     }
 }
 
@@ -31,33 +42,13 @@ impl ProviderToolSurface {
             tools::try_provider_tool_definitions_for_view(tool_view)?
         };
 
-        let mut tools = base_tool_definitions;
-        if !self.native_query_search {
-            return Ok(tools);
-        }
-
-        trim_function_web_query_mode_for_native_web_search(&mut tools);
-        tools.push(json!({ "type": "web_search" }));
-        Ok(tools)
+        Ok(self
+            .web_surface_mode
+            .apply_to_tool_definitions(base_tool_definitions))
     }
 
     pub(super) fn prompt_section(self) -> Option<String> {
-        if !self.native_query_search {
-            return None;
-        }
-
-        Some(
-            [
-                "## Native Query Search".to_owned(),
-                "- This OpenAI Responses profile exposes native `web_search` for query-style public web search."
-                    .to_owned(),
-                "- Use native `web_search` for search queries."
-                    .to_owned(),
-                "- Use `web` for direct URL fetches and low-level HTTP requests."
-                    .to_owned(),
-            ]
-            .join("\n"),
-        )
+        self.web_surface_mode.prompt_section()
     }
 
     pub(super) fn capability_snapshot(
@@ -65,7 +56,7 @@ impl ProviderToolSurface {
         view: &ToolView,
         tool_runtime_config: &tools::runtime_config::ToolRuntimeConfig,
     ) -> String {
-        let direct_states = provider_visible_direct_tool_states(self, view);
+        let direct_states = self.web_surface_mode.visible_direct_tool_states(view);
         tools::capability_snapshot_for_direct_states_with_config(
             view,
             tool_runtime_config,
@@ -74,61 +65,85 @@ impl ProviderToolSurface {
     }
 }
 
-fn trim_function_web_query_mode_for_native_web_search(tools: &mut [Value]) {
-    for tool in tools {
-        let Some(function) = tool.get_mut("function").and_then(Value::as_object_mut) else {
-            continue;
-        };
-        let tool_name = function.get("name").and_then(Value::as_str);
-        if tool_name != Some("web") {
-            continue;
+impl ProviderWebSurfaceMode {
+    fn apply_to_tool_definitions(self, mut tools: Vec<Value>) -> Vec<Value> {
+        if !matches!(self, Self::NativeQuerySearch) {
+            return tools;
         }
 
-        function.insert(
-            "description".to_owned(),
-            Value::String("Fetch a URL or send HTTP requests".to_owned()),
-        );
+        for tool in &mut tools {
+            let Some(function) = tool.get_mut("function").and_then(Value::as_object_mut) else {
+                continue;
+            };
+            let tool_name = function.get("name").and_then(Value::as_str);
+            if tool_name != Some("web") {
+                continue;
+            }
 
-        let Some(parameters) = function
-            .get_mut("parameters")
-            .and_then(Value::as_object_mut)
-        else {
-            continue;
-        };
-        let Some(properties) = parameters
-            .get_mut("properties")
-            .and_then(Value::as_object_mut)
-        else {
-            continue;
-        };
+            function.insert(
+                "description".to_owned(),
+                Value::String("Fetch a URL or send HTTP requests".to_owned()),
+            );
 
-        for key in ["query", "provider", "max_results"] {
-            properties.remove(key);
+            let Some(parameters) = function
+                .get_mut("parameters")
+                .and_then(Value::as_object_mut)
+            else {
+                continue;
+            };
+            let Some(properties) = parameters
+                .get_mut("properties")
+                .and_then(Value::as_object_mut)
+            else {
+                continue;
+            };
+
+            for key in ["query", "provider", "max_results"] {
+                properties.remove(key);
+            }
+
+            parameters.remove("anyOf");
+            parameters.insert("required".to_owned(), json!(["url"]));
         }
 
-        parameters.remove("anyOf");
-        parameters.insert("required".to_owned(), json!(["url"]));
-    }
-}
-
-fn provider_visible_direct_tool_states(
-    surface: ProviderToolSurface,
-    view: &ToolView,
-) -> Vec<ToolSurfaceState> {
-    let mut states = tools::visible_direct_tool_states_for_view(view);
-    if !surface.native_query_search {
-        return states;
+        tools.push(json!({ "type": "web_search" }));
+        tools
     }
 
-    for state in &mut states {
-        if state.surface_id != "web" {
-            continue;
+    fn prompt_section(self) -> Option<String> {
+        match self {
+            Self::StandardQuerySearch => None,
+            Self::NativeQuerySearch => Some(
+                [
+                    "## Native Query Search".to_owned(),
+                    "- This OpenAI Responses profile exposes native `web_search` for query-style public web search."
+                        .to_owned(),
+                    "- Use native `web_search` for search queries."
+                        .to_owned(),
+                    "- Use `web` for direct URL fetches and low-level HTTP requests."
+                        .to_owned(),
+                ]
+                .join("\n"),
+            ),
+        }
+    }
+
+    fn visible_direct_tool_states(self, view: &ToolView) -> Vec<ToolSurfaceState> {
+        let mut states = tools::visible_direct_tool_states_for_view(view);
+        if !matches!(self, Self::NativeQuerySearch) {
+            return states;
         }
 
-        state.prompt_snippet = "fetch a URL or send an HTTP request.".to_owned();
-        state.usage_guidance =
-            "Use web for direct URL fetches and low-level HTTP requests.".to_owned();
-    }
+        for state in &mut states {
+            if state.surface_id != "web" {
+                continue;
+            }
 
-    states
+            state.prompt_snippet = "fetch a URL or send an HTTP request.".to_owned();
+            state.usage_guidance =
+                "Use web for direct URL fetches and low-level HTTP requests.".to_owned();
+        }
+
+        states
+    }
 }
