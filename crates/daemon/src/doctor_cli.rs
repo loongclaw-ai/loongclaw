@@ -54,13 +54,6 @@ struct DoctorCliJsonSchema {
     purpose: &'static str,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct DoctorSummary {
-    pass: usize,
-    warn: usize,
-    fail: usize,
-}
-
 pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
     if let Some(command) = options.command.clone() {
         return match command {
@@ -218,7 +211,7 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
         mvp::config::write(Some(path), &config, true)?;
     }
 
-    let summary = summarize_checks(&checks);
+    let summary = crate::doctor_presentation::summarize_checks(&checks);
     let next_steps = build_doctor_next_steps_with_channel_surfaces_and_path_env(
         &checks,
         &config_path,
@@ -251,7 +244,7 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
 
     println!(
         "{}",
-        render_doctor_text(
+        crate::doctor_presentation::render_doctor_text(
             &checks,
             summary,
             &fixes,
@@ -2253,114 +2246,6 @@ pub fn resolve_secret_value(inline: Option<&str>, env_key: Option<&str>) -> Opti
         return None;
     }
     Some(trimmed.to_owned())
-}
-
-fn summarize_checks(checks: &[DoctorCheck]) -> DoctorSummary {
-    let mut pass = 0_usize;
-    let mut warn = 0_usize;
-    let mut fail = 0_usize;
-    for check in checks {
-        match check.level {
-            DoctorCheckLevel::Pass => pass += 1,
-            DoctorCheckLevel::Warn => warn += 1,
-            DoctorCheckLevel::Fail => fail += 1,
-        }
-    }
-    DoctorSummary { pass, warn, fail }
-}
-
-fn render_doctor_text(
-    checks: &[DoctorCheck],
-    summary: DoctorSummary,
-    fixes: &[String],
-    next_steps: &[String],
-    config_path: &Path,
-    fix_requested: bool,
-) -> String {
-    let mut sections = Vec::new();
-    sections.push(mvp::tui_surface::TuiSectionSpec::Callout {
-        tone: if summary.fail == 0 {
-            mvp::tui_surface::TuiCalloutTone::Success
-        } else {
-            mvp::tui_surface::TuiCalloutTone::Warning
-        },
-        title: Some("summary".to_owned()),
-        lines: vec![format!(
-            "{} ok · {} warn · {} fail",
-            summary.pass, summary.warn, summary.fail
-        )],
-    });
-    sections.push(mvp::tui_surface::TuiSectionSpec::Checklist {
-        title: Some("checks".to_owned()),
-        items: checks
-            .iter()
-            .map(|check| mvp::tui_surface::TuiChecklistItemSpec {
-                status: match check.level {
-                    DoctorCheckLevel::Pass => mvp::tui_surface::TuiChecklistStatus::Pass,
-                    DoctorCheckLevel::Warn => mvp::tui_surface::TuiChecklistStatus::Warn,
-                    DoctorCheckLevel::Fail => mvp::tui_surface::TuiChecklistStatus::Fail,
-                },
-                label: check.name.clone(),
-                detail: check.detail.clone(),
-            })
-            .collect(),
-    });
-
-    let action_items = next_steps
-        .iter()
-        .filter_map(|step| {
-            let (label, command) = step.split_once(": ")?;
-            Some(mvp::tui_surface::TuiActionSpec {
-                label: label.to_owned(),
-                command: command.to_owned(),
-            })
-        })
-        .take(3)
-        .collect::<Vec<_>>();
-    if !action_items.is_empty() {
-        sections.push(mvp::tui_surface::TuiSectionSpec::ActionGroup {
-            title: Some("start here".to_owned()),
-            inline_title_when_wide: false,
-            items: action_items,
-        });
-    }
-    if fix_requested {
-        let fix_lines = if fixes.is_empty() {
-            vec!["applied fixes: none".to_owned()]
-        } else {
-            fixes.iter().map(|fix| format!("- {fix}")).collect()
-        };
-        sections.push(mvp::tui_surface::TuiSectionSpec::Narrative {
-            title: Some("applied fixes".to_owned()),
-            lines: fix_lines,
-        });
-    }
-    if !next_steps.is_empty() {
-        sections.push(mvp::tui_surface::TuiSectionSpec::Narrative {
-            title: Some("next actions".to_owned()),
-            lines: next_steps.iter().map(|step| format!("- {step}")).collect(),
-        });
-    }
-
-    let screen = mvp::tui_surface::TuiScreenSpec {
-        header_style: mvp::tui_surface::TuiHeaderStyle::Compact,
-        subtitle: Some("runtime health".to_owned()),
-        title: Some("doctor".to_owned()),
-        progress_line: None,
-        intro_lines: vec![format!("config={}", config_path.display())],
-        sections,
-        choices: Vec::new(),
-        footer_lines: vec![
-            "Use `loong doctor --json` for machine-readable diagnostics.".to_owned(),
-        ],
-    };
-
-    mvp::tui_surface::render_tui_screen_spec_ratatui(
-        &screen,
-        mvp::presentation::detect_render_width(),
-        false,
-    )
-    .join("\n")
 }
 
 fn check_level_json(level: DoctorCheckLevel) -> &'static str {

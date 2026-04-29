@@ -137,6 +137,7 @@ mod copilot_onboarding;
 pub mod debug_cli;
 mod delegate_child_cli;
 pub mod doctor_cli;
+mod doctor_presentation;
 pub mod doctor_security_cli;
 mod env_compat;
 mod external_skills_policy_probe;
