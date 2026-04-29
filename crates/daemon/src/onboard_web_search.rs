@@ -450,7 +450,7 @@ pub(crate) fn summarize_web_search_provider_credential(
     let descriptor = mvp::config::web_search_provider_descriptor(provider)?;
     if !descriptor.requires_api_key {
         return Some(OnboardingCredentialSummary {
-            label: "query search credential",
+            label: crate::access_terms::QUERY_SEARCH_CREDENTIAL_LABEL,
             value: "not required".to_owned(),
         });
     }
@@ -463,13 +463,13 @@ pub(crate) fn summarize_web_search_provider_credential(
                 let env_present = env_var_has_non_empty_value(env_name.as_str());
                 let suffix = if env_present { "" } else { " (missing in env)" };
                 return Some(OnboardingCredentialSummary {
-                    label: "query search credential source",
+                    label: crate::access_terms::QUERY_SEARCH_CREDENTIAL_SOURCE_LABEL,
                     value: format!("{env_name}{suffix}"),
                 });
             }
             if secret_ref.inline_literal_value().is_some() {
                 return Some(OnboardingCredentialSummary {
-                    label: "query search credential",
+                    label: crate::access_terms::QUERY_SEARCH_CREDENTIAL_LABEL,
                     value: "inline api key".to_owned(),
                 });
             }
@@ -482,7 +482,7 @@ pub(crate) fn summarize_web_search_provider_credential(
         .find(|env_name| env_var_has_non_empty_value(env_name))
     {
         return Some(OnboardingCredentialSummary {
-            label: "query search credential source",
+            label: crate::access_terms::QUERY_SEARCH_CREDENTIAL_SOURCE_LABEL,
             value: (*env_name).to_owned(),
         });
     }
@@ -490,7 +490,7 @@ pub(crate) fn summarize_web_search_provider_credential(
     descriptor
         .default_api_key_env
         .map(|env_name| OnboardingCredentialSummary {
-            label: "query search credential source",
+            label: crate::access_terms::QUERY_SEARCH_CREDENTIAL_SOURCE_LABEL,
             value: format!("{env_name} (expected)"),
         })
 }

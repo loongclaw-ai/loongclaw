@@ -2494,14 +2494,14 @@ async fn resolve_web_search_provider_selection(
         ),
     )?;
     let idx = ui.select_one(
-        "Query search provider",
+        crate::access_terms::QUERY_SEARCH_PROVIDER_LABEL,
         &select_options,
         default_idx,
         SelectInteractionMode::List,
     )?;
     let selected = select_options
         .get(idx)
-        .ok_or_else(|| format!("query search provider selection index {idx} out of range"))?;
+        .ok_or_else(|| crate::access_terms::query_search_provider_selection_index_error(idx))?;
     Ok(selected.slug.clone())
 }
 
@@ -2571,8 +2571,10 @@ fn resolve_web_search_credential_selection(
                 true,
             ),
         )?;
-        let value =
-            ui.prompt_with_default("Query search credential env var name", initial_value)?;
+        let value = ui.prompt_with_default(
+            crate::access_terms::query_search_credential_prompt_label(),
+            initial_value,
+        )?;
         if is_explicit_onboard_clear_input(&value) {
             return Ok(WebSearchCredentialSelection::ClearConfigured);
         }
@@ -2586,8 +2588,8 @@ fn resolve_web_search_credential_selection(
                 print_message(ui, error)?;
                 print_message(
                     ui,
-                    format!(
-                        "enter the environment variable name only, for example {example_env_name}, or type :clear to remove the configured query search credential"
+                    crate::access_terms::query_search_credential_input_hint(
+                        example_env_name.as_str(),
                     ),
                 )?;
             }
@@ -2641,8 +2643,8 @@ fn render_web_search_provider_selection_screen_lines_with_style(
     render_onboard_choice_screen(
         OnboardHeaderStyle::Compact,
         width,
-        "choose query search",
-        "choose query search provider",
+        crate::access_terms::CHOOSE_QUERY_SEARCH_TITLE,
+        crate::access_terms::CHOOSE_QUERY_SEARCH_PROVIDER_TITLE,
         Some((GuidedOnboardStep::WebSearchProvider, guided_prompt_path)),
         vec![
             format!("- current provider: {current_provider_label}"),
@@ -2710,9 +2712,7 @@ fn validate_selected_web_search_credential_env(
         })
         .unwrap_or("WEB_SEARCH_API_KEY");
 
-    Err(format!(
-        "query search credential source must be an environment variable name like {example_env_name}"
-    ))
+    Err(crate::access_terms::query_search_credential_source_validation_error(example_env_name))
 }
 
 fn apply_selected_web_search_credential(
@@ -4910,13 +4910,13 @@ fn render_web_search_credential_selection_screen_lines_with_style(
         .is_some_and(|value| !value.is_empty())
     {
         hint_lines.push(render_clear_input_hint_line(
-            "clear the configured query search credential",
+            crate::access_terms::query_search_credential_clear_hint(),
         ));
     }
 
     render_onboard_input_screen(
         width,
-        "choose query search credential",
+        crate::access_terms::CHOOSE_QUERY_SEARCH_CREDENTIAL_TITLE,
         GuidedOnboardStep::WebSearchProvider,
         guided_prompt_path,
         context_lines,

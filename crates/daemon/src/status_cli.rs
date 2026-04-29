@@ -594,7 +594,7 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
                 value: query_search_detail,
             },
             loong_app::tui_surface::TuiKeyValueSpec::Plain {
-                key: "access boundary".to_owned(),
+                key: crate::access_terms::ACCESS_BOUNDARY_LABEL.to_owned(),
                 value: web_boundary_note,
             },
         ],
