@@ -12,6 +12,7 @@ pub struct AcpCloseExecution {
     pub requested_route_session_id: Option<String>,
     pub resolved_session_key: String,
     pub hook_dispatched: bool,
+    pub shutdown_reason: String,
 }
 
 pub fn run_list_acp_backends_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
@@ -293,6 +294,7 @@ pub async fn run_acp_close_cli(
             "resolved_session_key": execution.resolved_session_key,
             "closed": true,
             "hook_dispatched": execution.hook_dispatched,
+            "shutdown_reason": execution.shutdown_reason,
         });
         let pretty = serde_json::to_string_pretty(&payload)
             .map_err(|error| format!("serialize ACP close output failed: {error}"))?;
@@ -311,7 +313,10 @@ pub async fn run_acp_close_cli(
         println!("requested_route_session_id={route_session_id}");
     }
     println!("resolved_session_key={}", execution.resolved_session_key);
-    println!("close=closed hook_dispatched={}", execution.hook_dispatched);
+    println!(
+        "close=closed hook_dispatched={} shutdown_reason={}",
+        execution.hook_dispatched, execution.shutdown_reason
+    );
     Ok(())
 }
 
@@ -347,7 +352,7 @@ async fn execute_acp_close(
         &config,
         manager.as_ref(),
         &close_target,
-        "explicit_close",
+        crate::trusted_host_runtime::TrustedHostSessionShutdownReason::ExplicitClose,
     )
     .await?;
 
@@ -358,6 +363,7 @@ async fn execute_acp_close(
         requested_route_session_id,
         resolved_session_key: close_outcome.resolved_session_key,
         hook_dispatched: close_outcome.hook_dispatched,
+        shutdown_reason: close_outcome.shutdown_reason.as_str().to_owned(),
     })
 }
 
@@ -1172,6 +1178,7 @@ mod tests {
 
         assert_eq!(execution.resolved_session_key, "agent:codex:close-me");
         assert!(execution.hook_dispatched);
+        assert_eq!(execution.shutdown_reason, "explicit_close");
         let remaining = manager.list_sessions().expect("list sessions after close");
         assert!(
             remaining

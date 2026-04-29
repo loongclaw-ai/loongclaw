@@ -2380,7 +2380,7 @@ async fn acp_session_close(
             config,
             manager.as_ref(),
             &close_target,
-            "explicit_close",
+            crate::trusted_host_runtime::TrustedHostSessionShutdownReason::ExplicitClose,
         )
         .await;
         let close_outcome = match close_outcome {
@@ -2395,6 +2395,7 @@ async fn acp_session_close(
             resolved_session_key: close_outcome.resolved_session_key,
             closed: true,
             hook_dispatched: close_outcome.hook_dispatched,
+            shutdown_reason: close_outcome.shutdown_reason.as_str().to_owned(),
         })
         .into_response()
     }
@@ -5370,6 +5371,7 @@ mod tests {
         assert_eq!(close.resolved_session_key, "agent:codex:child-session");
         assert!(close.closed);
         assert!(close.hook_dispatched);
+        assert_eq!(close.shutdown_reason, "explicit_close");
         let read = acp_view
             .read_session("agent:codex:child-session")
             .await

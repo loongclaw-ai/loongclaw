@@ -1040,6 +1040,7 @@ fn control_plane_acp_session_close_request_and_response_roundtrip_through_json()
         resolved_session_key: "agent:codex:close-me".to_owned(),
         closed: true,
         hook_dispatched: true,
+        shutdown_reason: "explicit_close".to_owned(),
     };
     let encoded_response =
         serde_json::to_string(&response).expect("ACP session close response should serialize");

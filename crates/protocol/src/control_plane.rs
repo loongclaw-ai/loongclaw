@@ -772,6 +772,7 @@ pub struct ControlPlaneAcpSessionCloseResponse {
     pub resolved_session_key: String,
     pub closed: bool,
     pub hook_dispatched: bool,
+    pub shutdown_reason: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
