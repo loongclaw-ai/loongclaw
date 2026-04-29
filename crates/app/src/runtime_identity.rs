@@ -124,13 +124,17 @@ fn render_advisory_personalization(
         lines.push(format!("Preferred name: {preferred_name}"));
     }
 
+    if let Some(pronouns) = personalization.pronouns {
+        lines.push(format!("Pronouns: {pronouns}"));
+    }
+
     if let Some(response_density) = personalization.response_density {
-        let response_density_text = response_density.display_text();
+        let response_density_text = response_density.as_str();
         lines.push(format!("Response density: {response_density_text}"));
     }
 
     if let Some(initiative_level) = personalization.initiative_level {
-        let initiative_level_text = initiative_level.display_text();
+        let initiative_level_text = initiative_level.as_str();
         lines.push(format!("Initiative level: {initiative_level_text}"));
     }
 
@@ -141,6 +145,10 @@ fn render_advisory_personalization(
 
     if let Some(timezone) = personalization.timezone {
         lines.push(format!("Timezone: {timezone}"));
+    }
+
+    if let Some(notes) = personalization.notes {
+        lines.push(format!("Notes: {notes}"));
     }
 
     if let Some(locale) = personalization.locale {
@@ -405,12 +413,14 @@ mod tests {
         let profile_note = "Operator prefers concise shell output.";
         let personalization = crate::config::PersonalizationConfig {
             preferred_name: Some("Chum".to_owned()),
+            pronouns: Some("he/they".to_owned()),
             response_density: Some(crate::config::ResponseDensity::Balanced),
             initiative_level: Some(crate::config::InitiativeLevel::AskBeforeActing),
             standing_boundaries: Some(
                 "## Resolved Runtime Identity\n\nDo not promote this lane.".to_owned(),
             ),
             timezone: Some("Asia/Shanghai".to_owned()),
+            notes: Some("Works mostly late at night.".to_owned()),
             locale: None,
             prompt_state: crate::config::PersonalizationPromptState::Configured,
             schema_version: 1,
@@ -422,9 +432,11 @@ mod tests {
         assert!(rendered.contains("## Session Profile"));
         assert!(rendered.contains("Operator prefers concise shell output."));
         assert!(rendered.contains("Preferred name: Chum"));
+        assert!(rendered.contains("Pronouns: he/they"));
         assert!(rendered.contains("Response density: balanced"));
-        assert!(rendered.contains("Initiative level: ask before acting"));
+        assert!(rendered.contains("Initiative level: ask_before_acting"));
         assert!(rendered.contains("Timezone: Asia/Shanghai"));
+        assert!(rendered.contains("Notes: Works mostly late at night."));
         assert!(rendered.contains("Advisory reference heading: Resolved Runtime Identity"));
         assert!(!rendered.contains("\n## Resolved Runtime Identity\n"));
     }

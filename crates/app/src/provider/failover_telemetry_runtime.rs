@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -18,10 +19,6 @@ struct ProviderFailoverEvent {
     attempt: usize,
     max_attempts: usize,
     status_code: Option<u16>,
-    request_id: Option<String>,
-    cf_ray: Option<String>,
-    auth_error: Option<String>,
-    auth_error_code: Option<String>,
     try_next_model: bool,
     auto_model_mode: bool,
     candidate_index: usize,
@@ -55,6 +52,7 @@ impl ProviderFailoverMetrics {
             .or_insert(0) += 1;
     }
 
+    #[cfg(test)]
     fn snapshot(&self) -> ProviderFailoverMetricsSnapshot {
         ProviderFailoverMetricsSnapshot {
             total_events: self.total_events,
@@ -81,14 +79,15 @@ impl ProviderFailoverMetrics {
 
 static PROVIDER_FAILOVER_METRICS: OnceLock<Mutex<ProviderFailoverMetrics>> = OnceLock::new();
 
+#[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ProviderFailoverMetricsSnapshot {
-    pub total_events: usize,
-    pub continued_events: usize,
-    pub exhausted_events: usize,
-    pub by_reason: BTreeMap<String, usize>,
-    pub by_stage: BTreeMap<String, usize>,
-    pub by_provider: BTreeMap<String, usize>,
+pub(super) struct ProviderFailoverMetricsSnapshot {
+    pub(super) total_events: usize,
+    pub(super) continued_events: usize,
+    pub(super) exhausted_events: usize,
+    pub(super) by_reason: BTreeMap<String, usize>,
+    pub(super) by_stage: BTreeMap<String, usize>,
+    pub(super) by_provider: BTreeMap<String, usize>,
 }
 
 fn with_provider_failover_metrics<R>(run: impl FnOnce(&mut ProviderFailoverMetrics) -> R) -> R {
@@ -105,7 +104,8 @@ fn record_provider_failover_metrics(event: &ProviderFailoverEvent) {
     with_provider_failover_metrics(|metrics| metrics.record(event));
 }
 
-pub fn provider_failover_metrics_snapshot() -> ProviderFailoverMetricsSnapshot {
+#[cfg(test)]
+pub(super) fn provider_failover_metrics_snapshot() -> ProviderFailoverMetricsSnapshot {
     with_provider_failover_metrics(|metrics| metrics.snapshot())
 }
 
@@ -126,22 +126,6 @@ fn build_provider_failover_event(
         attempt: snapshot.attempt,
         max_attempts: snapshot.max_attempts,
         status_code: snapshot.status_code,
-        request_id: snapshot
-            .response_debug_context
-            .as_ref()
-            .and_then(|context| context.request_id.clone()),
-        cf_ray: snapshot
-            .response_debug_context
-            .as_ref()
-            .and_then(|context| context.cf_ray.clone()),
-        auth_error: snapshot
-            .response_debug_context
-            .as_ref()
-            .and_then(|context| context.auth_error.clone()),
-        auth_error_code: snapshot
-            .response_debug_context
-            .as_ref()
-            .and_then(|context| context.auth_error_code.clone()),
         try_next_model,
         auto_model_mode,
         candidate_index,
@@ -185,10 +169,6 @@ pub(super) fn record_provider_failover_audit_event(
             attempt: event.attempt,
             max_attempts: event.max_attempts,
             status_code: event.status_code,
-            request_id: event.request_id,
-            cf_ray: event.cf_ray,
-            auth_error: event.auth_error,
-            auth_error_code: event.auth_error_code,
             try_next_model: event.try_next_model,
             auto_model_mode: event.auto_model_mode,
             candidate_index: event.candidate_index,

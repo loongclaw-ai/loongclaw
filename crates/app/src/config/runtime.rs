@@ -16,7 +16,7 @@ use crate::secrets::DefaultSecretResolver;
 use loong_contracts::{SecretRef, SecretResolver};
 
 use super::{
-    OnebotChannelConfig, WeixinChannelConfig,
+    OnebotChannelConfig, QqbotChannelConfig, WeixinChannelConfig,
     audit::AuditConfig,
     channels::{
         CliChannelConfig, DingtalkChannelConfig, DiscordChannelConfig, EmailChannelConfig,
@@ -272,7 +272,7 @@ pub struct AcpConfig {
     pub bindings_enabled: bool,
     #[serde(default)]
     pub emit_runtime_events: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub allow_mcp_server_injection: bool,
     #[serde(default)]
     pub backends: AcpBackendProfilesConfig,
@@ -392,7 +392,7 @@ impl Default for AcpConfig {
             queue_owner_ttl_ms: Some(default_acp_queue_owner_ttl_ms()),
             bindings_enabled: false,
             emit_runtime_events: false,
-            allow_mcp_server_injection: true,
+            allow_mcp_server_injection: false,
             backends: AcpBackendProfilesConfig::default(),
         }
     }
@@ -2913,10 +2913,12 @@ api_key_env = "{secret}"
         let mut config = LoongConfig::default();
         let personalization = crate::config::PersonalizationConfig {
             preferred_name: Some("Chum".to_owned()),
+            pronouns: Some("he/they".to_owned()),
             response_density: Some(crate::config::ResponseDensity::Thorough),
             initiative_level: Some(crate::config::InitiativeLevel::HighInitiative),
             standing_boundaries: Some("Ask before destructive actions.".to_owned()),
             timezone: Some("Asia/Shanghai".to_owned()),
+            notes: Some("Works mostly late at night.".to_owned()),
             locale: Some("zh-CN".to_owned()),
             prompt_state: crate::config::PersonalizationPromptState::Configured,
             schema_version: 1,
@@ -2935,16 +2937,19 @@ api_key_env = "{secret}"
             .personalization
             .expect("typed personalization should persist");
         let preferred_name = loaded_personalization.preferred_name.as_deref();
+        let pronouns = loaded_personalization.pronouns.as_deref();
         let response_density = loaded_personalization.response_density;
         let initiative_level = loaded_personalization.initiative_level;
         let standing_boundaries = loaded_personalization.standing_boundaries.as_deref();
         let timezone = loaded_personalization.timezone.as_deref();
+        let notes = loaded_personalization.notes.as_deref();
         let locale = loaded_personalization.locale.as_deref();
         let prompt_state = loaded_personalization.prompt_state;
         let schema_version = loaded_personalization.schema_version;
         let updated_at_epoch_seconds = loaded_personalization.updated_at_epoch_seconds;
 
         assert_eq!(preferred_name, Some("Chum"));
+        assert_eq!(pronouns, Some("he/they"));
         assert_eq!(
             response_density,
             Some(crate::config::ResponseDensity::Thorough)
@@ -2955,6 +2960,7 @@ api_key_env = "{secret}"
         );
         assert_eq!(standing_boundaries, Some("Ask before destructive actions."));
         assert_eq!(timezone, Some("Asia/Shanghai"));
+        assert_eq!(notes, Some("Works mostly late at night."));
         assert_eq!(locale, Some("zh-CN"));
         assert_eq!(
             prompt_state,
@@ -3817,7 +3823,7 @@ model = "gpt-5"
 
     #[test]
     #[cfg(feature = "config-toml")]
-    fn write_default_config_uses_yolo_external_skills_defaults() {
+    fn write_default_config_keeps_external_skills_guardrails() {
         let path = unique_config_path("loong-config-runtime-external-skills");
         let path_string = path.display().to_string();
 
@@ -3826,17 +3832,17 @@ model = "gpt-5"
 
         let raw = fs::read_to_string(&path).expect("read written config");
         assert!(raw.contains("[external_skills]"));
-        assert!(raw.contains("enabled = true"));
+        assert!(raw.contains("enabled = false"));
         assert!(raw.contains("require_download_approval = false"));
-        assert!(raw.contains("auto_expose_installed = true"));
+        assert!(raw.contains("auto_expose_installed = false"));
 
         let (_, loaded) = load(Some(&path_string)).expect("config load should pass");
-        assert!(loaded.external_skills.enabled);
+        assert!(!loaded.external_skills.enabled);
         assert!(!loaded.external_skills.require_download_approval);
         assert!(loaded.external_skills.allowed_domains.is_empty());
         assert!(loaded.external_skills.blocked_domains.is_empty());
         assert!(loaded.external_skills.install_root.is_none());
-        assert!(loaded.external_skills.auto_expose_installed);
+        assert!(!loaded.external_skills.auto_expose_installed);
 
         let _ = fs::remove_file(path);
     }
