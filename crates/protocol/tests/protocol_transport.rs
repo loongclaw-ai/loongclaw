@@ -1021,6 +1021,34 @@ fn control_plane_acp_session_read_response_roundtrips_through_json() {
     assert_eq!(decoded, response);
 }
 
+#[test]
+fn control_plane_acp_session_close_request_and_response_roundtrip_through_json() {
+    let request = ControlPlaneAcpSessionCloseRequest {
+        session_key: Some("agent:codex:close-me".to_owned()),
+        conversation_id: None,
+        route_session_id: None,
+    };
+    let encoded_request =
+        serde_json::to_string(&request).expect("ACP session close request should serialize");
+    let decoded_request: ControlPlaneAcpSessionCloseRequest =
+        serde_json::from_str(&encoded_request)
+            .expect("ACP session close request should deserialize");
+    assert_eq!(decoded_request, request);
+
+    let response = ControlPlaneAcpSessionCloseResponse {
+        current_session_id: "root-session".to_owned(),
+        resolved_session_key: "agent:codex:close-me".to_owned(),
+        closed: true,
+        hook_dispatched: true,
+    };
+    let encoded_response =
+        serde_json::to_string(&response).expect("ACP session close response should serialize");
+    let decoded_response: ControlPlaneAcpSessionCloseResponse =
+        serde_json::from_str(&encoded_response)
+            .expect("ACP session close response should deserialize");
+    assert_eq!(decoded_response, response);
+}
+
 #[tokio::test]
 async fn channel_transport_roundtrip_delivers_frame() {
     let (left, right) =
