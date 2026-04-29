@@ -1278,6 +1278,30 @@ fn resolve_web_search_credential_selection_keeps_inline_secret_on_blank_input() 
 }
 
 #[test]
+fn resolve_web_search_credential_selection_skips_prompt_when_openai_native_search_is_active() {
+    let mut config = mvp::config::LoongConfig::default();
+    config.provider.kind = mvp::config::ProviderKind::Openai;
+    config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+    config.tools.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_TAVILY.to_owned();
+    let mut ui = TestOnboardUi::with_inputs(std::iter::empty::<&str>());
+    let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
+    let options = interactive_onboard_options();
+
+    let selected = resolve_web_search_credential_selection(
+        &options,
+        &config,
+        mvp::config::WEB_SEARCH_PROVIDER_TAVILY,
+        GuidedPromptPath::NativePromptPack,
+        false,
+        &mut ui,
+        &context,
+    )
+    .expect("native query search should skip external credential selection");
+
+    assert_eq!(selected, WebSearchCredentialSelection::KeepCurrent);
+}
+
+#[test]
 fn apply_selected_web_search_credential_formats_env_reference() {
     let mut config = mvp::config::LoongConfig::default();
 
@@ -1439,6 +1463,29 @@ async fn resolve_web_search_provider_selection_keeps_current_provider_on_blank_i
         mvp::config::WEB_SEARCH_PROVIDER_DUCKDUCKGO,
         "interactive enter should preserve the current provider even when another provider is recommended"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resolve_web_search_provider_selection_skips_prompt_when_openai_native_search_is_active() {
+    let options = interactive_onboard_options();
+    let mut config = mvp::config::LoongConfig::default();
+    config.provider.kind = mvp::config::ProviderKind::Openai;
+    config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+    config.tools.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_TAVILY.to_owned();
+
+    let mut ui = TestOnboardUi::with_inputs(std::iter::empty::<&str>());
+    let context = onboard_test_context();
+    let selected = resolve_web_search_provider_selection(
+        &options,
+        &config,
+        GuidedPromptPath::NativePromptPack,
+        &mut ui,
+        &context,
+    )
+    .await
+    .expect("native query search should skip external provider selection");
+
+    assert_eq!(selected, mvp::config::WEB_SEARCH_PROVIDER_TAVILY);
 }
 
 #[test]

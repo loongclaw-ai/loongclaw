@@ -39,12 +39,11 @@ pub use crate::onboard_types::OnboardingCredentialSummary;
 #[cfg(test)]
 use crate::onboard_web_search::{
     WebSearchProviderRecommendation, WebSearchProviderRecommendationSource,
-    explicit_web_search_provider_override,
     recommend_web_search_provider_from_available_credentials,
 };
 use crate::onboard_web_search::{
-    current_web_search_provider, resolve_effective_web_search_default_provider,
-    resolve_web_search_provider_recommendation,
+    current_web_search_provider, explicit_web_search_provider_override,
+    resolve_effective_web_search_default_provider, resolve_web_search_provider_recommendation,
 };
 use crate::onboarding_model_policy;
 use crate::provider_credential_policy;
@@ -2468,6 +2467,11 @@ async fn resolve_web_search_provider_selection(
     ui: &mut impl OnboardUi,
     context: &OnboardRuntimeContext,
 ) -> CliResult<String> {
+    let explicit_override = explicit_web_search_provider_override(options)?;
+    if mvp::provider::native_query_search_active(config) && explicit_override.is_none() {
+        return Ok(current_web_search_provider(config).to_owned());
+    }
+
     let recommendation = resolve_web_search_provider_recommendation(options, config).await?;
     let recommended_provider = recommendation.provider;
     let default_provider =
@@ -2516,6 +2520,11 @@ fn resolve_web_search_credential_selection(
     ui: &mut impl OnboardUi,
     context: &OnboardRuntimeContext,
 ) -> CliResult<WebSearchCredentialSelection> {
+    let explicit_override = explicit_web_search_provider_override(options)?;
+    if mvp::provider::native_query_search_active(config) && explicit_override.is_none() {
+        return Ok(WebSearchCredentialSelection::KeepCurrent);
+    }
+
     let Some(descriptor) = mvp::config::web_search_provider_descriptor(provider) else {
         return Ok(WebSearchCredentialSelection::KeepCurrent);
     };

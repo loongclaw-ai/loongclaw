@@ -8133,6 +8133,32 @@ fn onboarding_success_summary_reports_web_search_provider_and_credential() {
 }
 
 #[test]
+fn onboarding_success_summary_reports_native_query_search_lane_for_openai_responses() {
+    let path = PathBuf::from("/tmp/loong-config.toml");
+    let mut config = mvp::config::LoongConfig::default();
+    config.provider.kind = mvp::config::ProviderKind::Openai;
+    config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+    config.tools.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_TAVILY.to_owned();
+
+    let summary = loong_daemon::onboard_cli::build_onboarding_success_summary(&path, &config, None);
+    let lines =
+        loong_daemon::onboard_cli::render_onboarding_success_summary_with_width(&summary, 80);
+
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "- web search: OpenAI Responses native web search"),
+        "success summary should surface the provider-native query-search lane: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "- query search credential: provided by active provider"),
+        "success summary should explain that native query search is provided by the active provider: {lines:#?}"
+    );
+}
+
+#[test]
 fn onboarding_success_summary_reports_channel_surface_distribution() {
     let path = PathBuf::from("/tmp/loong-config.toml");
     let summary = loong_daemon::onboard_cli::build_onboarding_success_summary(

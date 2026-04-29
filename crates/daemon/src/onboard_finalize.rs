@@ -154,13 +154,19 @@ pub(crate) fn build_onboarding_success_summary_with_memory(
     let prompt_mode = crate::onboard_cli::summarize_prompt_mode(config);
     let prompt_addendum = crate::onboard_cli::summarize_prompt_addendum(config);
     let credential = crate::onboard_cli::summarize_provider_credential(&config.provider);
-    let web_search_provider = crate::query_search_guidance::query_search_provider_display_name(
-        config.tools.web_search.default_provider.as_str(),
-    );
-    let web_search_credential = crate::query_search_guidance::summarize_query_search_credential(
-        config,
-        config.tools.web_search.default_provider.as_str(),
-    );
+    let web_search_status = crate::query_search_guidance::query_search_provider_status(config);
+    let web_search_provider = web_search_status.provider_label.clone();
+    let web_search_credential = if web_search_status.provider_native {
+        Some(OnboardingCredentialSummary {
+            label: crate::access_terms::QUERY_SEARCH_CREDENTIAL_LABEL,
+            value: "provided by active provider".to_owned(),
+        })
+    } else {
+        crate::query_search_guidance::summarize_query_search_credential(
+            config,
+            config.tools.web_search.default_provider.as_str(),
+        )
+    };
     let domain_outcomes = collect_onboarding_domain_outcomes(review_candidate);
     let channel_surface_summary = collect_onboarding_channel_surface_summary(config);
     let channels = config.enabled_channel_ids();
