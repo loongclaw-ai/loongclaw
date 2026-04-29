@@ -15,8 +15,10 @@ use crate::acp::{
     AcpConversationTurnOptions, AcpTurnEventSink, AcpTurnProvenance, JsonlAcpTurnEventSink,
 };
 
+mod chat_surface;
 mod cli_input;
 mod cli_render;
+mod control_plane;
 #[cfg(all(test, feature = "memory-sqlite"))]
 #[allow(clippy::expect_used)]
 mod latest_session_selector_tests;
@@ -253,8 +255,10 @@ fn format_onboard_command_hint(config_path: Option<&str>, resolved_config_path: 
     command
 }
 
+#[derive(Clone)]
 pub(crate) struct CliTurnRuntime {
     pub(crate) resolved_path: PathBuf,
+    pub(crate) config_present: bool,
     pub(crate) config: LoongConfig,
     pub(crate) session_id: String,
     pub(crate) session_address: ConversationSessionAddress,
@@ -272,6 +276,13 @@ impl CliTurnRuntime {
     pub(crate) fn conversation_binding(&self) -> ConversationRuntimeBinding<'_> {
         self.runtime_kernel.conversation_binding()
     }
+}
+
+const fn should_run_cli_chat_surface(
+    config_path_is_directory: bool,
+    terminal_supported: bool,
+) -> bool {
+    terminal_supported && !config_path_is_directory
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,9 +308,24 @@ pub async fn run_cli_chat(
     options: &CliChatOptions,
 ) -> CliResult<()> {
     ensure_cli_channel_enabled_for_entrypoint(config_path)?;
-    // The old fullscreen operator-cockpit chat surface is deprecated.
-    // Keep the canonical `chat` entrypoint on the newer shell-first path
-    // until a replacement fullscreen surface lands.
+    let resolved_config_path = config_path
+        .map(config::expand_path)
+        .unwrap_or_else(config::default_config_path);
+    let config_path_exists = resolved_config_path.try_exists().map_err(|error| {
+        format!(
+            "failed to access config path {}: {error}",
+            resolved_config_path.display()
+        )
+    })?;
+    let config_path_is_directory = config_path_exists && resolved_config_path.is_dir();
+
+    if should_run_cli_chat_surface(
+        config_path_is_directory,
+        chat_surface::interactive_terminal_surface_supported(),
+    ) {
+        return chat_surface::run_cli_chat_surface(config_path, session_hint, options).await;
+    }
+
     run_cli_chat_repl(config_path, session_hint, options).await
 }
 
@@ -513,6 +539,40 @@ pub(crate) fn initialize_cli_turn_runtime(
     )
 }
 
+pub(crate) fn initialize_cli_chat_surface_runtime(
+    config_path: Option<&str>,
+    session_hint: Option<&str>,
+    options: &CliChatOptions,
+    kernel_scope: &'static str,
+) -> CliResult<CliTurnRuntime> {
+    let resolved_path = config_path
+        .map(config::expand_path)
+        .unwrap_or_else(config::default_config_path);
+    let config_exists = resolved_path.try_exists().map_err(|error| {
+        format!(
+            "failed to access config path {}: {error}",
+            resolved_path.display()
+        )
+    })?;
+    if config_exists {
+        return initialize_cli_turn_runtime(config_path, session_hint, options, kernel_scope);
+    }
+
+    initialize_cli_turn_runtime_with_loaded_config(
+        resolved_path,
+        LoongConfig::default(),
+        session_hint,
+        options,
+        kernel_scope,
+        CliSessionRequirement::AllowImplicitDefault,
+        false,
+    )
+    .map(|mut runtime| {
+        runtime.config_present = false;
+        runtime
+    })
+}
+
 /// Assemble a CLI turn runtime when the caller already owns a resolved config.
 ///
 /// Compared with `initialize_cli_turn_runtime`, this skips config loading but
@@ -553,6 +613,7 @@ pub(crate) fn initialize_cli_turn_runtime_with_loaded_config(
     let kernel_ctx = runtime_kernel.cloned_kernel_context();
     initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx(
         resolved_path,
+        true,
         config,
         session_hint,
         options,
@@ -571,6 +632,7 @@ pub(crate) fn initialize_cli_turn_runtime_with_loaded_config(
 /// by an outer runtime surface.
 pub(crate) fn initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx(
     resolved_path: PathBuf,
+    config_present: bool,
     config: LoongConfig,
     session_hint: Option<&str>,
     options: &CliChatOptions,
@@ -613,6 +675,7 @@ pub(crate) fn initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx(
 
     Ok(CliTurnRuntime {
         resolved_path,
+        config_present,
         config,
         session_id,
         session_address,
@@ -4108,6 +4171,14 @@ mod tests {
         assert!(should_run_missing_config_onboard(1, "yes\n"));
         assert!(!should_run_missing_config_onboard(1, "n\n"));
         assert!(!should_run_missing_config_onboard(0, ""));
+    }
+
+    #[test]
+    fn should_run_cli_chat_surface_requires_config_and_interactive_terminal() {
+        assert!(!should_run_cli_chat_surface(true, true));
+        assert!(!should_run_cli_chat_surface(true, false));
+        assert!(should_run_cli_chat_surface(false, true));
+        assert!(!should_run_cli_chat_surface(false, false));
     }
 
     #[test]

@@ -238,7 +238,7 @@ pub(crate) async fn emit_async_delegate_child_terminal_event<R: ConversationRunt
     .await;
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ConversationTurnCoordinator;
 
 const PRODUCTION_CONVERSATION_RUNTIME_REQUIRES_KERNEL_BINDING: &str =
