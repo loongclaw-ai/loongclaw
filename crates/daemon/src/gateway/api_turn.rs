@@ -127,26 +127,39 @@ pub(crate) async fn handle_turn(
         .map(ToOwned::to_owned);
 
     let event_sink = app_state.event_bus.as_ref().map(|bus| bus.sink());
+    let agent_turn_request = crate::mvp::agent_runtime::AgentTurnRequest {
+        message: turn_request.input.clone(),
+        turn_mode: crate::mvp::agent_runtime::AgentTurnMode::Acp,
+        channel_id: turn_request.channel_id.clone(),
+        account_id: turn_request.account_id.clone(),
+        conversation_id: turn_request.conversation_id.clone(),
+        participant_id: turn_request.participant_id.clone(),
+        thread_id: turn_request.thread_id.clone(),
+        metadata: turn_request.metadata.clone(),
+        acp: true,
+        acp_event_stream: event_sink.is_some(),
+        acp_bootstrap_mcp_servers: Vec::new(),
+        acp_cwd: working_directory,
+        live_surface_enabled: false,
+    };
+    let trusted_hook_result = crate::trusted_host_runtime::dispatch_turn_start_hook_for_request(
+        config,
+        Some(turn_request.session_id.as_str()),
+        &agent_turn_request,
+    )
+    .await;
+    if let Err(error) = trusted_hook_result {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": error})),
+        );
+    }
     let result = crate::mvp::agent_runtime::AgentRuntime::new()
         .run_turn_with_loaded_config_and_acp_manager(
             PathBuf::from(app_state.config_path.clone()),
             config.clone(),
             Some(turn_request.session_id.as_str()),
-            &crate::mvp::agent_runtime::AgentTurnRequest {
-                message: turn_request.input.clone(),
-                turn_mode: crate::mvp::agent_runtime::AgentTurnMode::Acp,
-                channel_id: turn_request.channel_id.clone(),
-                account_id: turn_request.account_id.clone(),
-                conversation_id: turn_request.conversation_id.clone(),
-                participant_id: turn_request.participant_id.clone(),
-                thread_id: turn_request.thread_id.clone(),
-                metadata: turn_request.metadata.clone(),
-                acp: true,
-                acp_event_stream: event_sink.is_some(),
-                acp_bootstrap_mcp_servers: Vec::new(),
-                acp_cwd: working_directory,
-                live_surface_enabled: false,
-            },
+            &agent_turn_request,
             event_sink
                 .as_ref()
                 .map(|sink| sink as &dyn crate::mvp::acp::AcpTurnEventSink),

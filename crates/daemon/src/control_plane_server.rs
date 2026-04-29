@@ -2397,6 +2397,22 @@ async fn turn_submit(
             acp_cwd: working_directory,
             live_surface_enabled: false,
         };
+        let trusted_hook_result =
+            crate::trusted_host_runtime::dispatch_turn_start_hook_for_request(
+                &config,
+                Some(session_id.as_str()),
+                &turn_request,
+            )
+            .await;
+        if let Err(error) = trusted_hook_result {
+            let completion =
+                turn_registry.complete_failure(spawned_turn_id.as_str(), error.as_str());
+            if let Ok(record) = completion {
+                let payload = map_turn_event_payload(&record);
+                let _ = manager.record_acp_turn_event(payload, true);
+            }
+            return;
+        }
         let execution_result = mvp::agent_runtime::AgentRuntime::new()
             .run_turn_with_loaded_config_and_acp_manager(
                 resolved_path,
