@@ -7,6 +7,7 @@ use crate::onboard_types::OnboardingCredentialSummary;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QuerySearchProviderStatus {
+    pub provider_native: bool,
     pub provider: &'static str,
     pub provider_label: String,
     pub credential_summary: Option<OnboardingCredentialSummary>,
@@ -22,6 +23,16 @@ pub(crate) fn query_search_provider_display_name(provider: &str) -> String {
 pub(crate) fn query_search_provider_status(
     config: &mvp::config::LoongConfig,
 ) -> QuerySearchProviderStatus {
+    if let Some(native_label) = mvp::provider::native_query_search_label(config) {
+        return QuerySearchProviderStatus {
+            provider_native: true,
+            provider: mvp::config::DEFAULT_WEB_SEARCH_PROVIDER,
+            provider_label: native_label,
+            credential_summary: None,
+            credential_available: true,
+        };
+    }
+
     let configured_provider = config.tools.web_search.default_provider.as_str();
     let provider = mvp::config::normalize_web_search_provider(configured_provider)
         .unwrap_or(mvp::config::DEFAULT_WEB_SEARCH_PROVIDER);
@@ -30,6 +41,7 @@ pub(crate) fn query_search_provider_status(
     let credential_available = query_search_has_available_credential(config, provider);
 
     QuerySearchProviderStatus {
+        provider_native: false,
         provider,
         provider_label,
         credential_summary,
@@ -214,7 +226,12 @@ pub(crate) fn query_search_repair_steps(
     config: &mvp::config::LoongConfig,
     rerun_onboard_command: &str,
 ) -> Vec<String> {
-    let provider = query_search_provider_status(config).provider;
+    let provider_status = query_search_provider_status(config);
+    if provider_status.provider_native {
+        return Vec::new();
+    }
+
+    let provider = provider_status.provider;
     let default_env_name = mvp::config::web_search_provider_descriptor(provider)
         .and_then(|descriptor| descriptor.default_api_key_env);
 
@@ -293,6 +310,26 @@ mod tests {
         assert_eq!(
             status.blocked_detail(true),
             "Firecrawl Search: FIRECRAWL_API_KEY (missing in env). web.search will stay unavailable until the provider credential is supplied, but ordinary network access remains separately governed"
+        );
+    }
+
+    #[test]
+    fn query_search_provider_status_accepts_openai_native_search_without_external_credential() {
+        let mut config = mvp::config::LoongConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Openai;
+        config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+        config.tools.web_search.default_provider =
+            mvp::config::WEB_SEARCH_PROVIDER_TAVILY.to_owned();
+        config.tools.web_search.tavily_api_key = Some("${TAVILY_API_KEY}".to_owned());
+
+        let status = query_search_provider_status(&config);
+
+        assert!(status.provider_native);
+        assert!(status.credential_available);
+        assert_eq!(status.provider_label, "OpenAI Responses native web search");
+        assert_eq!(status.ready_detail(), "OpenAI Responses native web search");
+        assert!(
+            query_search_repair_steps(&config, "loong onboard --config /tmp/loong.toml").is_empty()
         );
     }
 

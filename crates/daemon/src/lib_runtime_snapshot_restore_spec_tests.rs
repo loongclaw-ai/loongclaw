@@ -292,3 +292,23 @@ fn runtime_tool_access_summary_accepts_firecrawl_credentials() {
     assert!(summary.query_search_credential_ready);
     assert!(summary.browser_page_access_enabled);
 }
+
+#[test]
+fn runtime_tool_access_summary_accepts_openai_native_query_search_without_external_credential() {
+    let mut config = mvp::config::LoongConfig::default();
+    config.provider.kind = mvp::config::ProviderKind::Openai;
+    config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+    config.tools.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_BRAVE.to_owned();
+    let mut runtime = mvp::tools::runtime_config::ToolRuntimeConfig::default();
+    runtime.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_BRAVE.to_owned();
+    runtime.web_search.brave_api_key = None;
+
+    let summary = runtime_tool_access_summary(&config, &runtime);
+
+    assert!(summary.query_search_enabled);
+    assert_eq!(
+        summary.query_search_default_provider,
+        mvp::config::WEB_SEARCH_PROVIDER_BRAVE
+    );
+    assert!(summary.query_search_credential_ready);
+}

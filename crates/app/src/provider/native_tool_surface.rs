@@ -61,6 +61,18 @@ pub(super) fn provider_tool_surface(config: &LoongConfig) -> ProviderToolSurface
 }
 
 impl ProviderToolSurface {
+    pub(super) fn native_query_search_active(self) -> bool {
+        !self.native_tools.is_empty()
+    }
+
+    pub(super) fn native_query_search_label(self) -> Option<String> {
+        if !self.native_query_search_active() {
+            return None;
+        }
+
+        Some("OpenAI Responses native web search".to_owned())
+    }
+
     pub(super) fn materialize(
         self,
         config: &LoongConfig,

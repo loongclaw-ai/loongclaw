@@ -23,7 +23,8 @@ pub(crate) fn runtime_tool_access_summary(
     let ordinary_network_access_enabled = runtime.web_fetch.enabled;
     let query_search_enabled = runtime.web_search.enabled;
     let query_search_default_provider = runtime.web_search.default_provider.clone();
-    let query_search_credential_ready = web_search_provider_credential_ready(&runtime.web_search);
+    let query_search_credential_ready = mvp::provider::native_query_search_active(config)
+        || web_search_provider_credential_ready(&runtime.web_search);
     let browser_page_access_enabled = runtime.browser.enabled;
     let managed_browser_session_enabled = runtime.browser_companion.enabled;
     let managed_browser_session_ready =

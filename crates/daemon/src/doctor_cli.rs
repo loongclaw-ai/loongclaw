@@ -6308,6 +6308,22 @@ mod tests {
     }
 
     #[test]
+    fn web_search_provider_doctor_check_passes_when_openai_native_search_is_available() {
+        let mut config = mvp::config::LoongConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Openai;
+        config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+        config.tools.web_search.default_provider =
+            mvp::config::WEB_SEARCH_PROVIDER_TAVILY.to_owned();
+        config.tools.web_search.tavily_api_key = Some("${TAVILY_API_KEY}".to_owned());
+
+        let check = web_search_provider_doctor_check(&config);
+
+        assert_eq!(check.name, crate::access_terms::QUERY_SEARCH_PROVIDER_LABEL);
+        assert_eq!(check.level, DoctorCheckLevel::Pass);
+        assert_eq!(check.detail, "OpenAI Responses native web search");
+    }
+
+    #[test]
     fn build_doctor_next_steps_shell_quotes_config_paths_with_single_quotes() {
         let checks = vec![DoctorCheck {
             name: "memory path".to_owned(),
