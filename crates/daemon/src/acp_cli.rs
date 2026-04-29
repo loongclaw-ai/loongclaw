@@ -334,22 +334,19 @@ async fn execute_acp_close(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    let resolved_session_key = resolve_acp_status_session_key(
+    let manager = mvp::acp::shared_acp_session_manager(&config)?;
+    let close_target = crate::acp_close_runtime::resolve_acp_close_target(
         &config,
+        manager.as_ref(),
         requested_session_key.as_deref(),
         requested_conversation_id.as_deref(),
         requested_route_session_id.as_deref(),
-    )?;
-    let manager = mvp::acp::shared_acp_session_manager(&config)?;
-    let status = manager
-        .get_status(&config, resolved_session_key.as_str())
-        .await?;
-    manager
-        .close(&config, resolved_session_key.as_str())
-        .await?;
-    crate::trusted_host_runtime::dispatch_session_shutdown_hook_for_acp_status(
+    )
+    .await?;
+    let close_outcome = crate::acp_close_runtime::close_resolved_acp_target(
         &config,
-        &status,
+        manager.as_ref(),
+        &close_target,
         "explicit_close",
     )
     .await?;
@@ -359,8 +356,8 @@ async fn execute_acp_close(
         requested_session_key,
         requested_conversation_id,
         requested_route_session_id,
-        resolved_session_key,
-        hook_dispatched: true,
+        resolved_session_key: close_outcome.resolved_session_key,
+        hook_dispatched: close_outcome.hook_dispatched,
     })
 }
 

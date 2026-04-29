@@ -2372,25 +2372,29 @@ async fn acp_session_close(
             Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
         };
         let manager = &turn_runtime.acp_manager;
-        if let Err(error) = manager.close(config, resolved_session_key.as_str()).await {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
-        }
-        if let Err(error) =
-            crate::trusted_host_runtime::dispatch_session_shutdown_hook_for_acp_status(
-                config,
-                &view.status,
-                "explicit_close",
-            )
-            .await
-        {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
-        }
+        let close_target = crate::acp_close_runtime::AcpResolvedCloseTarget {
+            resolved_session_key,
+            status: view.status,
+        };
+        let close_outcome = crate::acp_close_runtime::close_resolved_acp_target(
+            config,
+            manager.as_ref(),
+            &close_target,
+            "explicit_close",
+        )
+        .await;
+        let close_outcome = match close_outcome {
+            Ok(close_outcome) => close_outcome,
+            Err(error) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+            }
+        };
 
         Json(ControlPlaneAcpSessionCloseResponse {
             current_session_id: acp_view.current_session_id().to_owned(),
-            resolved_session_key,
+            resolved_session_key: close_outcome.resolved_session_key,
             closed: true,
-            hook_dispatched: true,
+            hook_dispatched: close_outcome.hook_dispatched,
         })
         .into_response()
     }
