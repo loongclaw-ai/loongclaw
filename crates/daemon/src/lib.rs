@@ -156,6 +156,7 @@ mod observability;
 pub mod onboard_cli;
 mod onboard_finalize;
 mod onboard_preflight;
+mod onboard_preflight_presentation;
 pub mod onboard_presentation;
 mod onboard_types;
 mod onboard_web_search;
