@@ -2263,9 +2263,10 @@ fn responses_openai_turn_body_includes_native_web_search_tool_when_enabled() {
     let runtime_config =
         crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(&config, None);
     let provider_tool_surface = super::native_tool_surface::provider_tool_surface(&config);
-    let request_surface = provider_tool_surface
-        .request_surface(&config, &crate::tools::runtime_tool_view(), &runtime_config)
-        .expect("provider request surface");
+    let surface_plan = provider_tool_surface
+        .materialize(&config, &crate::tools::runtime_tool_view(), &runtime_config)
+        .expect("provider tool surface plan");
+    let request_surface = surface_plan.request;
 
     let body = build_turn_request_body(
         &config,
@@ -2321,9 +2322,10 @@ fn responses_openai_turn_body_omits_native_web_search_tool_when_disabled() {
     let runtime_config =
         crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(&config, None);
     let provider_tool_surface = super::native_tool_surface::provider_tool_surface(&config);
-    let request_surface = provider_tool_surface
-        .request_surface(&config, &crate::tools::runtime_tool_view(), &runtime_config)
-        .expect("provider request surface");
+    let surface_plan = provider_tool_surface
+        .materialize(&config, &crate::tools::runtime_tool_view(), &runtime_config)
+        .expect("provider tool surface plan");
+    let request_surface = surface_plan.request;
 
     let body = build_turn_request_body(
         &config,
@@ -2357,9 +2359,10 @@ fn responses_non_openai_turn_body_keeps_function_web_query_mode() {
     let runtime_config =
         crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(&config, None);
     let provider_tool_surface = super::native_tool_surface::provider_tool_surface(&config);
-    let request_surface = provider_tool_surface
-        .request_surface(&config, &crate::tools::runtime_tool_view(), &runtime_config)
-        .expect("provider request surface");
+    let surface_plan = provider_tool_surface
+        .materialize(&config, &crate::tools::runtime_tool_view(), &runtime_config)
+        .expect("provider tool surface plan");
+    let request_surface = surface_plan.request;
 
     let body = build_turn_request_body(
         &config,
@@ -2408,11 +2411,11 @@ fn provider_request_tool_definitions_include_native_web_search_for_openai_respon
     let runtime_config =
         crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(&config, None);
     let provider_tool_surface = super::native_tool_surface::provider_tool_surface(&config);
-    let request_surface = provider_tool_surface
-        .request_surface(&config, &crate::tools::runtime_tool_view(), &runtime_config)
-        .expect("provider request surface");
-    let prompt_surface =
-        provider_tool_surface.prompt_surface(&crate::tools::runtime_tool_view(), &runtime_config);
+    let surface_plan = provider_tool_surface
+        .materialize(&config, &crate::tools::runtime_tool_view(), &runtime_config)
+        .expect("provider tool surface plan");
+    let request_surface = surface_plan.request;
+    let prompt_surface = surface_plan.prompt;
 
     let tools = request_surface.tool_definitions;
 

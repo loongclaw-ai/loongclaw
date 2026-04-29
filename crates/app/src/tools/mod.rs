@@ -152,6 +152,7 @@ pub(crate) use tool_runtime_view::{
     model_visible_external_skill_roots_for_runtime_config, runtime_tool_view_with_runtime_config,
 };
 pub(crate) use tool_snapshot::capability_snapshot_for_direct_states_with_config;
+pub(crate) use tool_snapshot::capability_snapshot_for_view_with_config;
 pub use tool_snapshot::{
     DiscoverableToolSurfaceSummary, ToolRegistryEntry,
     runtime_discoverable_tool_surface_summary_with_config, tool_registry_with_config,
