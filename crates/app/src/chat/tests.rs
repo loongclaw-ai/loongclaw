@@ -1035,6 +1035,20 @@ fn render_cli_chat_startup_lines_prioritize_first_turn_guidance() {
         "chat startup should keep the usage guidance as a structured callout: {lines:#?}"
     );
     assert!(
+        lines.iter().any(|line| line == "compose"),
+        "chat startup should now include a compose panel instead of only informational sections: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line == ">"),
+        "chat startup should expose an empty compose prompt inside the startup shell: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("Enter send · ? help · : or / command menu")),
+        "chat startup should keep the primary compose controls visible in the startup shell: {lines:#?}"
+    );
+    assert!(
         !lines.iter().any(|line| line == "runtime posture"),
         "chat startup should leave the dedicated runtime-posture block to /status: {lines:#?}"
     );
