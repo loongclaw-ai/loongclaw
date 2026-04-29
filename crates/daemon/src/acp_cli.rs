@@ -4,6 +4,16 @@ use crate::{
     CliResult, format_capability_names, format_u32_rollup, format_usize_rollup, gateway, mvp,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcpCloseExecution {
+    pub resolved_config_path: String,
+    pub requested_session_key: Option<String>,
+    pub requested_conversation_id: Option<String>,
+    pub requested_route_session_id: Option<String>,
+    pub resolved_session_key: String,
+    pub hook_dispatched: bool,
+}
+
 pub fn run_list_acp_backends_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
     let (resolved_path, config) = mvp::config::load(config_path)?;
     let snapshot = mvp::acp::collect_acp_runtime_snapshot(&config)?;
@@ -262,6 +272,96 @@ pub async fn run_acp_status_cli(
         status.last_error.as_deref().unwrap_or("(none)")
     );
     Ok(())
+}
+
+pub async fn run_acp_close_cli(
+    config_path: Option<&str>,
+    session_key: Option<&str>,
+    conversation_id: Option<&str>,
+    route_session_id: Option<&str>,
+    as_json: bool,
+) -> CliResult<()> {
+    let execution =
+        execute_acp_close(config_path, session_key, conversation_id, route_session_id).await?;
+
+    if as_json {
+        let payload = json!({
+            "config": execution.resolved_config_path,
+            "requested_session_key": execution.requested_session_key,
+            "requested_conversation_id": execution.requested_conversation_id,
+            "requested_route_session_id": execution.requested_route_session_id,
+            "resolved_session_key": execution.resolved_session_key,
+            "closed": true,
+            "hook_dispatched": execution.hook_dispatched,
+        });
+        let pretty = serde_json::to_string_pretty(&payload)
+            .map_err(|error| format!("serialize ACP close output failed: {error}"))?;
+        println!("{pretty}");
+        return Ok(());
+    }
+
+    println!("config={}", execution.resolved_config_path);
+    if let Some(session_key) = execution.requested_session_key.as_deref() {
+        println!("requested_session={session_key}");
+    }
+    if let Some(conversation_id) = execution.requested_conversation_id.as_deref() {
+        println!("requested_conversation_id={conversation_id}");
+    }
+    if let Some(route_session_id) = execution.requested_route_session_id.as_deref() {
+        println!("requested_route_session_id={route_session_id}");
+    }
+    println!("resolved_session_key={}", execution.resolved_session_key);
+    println!("close=closed hook_dispatched={}", execution.hook_dispatched);
+    Ok(())
+}
+
+async fn execute_acp_close(
+    config_path: Option<&str>,
+    session_key: Option<&str>,
+    conversation_id: Option<&str>,
+    route_session_id: Option<&str>,
+) -> CliResult<AcpCloseExecution> {
+    let (resolved_path, config) = mvp::config::load(config_path)?;
+    let requested_session_key = session_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let requested_conversation_id = conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let requested_route_session_id = route_session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let resolved_session_key = resolve_acp_status_session_key(
+        &config,
+        requested_session_key.as_deref(),
+        requested_conversation_id.as_deref(),
+        requested_route_session_id.as_deref(),
+    )?;
+    let manager = mvp::acp::shared_acp_session_manager(&config)?;
+    let status = manager
+        .get_status(&config, resolved_session_key.as_str())
+        .await?;
+    manager
+        .close(&config, resolved_session_key.as_str())
+        .await?;
+    crate::trusted_host_runtime::dispatch_session_shutdown_hook_for_acp_status(
+        &config,
+        &status,
+        "explicit_close",
+    )
+    .await?;
+
+    Ok(AcpCloseExecution {
+        resolved_config_path: resolved_path.display().to_string(),
+        requested_session_key,
+        requested_conversation_id,
+        requested_route_session_id,
+        resolved_session_key,
+        hook_dispatched: true,
+    })
 }
 
 pub async fn run_acp_observability_cli(config_path: Option<&str>, as_json: bool) -> CliResult<()> {
@@ -874,5 +974,216 @@ pub fn acp_session_state_label(state: mvp::acp::AcpSessionState) -> &'static str
         mvp::acp::AcpSessionState::Cancelling => "cancelling",
         mvp::acp::AcpSessionState::Error => "error",
         mvp::acp::AcpSessionState::Closed => "closed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use async_trait::async_trait;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn write_file(root: &Path, relative_path: &str, contents: &str) {
+        let path = root.join(relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent directories");
+        }
+        fs::write(path, contents).expect("write file");
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).expect("create unique temp dir");
+        path
+    }
+
+    fn install_trusted_shutdown_plugin(root: &Path, marker_path: &Path) {
+        let manifest = serde_json::json!({
+            "api_version": "v1alpha1",
+            "version": "1.0.0",
+            "plugin_id": "trusted-host-extension",
+            "provider_id": "trusted-host-extension",
+            "connector_name": "trusted-host-extension",
+            "capabilities": ["InvokeConnector"],
+            "metadata": {
+                "bridge_kind": "process_stdio",
+                "adapter_family": "javascript-stdio-adapter",
+                "entrypoint": "stdin/stdout::invoke",
+                "source_language": "javascript",
+                "command": "node",
+                "args_json": "[\"index.js\"]",
+                "process_timeout_ms": "15000",
+                "loong_extension_contract": "process_stdio_json_line_v1",
+                "loong_extension_family": "trusted_host_extension",
+                "loong_extension_trust_lane": "trusted_host",
+                "loong_extension_methods_json": "[\"extension/event\"]",
+                "loong_extension_host_hooks_json": "[\"session_shutdown\"]",
+            }
+        });
+        write_file(
+            root,
+            "runtime-plugins/trusted-host/loong.plugin.json",
+            &serde_json::to_string_pretty(&manifest).expect("serialize manifest"),
+        );
+        write_file(
+            root,
+            "runtime-plugins/trusted-host/index.js",
+            &format!(
+                "#!/usr/bin/env node\nconst fs = require('fs');\nconst markerPath = {:?};\nfunction emitResponse(line) {{ const trimmed = line.trim(); if (!trimmed) return; const request = JSON.parse(trimmed); const payload = request.payload ?? {{}}; const hook = payload.payload?.host_hook ?? null; fs.writeFileSync(markerPath, hook ?? 'unknown'); const response = {{ method: request.method ?? '', id: request.id ?? null, payload: {{ handled_hook: hook, closed_session_key: payload.payload?.hook_payload?.session_key ?? null }} }}; process.stdout.write(`${{JSON.stringify(response)}}\\n`); }} process.stdin.setEncoding('utf8'); let buffered=''; process.stdin.on('data', chunk => {{ buffered += chunk; let newlineIndex = buffered.indexOf('\\n'); while (newlineIndex !== -1) {{ const line = buffered.slice(0, newlineIndex); buffered = buffered.slice(newlineIndex + 1); emitResponse(line); newlineIndex = buffered.indexOf('\\n'); }} }}); process.stdin.on('end', () => {{ if (buffered.trim()) emitResponse(buffered); }}); process.stdin.resume();\n",
+                marker_path.display().to_string()
+            ),
+        );
+    }
+
+    struct CloseTestBackend {
+        id: &'static str,
+    }
+
+    impl CloseTestBackend {
+        fn new(id: &'static str) -> Self {
+            Self { id }
+        }
+    }
+
+    #[async_trait]
+    impl mvp::acp::AcpRuntimeBackend for CloseTestBackend {
+        fn id(&self) -> &'static str {
+            self.id
+        }
+
+        async fn ensure_session(
+            &self,
+            _config: &mvp::config::LoongConfig,
+            request: &mvp::acp::AcpSessionBootstrap,
+        ) -> CliResult<mvp::acp::AcpSessionHandle> {
+            Ok(mvp::acp::AcpSessionHandle {
+                session_key: request.session_key.clone(),
+                backend_id: self.id().to_owned(),
+                runtime_session_name: format!("acp-close-{}", request.session_key),
+                working_directory: request.working_directory.clone(),
+                backend_session_id: Some(format!("backend-{}", request.session_key)),
+                agent_session_id: Some(format!("agent-{}", request.session_key)),
+                binding: request.binding.clone(),
+            })
+        }
+
+        async fn run_turn(
+            &self,
+            _config: &mvp::config::LoongConfig,
+            _session: &mvp::acp::AcpSessionHandle,
+            request: &mvp::acp::AcpTurnRequest,
+        ) -> CliResult<mvp::acp::AcpTurnResult> {
+            Ok(mvp::acp::AcpTurnResult {
+                output_text: request.input.clone(),
+                state: mvp::acp::AcpSessionState::Ready,
+                usage: None,
+                events: Vec::new(),
+                stop_reason: Some(mvp::acp::AcpTurnStopReason::Completed),
+            })
+        }
+
+        async fn close(
+            &self,
+            _config: &mvp::config::LoongConfig,
+            _session: &mvp::acp::AcpSessionHandle,
+        ) -> CliResult<()> {
+            Ok(())
+        }
+
+        async fn cancel(
+            &self,
+            _config: &mvp::config::LoongConfig,
+            _session: &mvp::acp::AcpSessionHandle,
+        ) -> CliResult<()> {
+            Ok(())
+        }
+    }
+
+    fn register_close_test_backend(backend_id: &'static str) {
+        mvp::acp::register_acp_backend(backend_id, move || {
+            Box::new(CloseTestBackend::new(backend_id))
+        })
+        .expect("register close test backend");
+    }
+
+    #[tokio::test]
+    async fn execute_acp_close_closes_session_and_dispatches_shutdown_hook() {
+        let root = unique_temp_dir("loong-acp-close");
+        let marker_path = root.join("session-shutdown-marker.txt");
+        install_trusted_shutdown_plugin(&root, &marker_path);
+        let config_path = root.join("loong.toml");
+        let backend_id: &'static str = Box::leak(
+            format!(
+                "acp-close-backend-{}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("system time should be after epoch")
+                    .as_nanos()
+            )
+            .into_boxed_str(),
+        );
+        register_close_test_backend(backend_id);
+
+        let mut config = mvp::config::LoongConfig::default();
+        config.acp.enabled = true;
+        config.acp.backend = Some(backend_id.to_owned());
+        config.memory.sqlite_path = root.join("memory.sqlite3").display().to_string();
+        config.runtime_plugins.enabled = true;
+        config.runtime_plugins.roots = vec![root.join("runtime-plugins").display().to_string()];
+        config.runtime_plugins.supported_bridges = vec!["process_stdio".to_owned()];
+        config.runtime_plugins.allowed_process_commands = vec!["node".to_owned()];
+        mvp::config::write(Some(config_path.to_string_lossy().as_ref()), &config, true)
+            .expect("write config");
+
+        let manager = mvp::acp::shared_acp_session_manager(&config).expect("shared acp manager");
+        manager
+            .ensure_session(
+                &config,
+                &mvp::acp::AcpSessionBootstrap {
+                    session_key: "agent:codex:close-me".to_owned(),
+                    conversation_id: Some("close-me".to_owned()),
+                    binding: None,
+                    working_directory: None,
+                    initial_prompt: None,
+                    mode: Some(mvp::acp::AcpSessionMode::Interactive),
+                    mcp_servers: Vec::new(),
+                    metadata: BTreeMap::new(),
+                },
+            )
+            .await
+            .expect("ensure session");
+
+        let execution = execute_acp_close(
+            Some(config_path.to_string_lossy().as_ref()),
+            Some("agent:codex:close-me"),
+            None,
+            None,
+        )
+        .await
+        .expect("acp close should succeed");
+
+        assert_eq!(execution.resolved_session_key, "agent:codex:close-me");
+        assert!(execution.hook_dispatched);
+        let remaining = manager.list_sessions().expect("list sessions after close");
+        assert!(
+            remaining
+                .iter()
+                .all(|session| session.session_key != "agent:codex:close-me"),
+            "session should be removed after close"
+        );
+        let marker_contents =
+            fs::read_to_string(&marker_path).expect("session_shutdown hook should write marker");
+        assert_eq!(marker_contents, "session_shutdown");
     }
 }

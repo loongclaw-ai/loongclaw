@@ -197,9 +197,9 @@ pub use self::acp_cli::{
     acp_event_summary_json, acp_manager_observability_json, acp_session_activation_provenance_json,
     acp_session_metadata_json, acp_session_mode_label, acp_session_state_label,
     acp_session_status_json, acp_turn_provenance_json, build_acp_dispatch_address,
-    format_acp_event_summary, resolve_acp_status_session_key, run_acp_dispatch_cli,
-    run_acp_doctor_cli, run_acp_event_summary_cli, run_acp_observability_cli, run_acp_status_cli,
-    run_list_acp_backends_cli, run_list_acp_sessions_cli,
+    format_acp_event_summary, resolve_acp_status_session_key, run_acp_close_cli,
+    run_acp_dispatch_cli, run_acp_doctor_cli, run_acp_event_summary_cli, run_acp_observability_cli,
+    run_acp_status_cli, run_list_acp_backends_cli, run_list_acp_sessions_cli,
 };
 use channel_access_policy_render::{
     channel_access_policy_by_account, render_channel_access_policy_line,
@@ -948,6 +948,19 @@ pub enum Commands {
     },
     /// Inspect live ACP session status by session key or conversation identity
     AcpStatus {
+        #[arg(long)]
+        config: Option<String>,
+        #[arg(long, conflicts_with_all = ["conversation_id", "route_session_id"])]
+        session: Option<String>,
+        #[arg(long, conflicts_with_all = ["session", "route_session_id"])]
+        conversation_id: Option<String>,
+        #[arg(long, conflicts_with_all = ["session", "conversation_id"])]
+        route_session_id: Option<String>,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Close one ACP session and dispatch trusted host session_shutdown if present
+    AcpClose {
         #[arg(long)]
         config: Option<String>,
         #[arg(long, conflicts_with_all = ["conversation_id", "route_session_id"])]

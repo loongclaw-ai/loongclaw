@@ -579,6 +579,22 @@ async fn run_command(command: Commands) -> CliResult<()> {
             )
             .await
         }
+        Commands::AcpClose {
+            config,
+            session,
+            conversation_id,
+            route_session_id,
+            json,
+        } => {
+            run_acp_close_cli(
+                config.as_deref(),
+                session.as_deref(),
+                conversation_id.as_deref(),
+                route_session_id.as_deref(),
+                json,
+            )
+            .await
+        }
         Commands::AcpObservability { config, json } => {
             run_acp_observability_cli(config.as_deref(), json).await
         }

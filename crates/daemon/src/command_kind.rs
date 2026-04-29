@@ -46,6 +46,7 @@ impl Commands {
             Self::ListAcpBackends { .. } => "list_acp_backends",
             Self::ListAcpSessions { .. } => "list_acp_sessions",
             Self::AcpStatus { .. } => "acp_status",
+            Self::AcpClose { .. } => "acp_close",
             Self::AcpObservability { .. } => "acp_observability",
             Self::AcpEventSummary { .. } => "acp_event_summary",
             Self::AcpDispatch { .. } => "acp_dispatch",

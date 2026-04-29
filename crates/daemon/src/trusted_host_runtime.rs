@@ -196,6 +196,21 @@ pub(crate) async fn dispatch_session_start_hook_for_new_acp_session(
         .map(|_| ())
 }
 
+pub(crate) async fn dispatch_session_shutdown_hook_for_acp_status(
+    config: &mvp::config::LoongConfig,
+    status: &mvp::acp::AcpSessionStatus,
+    reason: &str,
+) -> CliResult<()> {
+    let payload = json!({
+        "session_key": status.session_key,
+        "reason": reason,
+        "status_before_close": status,
+    });
+    dispatch_trusted_host_hook(config, "session_shutdown", payload)
+        .await
+        .map(|_| ())
+}
+
 pub(crate) async fn dispatch_turn_end_hook_for_success(
     config: &mvp::config::LoongConfig,
     session_hint: Option<&str>,
