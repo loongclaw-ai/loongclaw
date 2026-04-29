@@ -184,6 +184,7 @@ mod session_runtime_truth_cli;
 pub mod sessions_cli;
 pub mod skills_cli;
 pub mod source_presentation;
+mod status_access;
 pub mod status_cli;
 pub mod supervisor;
 mod task_execution;

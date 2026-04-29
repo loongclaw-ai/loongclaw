@@ -401,12 +401,13 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
     };
     let tool_calling = &runtime.tool_calling;
     let access = &runtime.access;
-    let ordinary_network_detail = render_access_ordinary_network_detail(access);
-    let query_search_detail = render_access_query_search_detail(access);
-    let browser_page_detail = render_access_browser_page_detail(access);
-    let managed_browser_detail = render_access_managed_browser_detail(access);
-    let governance_detail = render_access_governance_detail(access);
-    let web_boundary_note = access.separation_note.clone();
+    let access_presentation = crate::status_access::build_status_access_presentation(access);
+    let ordinary_network_detail = access_presentation.ordinary_network_detail;
+    let query_search_detail = access_presentation.query_search_detail;
+    let browser_page_detail = access_presentation.browser_page_detail;
+    let managed_browser_detail = access_presentation.managed_browser_detail;
+    let governance_detail = access_presentation.governance_detail;
+    let web_boundary_note = access_presentation.boundary_note;
     let mut sections = Vec::new();
 
     if let Some(primary_action) = status.next_actions.first() {
@@ -476,7 +477,7 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
                 detail: format!("availability={}", status.work_units.availability),
             },
             loong_app::tui_surface::TuiChecklistItemSpec {
-                status: if access.ordinary_network_access_enabled {
+                status: if crate::status_access::ordinary_network_is_ready(access) {
                     loong_app::tui_surface::TuiChecklistStatus::Pass
                 } else {
                     loong_app::tui_surface::TuiChecklistStatus::Warn
@@ -485,12 +486,16 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
                 detail: ordinary_network_detail.clone(),
             },
             loong_app::tui_surface::TuiChecklistItemSpec {
-                status: query_search_checklist_status(access),
+                status: if crate::status_access::query_search_is_ready(access) {
+                    loong_app::tui_surface::TuiChecklistStatus::Pass
+                } else {
+                    loong_app::tui_surface::TuiChecklistStatus::Warn
+                },
                 label: "query search".to_owned(),
                 detail: query_search_detail.clone(),
             },
             loong_app::tui_surface::TuiChecklistItemSpec {
-                status: if access.browser_page_access_enabled {
+                status: if crate::status_access::browser_page_is_ready(access) {
                     loong_app::tui_surface::TuiChecklistStatus::Pass
                 } else {
                     loong_app::tui_surface::TuiChecklistStatus::Warn
@@ -499,9 +504,7 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
                 detail: browser_page_detail,
             },
             loong_app::tui_surface::TuiChecklistItemSpec {
-                status: if !access.managed_browser_session_enabled
-                    || access.managed_browser_session_ready
-                {
+                status: if crate::status_access::managed_browser_is_ready(access) {
                     loong_app::tui_surface::TuiChecklistStatus::Pass
                 } else {
                     loong_app::tui_surface::TuiChecklistStatus::Warn
@@ -1039,57 +1042,6 @@ fn render_optional_usize(value: Option<usize>) -> String {
     value.unwrap_or_else(|| "-".to_owned())
 }
 
-fn render_access_ordinary_network_detail(
-    access: &crate::gateway::read_models::GatewayToolAccessReadModel,
-) -> String {
-    format!("enabled={}", access.ordinary_network_access_enabled)
-}
-
-fn render_access_query_search_detail(
-    access: &crate::gateway::read_models::GatewayToolAccessReadModel,
-) -> String {
-    format!(
-        "enabled={} · provider={} · credential_ready={}",
-        access.query_search_enabled,
-        access.query_search_default_provider,
-        access.query_search_credential_ready,
-    )
-}
-
-fn query_search_checklist_status(
-    access: &crate::gateway::read_models::GatewayToolAccessReadModel,
-) -> loong_app::tui_surface::TuiChecklistStatus {
-    if !access.query_search_enabled || access.query_search_credential_ready {
-        loong_app::tui_surface::TuiChecklistStatus::Pass
-    } else {
-        loong_app::tui_surface::TuiChecklistStatus::Warn
-    }
-}
-
-fn render_access_browser_page_detail(
-    access: &crate::gateway::read_models::GatewayToolAccessReadModel,
-) -> String {
-    format!("enabled={}", access.browser_page_access_enabled)
-}
-
-fn render_access_managed_browser_detail(
-    access: &crate::gateway::read_models::GatewayToolAccessReadModel,
-) -> String {
-    format!(
-        "enabled={} · ready={}",
-        access.managed_browser_session_enabled, access.managed_browser_session_ready
-    )
-}
-
-fn render_access_governance_detail(
-    access: &crate::gateway::read_models::GatewayToolAccessReadModel,
-) -> String {
-    format!(
-        "consent_mode={} · approval_mode={}",
-        access.consent_mode, access.approval_mode
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1130,7 +1082,11 @@ mod tests {
             separation_note: crate::RUNTIME_TOOL_ACCESS_SEPARATION_NOTE.to_owned(),
         };
         assert_eq!(
-            query_search_checklist_status(&disabled),
+            if crate::status_access::query_search_is_ready(&disabled) {
+                loong_app::tui_surface::TuiChecklistStatus::Pass
+            } else {
+                loong_app::tui_surface::TuiChecklistStatus::Warn
+            },
             loong_app::tui_surface::TuiChecklistStatus::Pass
         );
 
@@ -1147,7 +1103,11 @@ mod tests {
             separation_note: crate::RUNTIME_TOOL_ACCESS_SEPARATION_NOTE.to_owned(),
         };
         assert_eq!(
-            query_search_checklist_status(&enabled_missing_credential),
+            if crate::status_access::query_search_is_ready(&enabled_missing_credential) {
+                loong_app::tui_surface::TuiChecklistStatus::Pass
+            } else {
+                loong_app::tui_surface::TuiChecklistStatus::Warn
+            },
             loong_app::tui_surface::TuiChecklistStatus::Warn
         );
     }
