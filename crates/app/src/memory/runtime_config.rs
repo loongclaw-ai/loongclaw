@@ -331,10 +331,12 @@ mod tests {
         let schema_version = default_personalization.schema_version;
         let personalization = PersonalizationConfig {
             preferred_name: Some("Chum".to_owned()),
+            pronouns: Some("he/they".to_owned()),
             response_density: Some(crate::config::ResponseDensity::Balanced),
             initiative_level: Some(crate::config::InitiativeLevel::AskBeforeActing),
             standing_boundaries: Some("Ask before destructive actions.".to_owned()),
             timezone: Some("Asia/Shanghai".to_owned()),
+            notes: Some("Works mostly late at night.".to_owned()),
             locale: Some("zh-CN".to_owned()),
             prompt_state: crate::config::PersonalizationPromptState::Suppressed,
             schema_version,

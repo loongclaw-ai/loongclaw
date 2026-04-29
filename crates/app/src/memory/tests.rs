@@ -364,10 +364,12 @@ fn load_prompt_context_with_diagnostics_projects_typed_personalization_without_p
     let schema_version = default_personalization.schema_version;
     let personalization = crate::config::PersonalizationConfig {
         preferred_name: Some("Chum".to_owned()),
+        pronouns: Some("he/they".to_owned()),
         response_density: Some(crate::config::ResponseDensity::Balanced),
         initiative_level: Some(crate::config::InitiativeLevel::AskBeforeActing),
         standing_boundaries: Some("Ask before destructive actions.".to_owned()),
         timezone: Some("Asia/Shanghai".to_owned()),
+        notes: Some("Works mostly late at night.".to_owned()),
         locale: None,
         prompt_state: crate::config::PersonalizationPromptState::Configured,
         schema_version,
@@ -401,7 +403,7 @@ fn load_prompt_context_with_diagnostics_projects_typed_personalization_without_p
     assert!(profile_content.contains("## Session Profile"));
     assert!(profile_content.contains("Preferred name: Chum"));
     assert!(profile_content.contains("Response density: balanced"));
-    assert!(profile_content.contains("Initiative level: ask before acting"));
+    assert!(profile_content.contains("Initiative level: ask_before_acting"));
     assert!(profile_content.contains("Ask before destructive actions."));
     assert!(profile_content.contains("Timezone: Asia/Shanghai"));
     assert!(!profile_content.contains("## Resolved Runtime Identity"));
@@ -778,7 +780,6 @@ fn registry_selected_system_can_override_memory_runtime_execution() {
             let envelope = StageEnvelope {
                 hydrated,
                 retrieval_request: None,
-                retrieval_planner_snapshot: None,
                 diagnostics: vec![StageDiagnostics::succeeded(MemoryStageFamily::Retrieve)],
             };
 
