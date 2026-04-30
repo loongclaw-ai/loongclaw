@@ -123,7 +123,6 @@ const CLI_CHAT_STATUS_COMMAND: &str = "/status";
 const CLI_CHAT_HISTORY_COMMAND: &str = "/history";
 const CLI_CHAT_MISSION_COMMAND: &str = "/mission";
 const CLI_CHAT_REVIEW_COMMAND: &str = "/review";
-const CLI_CHAT_WORKERS_COMMAND: &str = "/workers";
 const CLI_CHAT_SESSIONS_COMMAND: &str = "/sessions";
 const CLI_CHAT_TURN_CHECKPOINT_REPAIR_COMMAND: &str = "/turn_checkpoint_repair";
 const CLI_CHAT_TURN_CHECKPOINT_REPAIR_COMMAND_ALIAS: &str = "/turn-checkpoint-repair";
@@ -4589,12 +4588,6 @@ mod tests {
             "help output should surface the session queue command: {lines:#?}"
         );
         assert!(
-            lines.iter().any(|line| {
-                line.contains("/workers: inspect visible worker/delegate sessions")
-            }),
-            "help output should surface the workers command: {lines:#?}"
-        );
-        assert!(
             lines.iter().any(|line| line
                 .contains("/status: show session, runtime, compaction, and durability status")),
             "help output should surface the status command: {lines:#?}"
@@ -5640,14 +5633,6 @@ allowed_decisions: yes / auto / full / esc";
             parse_exact_chat_command("/review now", &[CLI_CHAT_REVIEW_COMMAND], "usage: /review")
                 .expect_err("review should reject extra args");
         assert_eq!(review_error, "usage: /review");
-
-        let workers_error = parse_exact_chat_command(
-            "/workers now",
-            &[CLI_CHAT_WORKERS_COMMAND],
-            "usage: /workers",
-        )
-        .expect_err("workers should reject extra args");
-        assert_eq!(workers_error, "usage: /workers");
     }
 
     #[test]

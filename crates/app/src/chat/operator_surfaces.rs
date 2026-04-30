@@ -44,7 +44,6 @@ use super::CLI_CHAT_SESSIONS_COMMAND;
 use super::CLI_CHAT_STATUS_COMMAND;
 use super::CLI_CHAT_TURN_CHECKPOINT_REPAIR_COMMAND;
 use super::CLI_CHAT_TURN_CHECKPOINT_REPAIR_COMMAND_ALIAS;
-use super::CLI_CHAT_WORKERS_COMMAND;
 use super::CliChatOptions;
 use super::CliTurnRuntime;
 use super::DEFAULT_FIRST_PROMPT;
@@ -654,27 +653,6 @@ fn build_cli_chat_help_message_spec() -> TuiMessageSpec {
         TuiKeyValueSpec::Plain {
             key: CLI_CHAT_REVIEW_COMMAND.to_owned(),
             value: "reopen the latest approval/review summary in the current session".to_owned(),
-        },
-        TuiKeyValueSpec::Plain {
-            key: CLI_CHAT_WORKERS_COMMAND.to_owned(),
-            value: "inspect visible worker/delegate sessions from the current session scope"
-                .to_owned(),
-        },
-        TuiKeyValueSpec::Plain {
-            key: "/fast_lane_summary [limit]".to_owned(),
-            value: "summarize fast-lane batch execution events".to_owned(),
-        },
-        TuiKeyValueSpec::Plain {
-            key: "/safe_lane_summary [limit]".to_owned(),
-            value: "summarize safe-lane runtime events".to_owned(),
-        },
-        TuiKeyValueSpec::Plain {
-            key: "/turn_checkpoint_summary [limit]".to_owned(),
-            value: "summarize durable turn finalization state".to_owned(),
-        },
-        TuiKeyValueSpec::Plain {
-            key: CLI_CHAT_TURN_CHECKPOINT_REPAIR_COMMAND.to_owned(),
-            value: "repair durable turn finalization tail when safe".to_owned(),
         },
         TuiKeyValueSpec::Plain {
             key: "$skill-name <request>".to_owned(),
