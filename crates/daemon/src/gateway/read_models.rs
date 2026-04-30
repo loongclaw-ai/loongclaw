@@ -55,7 +55,7 @@ pub struct GatewayChannelInventorySummaryReadModel {
     pub catalog_only_surface_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpBindingScopeReadModel {
     pub route_session_id: String,
     pub channel_id: Option<String>,
@@ -65,31 +65,31 @@ pub struct GatewayAcpBindingScopeReadModel {
     pub thread_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpSessionActivationProvenanceReadModel {
-    pub surface: &'static str,
-    pub activation_origin: Option<&'static str>,
+    pub surface: String,
+    pub activation_origin: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpSessionMetadataReadModel {
     pub session_key: String,
     pub conversation_id: Option<String>,
     pub binding: Option<GatewayAcpBindingScopeReadModel>,
-    pub activation_origin: Option<&'static str>,
+    pub activation_origin: Option<String>,
     pub provenance: GatewayAcpSessionActivationProvenanceReadModel,
     pub backend_id: String,
     pub runtime_session_name: String,
     pub working_directory: Option<String>,
     pub backend_session_id: Option<String>,
     pub agent_session_id: Option<String>,
-    pub mode: Option<&'static str>,
-    pub state: &'static str,
+    pub mode: Option<String>,
+    pub state: String,
     pub last_activity_ms: u64,
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpSessionListReadModel {
     pub config: String,
     pub matched_count: usize,
@@ -97,23 +97,23 @@ pub struct GatewayAcpSessionListReadModel {
     pub sessions: Vec<GatewayAcpSessionMetadataReadModel>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpSessionStatusReadModel {
     pub session_key: String,
     pub backend_id: String,
     pub conversation_id: Option<String>,
     pub binding: Option<GatewayAcpBindingScopeReadModel>,
-    pub activation_origin: Option<&'static str>,
+    pub activation_origin: Option<String>,
     pub provenance: GatewayAcpSessionActivationProvenanceReadModel,
-    pub state: &'static str,
-    pub mode: Option<&'static str>,
+    pub state: String,
+    pub mode: Option<String>,
     pub pending_turns: usize,
     pub active_turn_id: Option<String>,
     pub last_activity_ms: u64,
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpStatusReadModel {
     pub config: String,
     pub requested_session: Option<String>,
@@ -123,7 +123,7 @@ pub struct GatewayAcpStatusReadModel {
     pub status: GatewayAcpSessionStatusReadModel,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpCloseReadModel {
     pub config: String,
     pub requested_session: Option<String>,
@@ -719,8 +719,10 @@ fn build_acp_binding_scope_read_model(
 fn build_acp_session_activation_provenance_read_model(
     origin: Option<mvp::acp::AcpRoutingOrigin>,
 ) -> GatewayAcpSessionActivationProvenanceReadModel {
-    let activation_origin = origin.map(mvp::acp::AcpRoutingOrigin::as_str);
-    let surface = "session_activation";
+    let activation_origin = origin
+        .map(mvp::acp::AcpRoutingOrigin::as_str)
+        .map(str::to_owned);
+    let surface = "session_activation".to_owned();
 
     GatewayAcpSessionActivationProvenanceReadModel {
         surface,
@@ -739,7 +741,8 @@ fn build_acp_session_metadata_read_model(
         .map(build_acp_binding_scope_read_model);
     let activation_origin = metadata
         .activation_origin
-        .map(mvp::acp::AcpRoutingOrigin::as_str);
+        .map(mvp::acp::AcpRoutingOrigin::as_str)
+        .map(str::to_owned);
     let provenance = build_acp_session_activation_provenance_read_model(metadata.activation_origin);
     let backend_id = metadata.backend_id.clone();
     let runtime_session_name = metadata.runtime_session_name.clone();
@@ -749,8 +752,11 @@ fn build_acp_session_metadata_read_model(
         .map(|path| path.display().to_string());
     let backend_session_id = metadata.backend_session_id.clone();
     let agent_session_id = metadata.agent_session_id.clone();
-    let mode = metadata.mode.map(crate::acp_session_mode_label);
-    let state = crate::acp_session_state_label(metadata.state);
+    let mode = metadata
+        .mode
+        .map(crate::acp_session_mode_label)
+        .map(str::to_owned);
+    let state = crate::acp_session_state_label(metadata.state).to_owned();
     let last_activity_ms = metadata.last_activity_ms;
     let last_error = metadata.last_error.clone();
 
@@ -784,10 +790,14 @@ fn build_acp_session_status_read_model(
         .map(build_acp_binding_scope_read_model);
     let activation_origin = status
         .activation_origin
-        .map(mvp::acp::AcpRoutingOrigin::as_str);
+        .map(mvp::acp::AcpRoutingOrigin::as_str)
+        .map(str::to_owned);
     let provenance = build_acp_session_activation_provenance_read_model(status.activation_origin);
-    let state = crate::acp_session_state_label(status.state);
-    let mode = status.mode.map(crate::acp_session_mode_label);
+    let state = crate::acp_session_state_label(status.state).to_owned();
+    let mode = status
+        .mode
+        .map(crate::acp_session_mode_label)
+        .map(str::to_owned);
     let pending_turns = status.pending_turns;
     let active_turn_id = status.active_turn_id.clone();
     let last_activity_ms = status.last_activity_ms;

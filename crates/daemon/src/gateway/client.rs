@@ -11,7 +11,10 @@ use serde_json::Value;
 use crate::CliResult;
 
 use super::{
-    read_models::GatewayOperatorSummaryReadModel,
+    read_models::{
+        GatewayAcpCloseReadModel, GatewayAcpSessionListReadModel, GatewayAcpStatusReadModel,
+        GatewayOperatorSummaryReadModel,
+    },
     state::{GatewayOwnerStatus, default_gateway_runtime_state_dir, load_gateway_owner_status},
 };
 
@@ -160,13 +163,40 @@ impl GatewayLocalClient {
             .await
     }
 
+    pub async fn acp_sessions_read_model(
+        &self,
+        request: &GatewayAcpSessionsRequest,
+    ) -> CliResult<GatewayAcpSessionListReadModel> {
+        let path = "/api/gateway/acp/sessions";
+        self.request_json_with_query(Method::GET, path, request)
+            .await
+    }
+
     pub async fn acp_status(&self, request: &GatewayAcpStatusRequest<'_>) -> CliResult<Value> {
         let path = "/api/gateway/acp/status";
         self.request_json_with_query(Method::GET, path, request)
             .await
     }
 
+    pub async fn acp_status_read_model(
+        &self,
+        request: &GatewayAcpStatusRequest<'_>,
+    ) -> CliResult<GatewayAcpStatusReadModel> {
+        let path = "/api/gateway/acp/status";
+        self.request_json_with_query(Method::GET, path, request)
+            .await
+    }
+
     pub async fn acp_close(&self, request: &GatewayAcpCloseRequest<'_>) -> CliResult<Value> {
+        let path = "/api/gateway/acp/close";
+        self.request_json_with_body(Method::POST, path, request)
+            .await
+    }
+
+    pub async fn acp_close_read_model(
+        &self,
+        request: &GatewayAcpCloseRequest<'_>,
+    ) -> CliResult<GatewayAcpCloseReadModel> {
         let path = "/api/gateway/acp/close";
         self.request_json_with_body(Method::POST, path, request)
             .await

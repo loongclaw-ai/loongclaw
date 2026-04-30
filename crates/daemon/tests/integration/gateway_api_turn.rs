@@ -20,7 +20,10 @@ use axum::{
 use loong_daemon::{
     CliResult,
     gateway::{
-        client::{GatewayAcpSessionsRequest, GatewayAcpStatusRequest, GatewayLocalClient},
+        client::{
+            GatewayAcpCloseRequest, GatewayAcpSessionsRequest, GatewayAcpStatusRequest,
+            GatewayLocalClient,
+        },
         service::run_gateway_run_with_hooks_for_test,
         state::{load_gateway_owner_status, request_gateway_stop},
     },
@@ -460,6 +463,10 @@ async fn gateway_acp_operator_endpoints_surface_shared_session_truth() {
         .acp_sessions(&sessions_request)
         .await
         .expect("read gateway ACP sessions");
+    let sessions_read_model = client
+        .acp_sessions_read_model(&sessions_request)
+        .await
+        .expect("read gateway ACP sessions as typed payload");
 
     assert_eq!(sessions["matched_count"].as_u64(), Some(1));
     assert_eq!(sessions["returned_count"].as_u64(), Some(1));
@@ -471,6 +478,13 @@ async fn gateway_acp_operator_endpoints_surface_shared_session_truth() {
     assert_eq!(session["session_key"], "agent:codex:gateway-session");
     assert_eq!(session["backend_id"], backend_id);
     assert_eq!(session["conversation_id"], "gateway-session");
+    assert_eq!(sessions_read_model.matched_count, 1);
+    assert_eq!(sessions_read_model.returned_count, 1);
+    assert_eq!(sessions_read_model.sessions.len(), 1);
+    assert_eq!(
+        sessions_read_model.sessions[0].session_key,
+        "agent:codex:gateway-session"
+    );
 
     let status_request = GatewayAcpStatusRequest {
         session: None,
@@ -481,6 +495,10 @@ async fn gateway_acp_operator_endpoints_surface_shared_session_truth() {
         .acp_status(&status_request)
         .await
         .expect("read gateway ACP status");
+    let status_read_model = client
+        .acp_status_read_model(&status_request)
+        .await
+        .expect("read gateway ACP status as typed payload");
 
     assert_eq!(
         status["resolved_session_key"],
@@ -488,6 +506,12 @@ async fn gateway_acp_operator_endpoints_surface_shared_session_truth() {
     );
     assert_eq!(status["status"]["backend_id"], backend_id);
     assert_eq!(status["status"]["state"], "ready");
+    assert_eq!(
+        status_read_model.resolved_session_key,
+        "agent:codex:gateway-session"
+    );
+    assert_eq!(status_read_model.status.backend_id, backend_id);
+    assert_eq!(status_read_model.status.state, "ready");
 
     let observability = client
         .acp_observability()
@@ -499,6 +523,23 @@ async fn gateway_acp_operator_endpoints_surface_shared_session_truth() {
     assert!(active_sessions.is_some());
     let errors_by_code = observability["snapshot"]["errors_by_code"].as_object();
     assert!(errors_by_code.is_some());
+
+    let close_request = GatewayAcpCloseRequest {
+        session: None,
+        conversation_id: Some("gateway-session"),
+        route_session_id: None,
+    };
+    let close_read_model = client
+        .acp_close_read_model(&close_request)
+        .await
+        .expect("close gateway ACP session as typed payload");
+    assert_eq!(
+        close_read_model.resolved_session_key,
+        "agent:codex:gateway-session"
+    );
+    assert!(close_read_model.closed);
+    assert!(close_read_model.hook_dispatched);
+    assert_eq!(close_read_model.shutdown_reason, "explicit_close");
 
     request_gateway_stop(runtime_dir.as_path()).expect("request gateway stop");
 
