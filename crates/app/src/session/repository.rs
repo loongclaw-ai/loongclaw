@@ -5211,6 +5211,16 @@ mod tests {
             "source_end_node_id still dangles: {:?}",
             artifact.source_end_node_id
         );
+
+        // (5) artifact.head_name must be nulled in lockstep with the dropped
+        //     head, otherwise session_artifacts.head_name points at a row
+        //     that no longer exists in session_heads -- the same shape of
+        //     dangling pointer the *_node_id nulling guards against.
+        assert!(
+            artifact.head_name.is_none(),
+            "artifact.head_name still references the dropped head: {:?}",
+            artifact.head_name
+        );
     }
 
     // Edge: only some of the artifact's *_node_id columns dangle; the in-range
