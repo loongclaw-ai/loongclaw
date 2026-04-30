@@ -31,6 +31,16 @@ pub struct GatewayAcpStatusRequest<'a> {
     pub route_session_id: Option<&'a str>,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GatewayAcpCloseRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_session_id: Option<&'a str>,
+}
+
 #[derive(Debug, Clone)]
 pub struct GatewayLocalDiscovery {
     runtime_dir: PathBuf,
@@ -156,6 +166,12 @@ impl GatewayLocalClient {
             .await
     }
 
+    pub async fn acp_close(&self, request: &GatewayAcpCloseRequest<'_>) -> CliResult<Value> {
+        let path = "/api/gateway/acp/close";
+        self.request_json_with_body(Method::POST, path, request)
+            .await
+    }
+
     pub async fn acp_observability(&self) -> CliResult<Value> {
         let path = "/v1/acp/observability";
         self.request_json(Method::GET, path).await
@@ -263,6 +279,28 @@ impl GatewayLocalClient {
         let method_name = method.as_str().to_owned();
         let request_builder = self.http_client.request(method, endpoint.as_str());
         let request_builder = request_builder.query(query);
+        let request_builder = request_builder.bearer_auth(self.discovery.bearer_token());
+        let response = self
+            .send_gateway_request(request_builder, endpoint.as_str())
+            .await?;
+        self.decode_gateway_json_response(response, endpoint.as_str(), method_name.as_str(), path)
+            .await
+    }
+
+    async fn request_json_with_body<T, B>(
+        &self,
+        method: Method,
+        path: &str,
+        body: &B,
+    ) -> CliResult<T>
+    where
+        T: DeserializeOwned,
+        B: Serialize + ?Sized,
+    {
+        let endpoint = self.endpoint_url(path)?;
+        let method_name = method.as_str().to_owned();
+        let request_builder = self.http_client.request(method, endpoint.as_str());
+        let request_builder = request_builder.json(body);
         let request_builder = request_builder.bearer_auth(self.discovery.bearer_token());
         let response = self
             .send_gateway_request(request_builder, endpoint.as_str())

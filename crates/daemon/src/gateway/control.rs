@@ -14,6 +14,7 @@ use axum::{
     routing::{get, post},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use loong_protocol::ControlPlaneAcpSessionCloseRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
@@ -37,9 +38,10 @@ use super::event_bus::GatewayEventBus;
 use super::openai_compat::{handle_chat_completions, handle_models};
 use super::read_models::{
     GatewayChannelInventoryReadModel, GatewayOperatorSummaryReadModel,
-    GatewayRuntimeSnapshotReadModel, build_acp_observability_read_model,
-    build_acp_session_list_read_model, build_acp_status_read_model,
-    build_operator_summary_read_model, build_runtime_snapshot_read_model_with_inventory,
+    GatewayRuntimeSnapshotReadModel, build_acp_close_read_model,
+    build_acp_observability_read_model, build_acp_session_list_read_model,
+    build_acp_status_read_model, build_operator_summary_read_model,
+    build_runtime_snapshot_read_model_with_inventory,
 };
 use super::state::{
     GatewayControlSurfaceBinding, GatewayStopRequestOutcome, gateway_control_token_path,
@@ -347,11 +349,13 @@ fn build_gateway_control_router(app_state: Arc<GatewayControlAppState>) -> Route
             "/api/gateway/acp/observability",
             get(handle_gateway_acp_observability),
         )
+        .route("/api/gateway/acp/close", post(handle_gateway_acp_close))
         .route("/api/gateway/stop", post(handle_gateway_stop))
         .route("/v1/status", get(handle_gateway_status))
         .route("/v1/channels", get(handle_gateway_channels))
         .route("/v1/runtime/snapshot", get(handle_gateway_runtime_snapshot))
         .route("/v1/acp/status", get(handle_acp_status))
+        .route("/v1/acp/close", post(super::api_acp::handle_acp_close))
         .route("/v1/acp/observability", get(handle_acp_observability))
         .route("/v1/acp/dispatch", get(handle_acp_dispatch))
         .route("/v1/events", get(handle_events))
@@ -595,6 +599,95 @@ async fn handle_gateway_acp_status(
         &status,
     );
     let payload = match serialize_json_value(&payload, "gateway ACP status payload") {
+        Ok(payload) => payload,
+        Err(error) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "serialize_failed",
+                error.as_str(),
+            );
+        }
+    };
+
+    json_response(StatusCode::OK, payload)
+}
+
+async fn handle_gateway_acp_close(
+    headers: HeaderMap,
+    State(app_state): State<Arc<GatewayControlAppState>>,
+    Json(request): Json<ControlPlaneAcpSessionCloseRequest>,
+) -> GatewayControlJsonResponse {
+    if let Err(error) = authorize_request(&headers, app_state.bearer_token.as_str()) {
+        return json_error(StatusCode::UNAUTHORIZED, "unauthorized", error.as_str());
+    }
+
+    let config = match gateway_control_config(app_state.as_ref()) {
+        Ok(config) => config,
+        Err(error) => {
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "acp_unavailable",
+                error.as_str(),
+            );
+        }
+    };
+    let manager = match gateway_control_acp_manager(app_state.as_ref()) {
+        Ok(manager) => manager,
+        Err(error) => {
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "acp_unavailable",
+                error.as_str(),
+            );
+        }
+    };
+
+    let close_target = crate::acp_close_runtime::resolve_acp_close_target(
+        config,
+        manager,
+        request.session_key.as_deref(),
+        request.conversation_id.as_deref(),
+        request.route_session_id.as_deref(),
+    )
+    .await;
+    let close_target = match close_target {
+        Ok(close_target) => close_target,
+        Err(error) if is_gateway_acp_not_found_error(error.as_str()) => {
+            return json_error(StatusCode::NOT_FOUND, "not_found", error.as_str());
+        }
+        Err(error) => {
+            return json_error(StatusCode::BAD_REQUEST, "invalid_selector", error.as_str());
+        }
+    };
+
+    let close_outcome = crate::acp_close_runtime::close_resolved_acp_target(
+        config,
+        manager,
+        &close_target,
+        crate::trusted_host_runtime::TrustedHostSessionShutdownReason::ExplicitClose,
+    )
+    .await;
+    let close_outcome = match close_outcome {
+        Ok(close_outcome) => close_outcome,
+        Err(error) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "acp_close_unavailable",
+                error.as_str(),
+            );
+        }
+    };
+
+    let payload = build_acp_close_read_model(
+        app_state.config_path.as_str(),
+        request.session_key.as_deref(),
+        request.conversation_id.as_deref(),
+        request.route_session_id.as_deref(),
+        close_outcome.resolved_session_key.as_str(),
+        close_outcome.hook_dispatched,
+        close_outcome.shutdown_reason.as_str(),
+    );
+    let payload = match serialize_json_value(&payload, "gateway ACP close payload") {
         Ok(payload) => payload,
         Err(error) => {
             return json_error(
@@ -1035,6 +1128,7 @@ pub fn build_gateway_acp_test_router(
     let app_state = Arc::new(state);
     Router::new()
         .route("/v1/acp/status", get(handle_acp_status))
+        .route("/v1/acp/close", post(super::api_acp::handle_acp_close))
         .route("/v1/acp/observability", get(handle_acp_observability))
         .route("/v1/acp/dispatch", get(handle_acp_dispatch))
         .with_state(app_state)
