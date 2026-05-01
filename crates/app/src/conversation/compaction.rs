@@ -18,7 +18,6 @@ const COMPACTED_SUMMARY_DISCLAIMER: &str =
 const USER_CONTEXT_HEADING: &str = "User context:";
 const ASSISTANT_PROGRESS_HEADING: &str = "Assistant progress:";
 const OMITTED_CONTEXT_PREFIX: &str = "More omitted context:";
-pub(super) const MIN_ADAPTIVE_RECENT_TAIL_TOKEN_BUDGET: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompactPolicy {
@@ -62,8 +61,7 @@ pub(super) fn compaction_policy_from_config(config: &LoongConfig) -> Option<Comp
     }
     let recent_token_budget = config
         .conversation
-        .compact_preserve_recent_estimated_tokens()
-        .filter(|threshold| *threshold >= MIN_ADAPTIVE_RECENT_TAIL_TOKEN_BUDGET);
+        .compact_preserve_recent_estimated_tokens();
     Some(CompactPolicy::new(preserve_recent_turns).with_recent_token_budget(recent_token_budget))
 }
 
@@ -601,4 +599,24 @@ fn trim_to_chars(value: &str, max_chars: usize) -> String {
         .collect::<String>();
 
     format!("{prefix}...{suffix}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compaction_policy_from_config;
+    use crate::config::LoongConfig;
+
+    #[test]
+    fn compaction_policy_honors_small_positive_recent_token_budget_values() {
+        let mut config = LoongConfig::default();
+        config.memory.sliding_window = 16;
+        config.conversation.compact_preserve_recent_turns = 4;
+        config.conversation.compact_preserve_recent_estimated_tokens = Some(64);
+
+        let policy =
+            compaction_policy_from_config(&config).expect("compaction policy should resolve");
+
+        assert_eq!(policy.preserve_recent_turns(), 4);
+        assert_eq!(policy.preserve_recent_estimated_tokens(), Some(64));
+    }
 }

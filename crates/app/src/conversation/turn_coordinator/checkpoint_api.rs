@@ -258,6 +258,9 @@ pub(super) async fn load_compaction_preparation_diagnostics(
     };
     let transcript_turns = match binding.kernel_context() {
         Some(kernel_ctx) => match load_compaction_session_snapshot(session_id, kernel_ctx).await {
+            Ok(snapshot) if !snapshot.is_complete() => {
+                load_compaction_preparation_turns_from_session_store(config, session_id)?
+            }
             Ok(snapshot) if !snapshot.turns.is_empty() => snapshot.turns,
             Ok(_snapshot) => {
                 load_compaction_preparation_turns_from_session_store(config, session_id)?

@@ -31,7 +31,7 @@ impl CompactionSessionSnapshot {
         Self { turns, turn_count }
     }
 
-    fn is_complete(&self) -> bool {
+    pub(crate) fn is_complete(&self) -> bool {
         self.turns.len() >= self.turn_count
     }
 }
@@ -46,7 +46,11 @@ pub(crate) async fn load_compaction_session_snapshot(
         return Ok(window_snapshot);
     }
 
-    let transcript_snapshot = load_compaction_transcript_snapshot(session_id, kernel_ctx).await?;
+    let transcript_snapshot =
+        match load_compaction_transcript_snapshot(session_id, kernel_ctx).await {
+            Ok(snapshot) => snapshot,
+            Err(_error) => return Ok(window_snapshot),
+        };
     if !transcript_snapshot.is_complete()
         || transcript_snapshot.turn_count < window_snapshot.turn_count
     {

@@ -17414,6 +17414,50 @@ fn build_kernel_context_with_incomplete_compaction_snapshot(
     (ctx, invocations)
 }
 
+fn build_kernel_context_with_unsupported_transcript_compaction_snapshot(
+    audit: Arc<InMemoryAuditSink>,
+    window_turns: Value,
+    turn_count: usize,
+) -> (KernelContext, Arc<Mutex<Vec<MemoryCoreRequest>>>) {
+    let clock = Arc::new(FixedClock::new(1_700_000_000));
+    let mut kernel = LoongKernel::with_runtime(StaticPolicyEngine::default(), clock, audit);
+
+    let pack = VerticalPackManifest {
+        pack_id: "test-pack".to_owned(),
+        domain: "testing".to_owned(),
+        version: "0.1.0".to_owned(),
+        default_route: ExecutionRoute {
+            harness_kind: HarnessKind::EmbeddedPi,
+            adapter: None,
+        },
+        allowed_connectors: BTreeSet::new(),
+        granted_capabilities: BTreeSet::from([Capability::MemoryWrite, Capability::MemoryRead]),
+        metadata: BTreeMap::new(),
+    };
+    kernel.register_pack(pack).expect("register pack");
+
+    let invocations = Arc::new(Mutex::new(Vec::new()));
+    kernel.register_core_memory_adapter(UnsupportedTranscriptCompactionSnapshotMemoryAdapter {
+        invocations: invocations.clone(),
+        window_turns,
+        turn_count,
+    });
+    kernel
+        .set_default_core_memory_adapter("test-memory-unsupported-transcript-compaction-snapshot")
+        .expect("set default memory adapter");
+
+    let token = kernel
+        .issue_token("test-pack", "test-agent", 3600)
+        .expect("issue token");
+
+    let ctx = KernelContext {
+        kernel: Arc::new(kernel),
+        token,
+    };
+
+    (ctx, invocations)
+}
+
 #[cfg(feature = "memory-sqlite")]
 fn prepare_discovery_first_summary_test(
     db_scope: &str,
@@ -17802,6 +17846,54 @@ impl CoreMemoryAdapter for IncompleteCompactionSnapshotMemoryAdapter {
             crate::memory::MEMORY_OP_REPLACE_TURNS => Err(MemoryPlaneError::Execution(
                 "replace_turns should not run when the compaction snapshot is incomplete"
                     .to_owned(),
+            )),
+            _ => Ok(MemoryCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({}),
+            }),
+        }
+    }
+}
+
+struct UnsupportedTranscriptCompactionSnapshotMemoryAdapter {
+    invocations: Arc<Mutex<Vec<MemoryCoreRequest>>>,
+    window_turns: Value,
+    turn_count: usize,
+}
+
+#[async_trait]
+impl CoreMemoryAdapter for UnsupportedTranscriptCompactionSnapshotMemoryAdapter {
+    fn name(&self) -> &str {
+        "test-memory-unsupported-transcript-compaction-snapshot"
+    }
+
+    async fn execute_core_memory(
+        &self,
+        request: MemoryCoreRequest,
+    ) -> Result<MemoryCoreOutcome, MemoryPlaneError> {
+        self.invocations
+            .lock()
+            .expect("invocations lock")
+            .push(request.clone());
+
+        match request.operation.as_str() {
+            crate::memory::MEMORY_OP_READ_CONTEXT => Ok(MemoryCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({"entries": []}),
+            }),
+            crate::memory::MEMORY_OP_WINDOW => Ok(MemoryCoreOutcome {
+                status: "ok".to_owned(),
+                payload: json!({
+                    "turns": self.window_turns.clone(),
+                    "turn_count": self.turn_count,
+                }),
+            }),
+            crate::memory::MEMORY_OP_TRANSCRIPT => Ok(MemoryCoreOutcome {
+                status: "unsupported".to_owned(),
+                payload: json!({}),
+            }),
+            crate::memory::MEMORY_OP_REPLACE_TURNS => Err(MemoryPlaneError::Execution(
+                "replace_turns should not run when transcript fallback is unsupported".to_owned(),
             )),
             _ => Ok(MemoryCoreOutcome {
                 status: "ok".to_owned(),
@@ -28744,6 +28836,71 @@ async fn default_context_engine_compact_context_fails_closed_when_transcript_fal
     assert!(
         replace_requests.is_empty(),
         "compaction should fail closed instead of rewriting from an incomplete snapshot"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_context_engine_compact_context_skips_when_transcript_fallback_is_unsupported() {
+    use super::context_engine::{ConversationContextEngine, DefaultContextEngine};
+
+    let window_turns = json!(
+        (1..=512)
+            .map(|turn| {
+                let role = if turn % 2 == 0 { "assistant" } else { "user" };
+                json!({
+                    "role": role,
+                    "content": format!("turn {turn}"),
+                    "ts": turn,
+                })
+            })
+            .collect::<Vec<_>>()
+    );
+    let audit = Arc::new(InMemoryAuditSink::default());
+    let (kernel_ctx, invocations) =
+        build_kernel_context_with_unsupported_transcript_compaction_snapshot(
+            audit,
+            window_turns,
+            513,
+        );
+
+    let mut config = test_config();
+    config.memory.sliding_window = 32;
+
+    let engine = DefaultContextEngine;
+    engine
+        .compact_context(
+            &config,
+            "default-context-engine-unsupported-transcript-compaction-snapshot",
+            &[],
+            &kernel_ctx,
+        )
+        .await
+        .expect("default engine should skip compaction when transcript fallback is unsupported");
+
+    let captured = invocations.lock().expect("invocations lock").clone();
+    let window_requests = captured
+        .iter()
+        .filter(|request| request.operation == crate::memory::MEMORY_OP_WINDOW)
+        .collect::<Vec<_>>();
+    let transcript_requests = captured
+        .iter()
+        .filter(|request| request.operation == crate::memory::MEMORY_OP_TRANSCRIPT)
+        .collect::<Vec<_>>();
+    let replace_requests = captured
+        .iter()
+        .filter(|request| request.operation == crate::memory::MEMORY_OP_REPLACE_TURNS)
+        .collect::<Vec<_>>();
+
+    assert_eq!(window_requests.len(), 1);
+    assert_eq!(
+        window_requests[0].payload["allow_extended_limit"],
+        json!(true)
+    );
+    assert_eq!(window_requests[0].payload["limit"], json!(512));
+    assert_eq!(transcript_requests.len(), 1);
+    assert!(
+        replace_requests.is_empty(),
+        "compaction should skip rather than rewrite from an incomplete snapshot when transcript is unsupported"
     );
 }
 

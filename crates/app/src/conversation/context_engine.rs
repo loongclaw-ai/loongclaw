@@ -375,6 +375,9 @@ impl ConversationContextEngine for DefaultContextEngine {
 
             for _ in 0..MAX_COMPACTION_CONFLICT_RETRIES {
                 let snapshot = load_compaction_session_snapshot(session_id, kernel_ctx).await?;
+                if !snapshot.is_complete() {
+                    return Ok(());
+                }
                 let Some(compact_policy) = compaction_policy_from_config(config) else {
                     return Ok(());
                 };

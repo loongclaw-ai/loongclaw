@@ -1688,8 +1688,8 @@ pub async fn run_list_models_cli(config_path: Option<&str>, as_json: bool) -> Cl
     Ok(())
 }
 
-pub const RUNTIME_SNAPSHOT_CLI_JSON_SCHEMA_VERSION: u32 = 2;
-pub const RUNTIME_SNAPSHOT_ARTIFACT_JSON_SCHEMA_VERSION: u32 = 2;
+pub const RUNTIME_SNAPSHOT_CLI_JSON_SCHEMA_VERSION: u32 = 3;
+pub const RUNTIME_SNAPSHOT_ARTIFACT_JSON_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeSnapshotCliState {
