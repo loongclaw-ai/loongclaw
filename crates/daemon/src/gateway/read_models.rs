@@ -135,13 +135,13 @@ pub struct GatewayAcpCloseReadModel {
     pub shutdown_reason: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpActivationAggregateProvenanceReadModel {
-    pub surface: &'static str,
+    pub surface: String,
     pub activation_origin_counts: BTreeMap<String, usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpRuntimeCacheReadModel {
     pub active_sessions: usize,
     pub idle_ttl_ms: u64,
@@ -149,7 +149,7 @@ pub struct GatewayAcpRuntimeCacheReadModel {
     pub last_evicted_at_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpSessionAggregateReadModel {
     pub bound: usize,
     pub unbound: usize,
@@ -158,14 +158,14 @@ pub struct GatewayAcpSessionAggregateReadModel {
     pub backend_counts: BTreeMap<String, usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpActorReadModel {
     pub active: usize,
     pub queue_depth: usize,
     pub waiting: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpTurnReadModel {
     pub active: usize,
     pub queue_depth: usize,
@@ -175,7 +175,7 @@ pub struct GatewayAcpTurnReadModel {
     pub max_latency_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpObservabilitySnapshotReadModel {
     pub runtime_cache: GatewayAcpRuntimeCacheReadModel,
     pub sessions: GatewayAcpSessionAggregateReadModel,
@@ -184,13 +184,13 @@ pub struct GatewayAcpObservabilitySnapshotReadModel {
     pub errors_by_code: BTreeMap<String, usize>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpObservabilityReadModel {
     pub config: String,
     pub snapshot: GatewayAcpObservabilitySnapshotReadModel,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConversationAddressReadModel {
     pub session_id: String,
     pub channel_id: Option<String>,
@@ -200,13 +200,13 @@ pub struct GatewayConversationAddressReadModel {
     pub thread_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpDispatchPredictionProvenanceReadModel {
-    pub surface: &'static str,
-    pub automatic_routing_origin: Option<&'static str>,
+    pub surface: String,
+    pub automatic_routing_origin: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpDispatchTargetReadModel {
     pub original_session_id: String,
     pub route_session_id: String,
@@ -219,22 +219,22 @@ pub struct GatewayAcpDispatchTargetReadModel {
     pub channel_path: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpDispatchDecisionDetailsReadModel {
     pub route_via_acp: bool,
-    pub reason: &'static str,
-    pub automatic_routing_origin: Option<&'static str>,
+    pub reason: String,
+    pub automatic_routing_origin: Option<String>,
     pub provenance: GatewayAcpDispatchPredictionProvenanceReadModel,
     pub target: GatewayAcpDispatchTargetReadModel,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpDispatchDecisionReadModel {
     pub session: String,
     pub decision: GatewayAcpDispatchDecisionDetailsReadModel,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayAcpDispatchReadModel {
     pub config: String,
     pub address: GatewayConversationAddressReadModel,
@@ -839,7 +839,7 @@ fn build_acp_observability_snapshot_read_model(
     let backend_counts = snapshot.sessions.backend_counts.clone();
     let provenance_counts = activation_origin_counts.clone();
     let provenance = GatewayAcpActivationAggregateProvenanceReadModel {
-        surface: "session_activation_aggregate",
+        surface: "session_activation_aggregate".to_owned(),
         activation_origin_counts: provenance_counts,
     };
     let sessions = GatewayAcpSessionAggregateReadModel {
@@ -908,10 +908,11 @@ fn build_conversation_address_read_model(
 fn build_acp_dispatch_prediction_provenance_read_model(
     decision: &mvp::acp::AcpConversationDispatchDecision,
 ) -> GatewayAcpDispatchPredictionProvenanceReadModel {
-    let surface = "dispatch_prediction";
+    let surface = "dispatch_prediction".to_owned();
     let automatic_routing_origin = decision
         .automatic_routing_origin
-        .map(mvp::acp::AcpRoutingOrigin::as_str);
+        .map(mvp::acp::AcpRoutingOrigin::as_str)
+        .map(str::to_owned);
 
     GatewayAcpDispatchPredictionProvenanceReadModel {
         surface,
@@ -951,10 +952,11 @@ fn build_acp_dispatch_decision_read_model(
 ) -> GatewayAcpDispatchDecisionReadModel {
     let session = session_id.to_owned();
     let route_via_acp = decision.route_via_acp;
-    let reason = decision.reason.as_str();
+    let reason = decision.reason.as_str().to_owned();
     let automatic_routing_origin = decision
         .automatic_routing_origin
-        .map(mvp::acp::AcpRoutingOrigin::as_str);
+        .map(mvp::acp::AcpRoutingOrigin::as_str)
+        .map(str::to_owned);
     let provenance = build_acp_dispatch_prediction_provenance_read_model(decision);
     let target = build_acp_dispatch_target_read_model(&decision.target);
     let decision = GatewayAcpDispatchDecisionDetailsReadModel {

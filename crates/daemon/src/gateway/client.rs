@@ -12,8 +12,8 @@ use crate::CliResult;
 
 use super::{
     read_models::{
-        GatewayAcpCloseReadModel, GatewayAcpSessionListReadModel, GatewayAcpStatusReadModel,
-        GatewayOperatorSummaryReadModel,
+        GatewayAcpCloseReadModel, GatewayAcpDispatchReadModel, GatewayAcpObservabilityReadModel,
+        GatewayAcpSessionListReadModel, GatewayAcpStatusReadModel, GatewayOperatorSummaryReadModel,
     },
     state::{GatewayOwnerStatus, default_gateway_runtime_state_dir, load_gateway_owner_status},
 };
@@ -207,6 +207,13 @@ impl GatewayLocalClient {
         self.request_json(Method::GET, path).await
     }
 
+    pub async fn acp_observability_read_model(
+        &self,
+    ) -> CliResult<GatewayAcpObservabilityReadModel> {
+        let path = "/v1/acp/observability";
+        self.request_json(Method::GET, path).await
+    }
+
     pub async fn acp_status_for_address(
         &self,
         session_id: &str,
@@ -227,6 +234,26 @@ impl GatewayLocalClient {
             .await
     }
 
+    pub async fn acp_status_for_address_read_model(
+        &self,
+        session_id: &str,
+        channel_id: Option<&str>,
+        conversation_id: Option<&str>,
+        account_id: Option<&str>,
+        thread_id: Option<&str>,
+    ) -> CliResult<GatewayAcpStatusReadModel> {
+        let path = "/v1/acp/status";
+        let query = build_gateway_acp_address_query(
+            session_id,
+            channel_id,
+            conversation_id,
+            account_id,
+            thread_id,
+        );
+        self.request_json_with_query(Method::GET, path, &query)
+            .await
+    }
+
     pub async fn acp_dispatch(
         &self,
         session_id: &str,
@@ -235,6 +262,26 @@ impl GatewayLocalClient {
         account_id: Option<&str>,
         thread_id: Option<&str>,
     ) -> CliResult<Value> {
+        let path = "/v1/acp/dispatch";
+        let query = build_gateway_acp_address_query(
+            session_id,
+            channel_id,
+            conversation_id,
+            account_id,
+            thread_id,
+        );
+        self.request_json_with_query(Method::GET, path, &query)
+            .await
+    }
+
+    pub async fn acp_dispatch_read_model(
+        &self,
+        session_id: &str,
+        channel_id: Option<&str>,
+        conversation_id: Option<&str>,
+        account_id: Option<&str>,
+        thread_id: Option<&str>,
+    ) -> CliResult<GatewayAcpDispatchReadModel> {
         let path = "/v1/acp/dispatch";
         let query = build_gateway_acp_address_query(
             session_id,

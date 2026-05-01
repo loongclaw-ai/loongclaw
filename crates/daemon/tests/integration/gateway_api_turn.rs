@@ -517,12 +517,63 @@ async fn gateway_acp_operator_endpoints_surface_shared_session_truth() {
         .acp_observability()
         .await
         .expect("read gateway ACP observability");
+    let observability_read_model = client
+        .acp_observability_read_model()
+        .await
+        .expect("read gateway ACP observability as typed payload");
 
     assert_eq!(observability["config"], config_path.display().to_string());
     let active_sessions = observability["snapshot"]["runtime_cache"]["active_sessions"].as_u64();
     assert!(active_sessions.is_some());
     let errors_by_code = observability["snapshot"]["errors_by_code"].as_object();
     assert!(errors_by_code.is_some());
+    assert_eq!(
+        observability_read_model.config,
+        config_path.display().to_string()
+    );
+    assert_eq!(
+        observability_read_model
+            .snapshot
+            .runtime_cache
+            .active_sessions,
+        1
+    );
+
+    let address_status = client
+        .acp_status_for_address_read_model("gateway-session", None, None, None, None)
+        .await
+        .expect("read gateway ACP status for structured address as typed payload");
+    assert_eq!(
+        address_status.resolved_session_key,
+        "agent:codex:gateway-session"
+    );
+    assert_eq!(address_status.status.backend_id, backend_id);
+    assert_eq!(address_status.status.state, "ready");
+
+    let dispatch = client
+        .acp_dispatch("gateway-session", None, None, None, None)
+        .await
+        .expect("read gateway ACP dispatch");
+    let dispatch_read_model = client
+        .acp_dispatch_read_model("gateway-session", None, None, None, None)
+        .await
+        .expect("read gateway ACP dispatch as typed payload");
+    assert_eq!(dispatch["address"]["session_id"], "gateway-session");
+    assert_eq!(
+        dispatch["dispatch"]["decision"]["route_via_acp"]
+            .as_bool()
+            .expect("route via ACP flag"),
+        dispatch_read_model.dispatch.decision.route_via_acp
+    );
+    assert_eq!(dispatch_read_model.address.session_id, "gateway-session");
+    assert_eq!(
+        dispatch_read_model
+            .dispatch
+            .decision
+            .target
+            .original_session_id,
+        "gateway-session"
+    );
 
     let close_request = GatewayAcpCloseRequest {
         session: None,
