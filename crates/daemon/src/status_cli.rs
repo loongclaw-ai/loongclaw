@@ -16,7 +16,7 @@ use crate::mvp;
 use crate::runtime_snapshot_compaction_presentation::build_compaction_hygiene_status_values;
 use crate::supervisor::LoadedSupervisorConfig;
 
-const STATUS_CLI_JSON_SCHEMA_VERSION: u32 = 2;
+const STATUS_CLI_JSON_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusCliJsonSchema {

@@ -105,10 +105,13 @@ fn prune_assistant_turn_content(
         return (None, None);
     }
 
-    (
-        compact_tool_outcome_record_content(parsed),
-        Some(CompactionPruneKind::ToolOutcomeRecord),
-    )
+    match compact_tool_outcome_record_content(parsed) {
+        Some(compacted_record) => (
+            Some(compacted_record),
+            Some(CompactionPruneKind::ToolOutcomeRecord),
+        ),
+        None => (None, None),
+    }
 }
 
 fn compact_tool_outcome_record_content(parsed: Value) -> Option<String> {
@@ -128,4 +131,34 @@ fn compact_tool_outcome_record_content(parsed: Value) -> Option<String> {
         .get_mut("payload")?;
     *outcome_payload = compacted_payload;
     serde_json::to_string(&compacted_record).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inspect_compaction_window_inputs;
+    use crate::memory::WindowTurn;
+
+    #[test]
+    fn inspect_compaction_window_inputs_counts_tool_outcome_prunes_only_when_payload_changes() {
+        let turns = vec![WindowTurn {
+            role: "assistant".to_owned(),
+            content: serde_json::json!({
+                "type": "tool_outcome",
+                "outcome": {
+                    "tool_name": "web.search",
+                    "payload": {
+                        "status": "ok",
+                        "summary": "already minimal"
+                    }
+                }
+            })
+            .to_string(),
+            ts: Some(1),
+        }];
+
+        let pruned = inspect_compaction_window_inputs(turns.as_slice());
+
+        assert_eq!(pruned.diagnostics.tool_outcome_record_prunes, 0);
+        assert_eq!(pruned.diagnostics.low_signal_turns, 0);
+    }
 }
