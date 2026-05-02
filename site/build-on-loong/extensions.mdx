@@ -1,0 +1,141 @@
+---
+title: Extensions
+description: Author Loong extensions through the current public trusted-host and runtime package seams.
+---
+
+# Extensions
+
+Use this page when you want to build a Loong extension without guessing which
+surface is real on the current branch.
+
+This page is intentionally concrete. It describes the extension seams that are
+already wired, how to scaffold them, and how to validate them through the same
+bounded routes the runtime uses today.
+
+## Choose An Extension Family
+
+| If you need to... | Use | Why |
+| --- | --- | --- |
+| ship reusable prompt or workflow guidance | managed skills | installable, inspectable, no runtime bridge required |
+| add a governed runtime package without host-level trust | governed plugin package | manifest-first, policy-shaped, bounded by bridge/runtime support |
+| declare host hooks or shell-first TUI surfaces | trusted host extension | explicit high-trust lane with bounded probe execution |
+
+## Current Trusted Host Boundary
+
+Today, trusted host authoring is deliberately narrow:
+
+- runnable `process_stdio` packages only
+- explicit `--source-language`
+- explicit host-hook and TUI-surface declarations
+- bounded probe execution, not implicit in-process execution
+
+Current trusted shell-first TUI surfaces:
+
+- `command_palette`
+- `settings_flow`
+- `startup_onboarding`
+
+## Fast Path: Scaffold A Trusted Host Extension
+
+### Example: host hook
+
+```bash
+loong plugins init ./weather-host \
+  --plugin-id weather-host \
+  --bridge-kind process_stdio \
+  --source-language js \
+  --host-hook turn_start
+```
+
+### Example: TUI surface
+
+```bash
+loong plugins init ./weather-palette \
+  --plugin-id weather-palette \
+  --bridge-kind process_stdio \
+  --source-language js \
+  --tui-surface command_palette
+```
+
+The scaffold writes:
+
+- `loong.plugin.json`
+- `README.md`
+- runnable local stub files such as `index.js`, `index.py`, `main.go`, or
+  `src/main.rs`
+
+It also prints a bounded smoke command so you can validate the package
+immediately.
+
+## Validate The Package
+
+```bash
+loong plugins inventory --root ./weather-host
+loong plugins doctor --root ./weather-host --profile sdk-release
+```
+
+## Probe The Runtime Surface
+
+### Host hook
+
+```bash
+loong plugins invoke-host-hook \
+  --root ./weather-host \
+  --plugin-id weather-host \
+  --hook turn_start \
+  --payload '{"turn_id":"demo-turn"}' \
+  --allow-command node
+```
+
+### TUI surface
+
+```bash
+loong plugins invoke-tui-surface \
+  --root ./weather-palette \
+  --plugin-id weather-palette \
+  --tui-surface command_palette \
+  --payload '{"query":":ext"}' \
+  --allow-command node
+```
+
+## Live Shell-First Routes
+
+If runtime plugins are enabled inside the shell-first TUI, Loong exposes the
+same extension truth directly:
+
+- `/extensions`
+- `/extensions <plugin-id>`
+- `/extensions run <plugin-id> <surface>`
+
+Current live routes already project:
+
+- `command_palette`
+- `settings_flow`
+- `startup_onboarding`
+
+Those routes are still bounded probe surfaces. They do not imply a general
+in-process TUI executor contract yet.
+
+## What Is Real Today
+
+You can rely on:
+
+- trusted-host manifest declarations
+- shared declaration parsing in the kernel
+- daemon-side bounded probe commands
+- shell-first live routing onto those probe commands
+- public and source-facing docs that describe the same current surface
+
+You should not assume:
+
+- arbitrary in-process TUI execution
+- provider middleware parity with Pi
+- tool middleware parity with Pi
+- broad bridge-family parity beyond the current process_stdio path
+
+## Suggested Reading
+
+- [Build On Loong Overview](/build-on-loong/overview)
+- [Architecture](/build-on-loong/architecture)
+- [External Authoring Quickstart](https://github.com/eastreams/loong/blob/dev/docs/sdk/quickstart-external.md)
+- [External Authoring Contract](https://github.com/eastreams/loong/blob/dev/docs/design-docs/external-authoring-contract.md)

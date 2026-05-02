@@ -131,6 +131,7 @@
         "pages": [
           "build-on-loong/overview",
           "build-on-loong/architecture",
+          "build-on-loong/extensions",
           "build-on-loong/contributing",
           "build-on-loong/contribution-workflow",
           "build-on-loong/docs-workflow",
