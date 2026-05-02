@@ -5210,8 +5210,9 @@ mod tests {
         MessageContent, MessageList, ReadToolRequest, STARTUP_COMPACT_WORDMARK, STARTUP_EYE_FRAMES,
         STARTUP_TIP_FADE_MS, STARTUP_TIP_HOLD_MS, STARTUP_WORDMARK, ToolStatus,
         adjust_scroll_start_for_message_boundary, build_assistant_contents, dominant_block_bg,
-        format_read_request_display, startup_logo_eye_frame_index, startup_logo_eye_style,
-        startup_tip_render_state, startup_wordmark_eye_frame,
+        extract_read_tool_request_from_json, format_read_request_display,
+        startup_logo_eye_frame_index, startup_logo_eye_style, startup_tip_render_state,
+        startup_wordmark_eye_frame,
     };
     use crate::chat::chat_surface::utils::{
         SURFACE_ACCENT, SURFACE_DIM_GRAY, SURFACE_GRAY, SURFACE_GREEN, SURFACE_RED,
@@ -6657,11 +6658,14 @@ mod tests {
             }
         });
         image.save(path.as_path()).expect("write png");
+        let path_text = path.display().to_string();
+        let args = serde_json::json!({
+            "path": path_text,
+        });
 
         let mut list = MessageList::new();
         list.add_assistant_message(format!(
-            "### Tool activity\n> Called read\n> args: {{\"path\":\"{}\"}}\n> stdout: Read image file [image/png]",
-            path.display()
+            "### Tool activity\n> Called read\n> args: {args}\n> stdout: Read image file [image/png]"
         ));
 
         let rendered = list.get_rendered_lines(72);
@@ -6694,6 +6698,19 @@ mod tests {
                 .iter()
                 .any(|line| dominant_block_bg(line) == Some(SURFACE_TOOL_BG))
         );
+    }
+
+    #[test]
+    fn read_tool_request_json_parser_accepts_windows_escaped_paths() {
+        let line = r#"args: {"path":"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\sample.png","offset":10,"limit":3}"#;
+        let request = extract_read_tool_request_from_json(line).expect("request");
+
+        assert_eq!(
+            request.path,
+            r"C:\Users\runneradmin\AppData\Local\Temp\sample.png"
+        );
+        assert_eq!(request.offset, Some(10));
+        assert_eq!(request.limit, Some(3));
     }
 
     #[test]
