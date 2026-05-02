@@ -1,6 +1,7 @@
 use loong_contracts::WorkRuntimeHealthSnapshot;
 use loong_spec::CliResult;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::first_run_action_presentation::{
@@ -131,6 +132,9 @@ pub async fn collect_status_cli_read_model(
                 command: action.command,
             }),
     );
+    next_actions.extend(build_runtime_plugin_discovery_status_actions(
+        &gateway.runtime,
+    ));
     let deep_dive_actions = build_status_cli_deep_dive_actions(config_path_text);
     let recipes = build_status_cli_legacy_recipe_commands(&deep_dive_actions);
     let schema = StatusCliJsonSchema {
@@ -408,6 +412,27 @@ fn build_status_cli_legacy_recipe_commands(
         .iter()
         .map(|action| action.command.clone())
         .collect()
+}
+
+fn build_runtime_plugin_discovery_status_actions(
+    runtime: &crate::gateway::read_models::GatewayOperatorRuntimeSummaryReadModel,
+) -> Vec<StatusCliAction> {
+    let Some(guidance) = runtime.runtime_plugin_discovery_guidance.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut seen_commands = BTreeSet::new();
+    let mut actions = Vec::new();
+    for action in &guidance.discovery_actions {
+        if seen_commands.insert(action.command.clone()) {
+            actions.push(StatusCliAction {
+                kind: crate::next_actions::SetupNextActionKind::Doctor,
+                label: action.summary.clone(),
+                command: action.command.clone(),
+            });
+        }
+    }
+    actions
 }
 
 fn render_status_cli_text(status: &StatusCliReadModel) -> String {
