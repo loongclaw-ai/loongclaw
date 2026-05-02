@@ -246,7 +246,7 @@ fn gateway_read_model_acp_status_keeps_requested_and_resolved_session_fields() {
     assert_eq!(payload.config, "/tmp/loong.toml");
     assert_eq!(payload.resolved_session_key, "agent:codex:telegram:42");
     assert_eq!(payload.status.state, "busy");
-    assert_eq!(payload.status.mode, Some("interactive"));
+    assert_eq!(payload.status.mode.as_deref(), Some("interactive"));
     assert_eq!(encoded, legacy);
     assert_eq!(
         encoded["status"]["provenance"]["surface"],

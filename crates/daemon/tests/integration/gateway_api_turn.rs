@@ -473,6 +473,10 @@ async fn gateway_acp_operator_endpoints_surface_shared_session_truth() {
         .acp_sessions(&sessions_request)
         .await
         .expect("read gateway ACP sessions");
+    let sessions_read_model = client
+        .acp_sessions_read_model(&sessions_request)
+        .await
+        .expect("read gateway ACP sessions as typed payload");
 
     assert_eq!(sessions["matched_count"].as_u64(), Some(1));
     assert_eq!(sessions["returned_count"].as_u64(), Some(1));
@@ -484,6 +488,13 @@ async fn gateway_acp_operator_endpoints_surface_shared_session_truth() {
     assert_eq!(session["session_key"], "agent:codex:gateway-session");
     assert_eq!(session["backend_id"], backend_id);
     assert_eq!(session["conversation_id"], "gateway-session");
+    assert_eq!(sessions_read_model.matched_count, 1);
+    assert_eq!(sessions_read_model.returned_count, 1);
+    assert_eq!(sessions_read_model.sessions.len(), 1);
+    assert_eq!(
+        sessions_read_model.sessions[0].session_key,
+        "agent:codex:gateway-session"
+    );
 
     let status_request = GatewayAcpStatusRequest {
         session: None,
@@ -494,6 +505,10 @@ async fn gateway_acp_operator_endpoints_surface_shared_session_truth() {
         .acp_status(&status_request)
         .await
         .expect("read gateway ACP status");
+    let status_read_model = client
+        .acp_status_read_model(&status_request)
+        .await
+        .expect("read gateway ACP status as typed payload");
 
     assert_eq!(
         status["resolved_session_key"],
@@ -501,17 +516,99 @@ async fn gateway_acp_operator_endpoints_surface_shared_session_truth() {
     );
     assert_eq!(status["status"]["backend_id"], backend_id);
     assert_eq!(status["status"]["state"], "ready");
+    assert_eq!(
+        status_read_model.resolved_session_key,
+        "agent:codex:gateway-session"
+    );
+    assert_eq!(status_read_model.status.backend_id, backend_id);
+    assert_eq!(status_read_model.status.state, "ready");
 
     let observability = client
         .acp_observability()
         .await
         .expect("read gateway ACP observability");
+    let observability_read_model = client
+        .acp_observability_read_model()
+        .await
+        .expect("read gateway ACP observability as typed payload");
 
     assert_eq!(observability["config"], config_path.display().to_string());
     let active_sessions = observability["snapshot"]["runtime_cache"]["active_sessions"].as_u64();
     assert!(active_sessions.is_some());
     let errors_by_code = observability["snapshot"]["errors_by_code"].as_object();
     assert!(errors_by_code.is_some());
+    assert_eq!(
+        observability_read_model.config,
+        config_path.display().to_string()
+    );
+    assert_eq!(
+        observability_read_model
+            .snapshot
+            .runtime_cache
+            .active_sessions,
+        1
+    );
+
+    let address_request = loong_daemon::gateway::client::GatewayAcpAddressRequest {
+        session_id: "gateway-session",
+        channel_id: None,
+        conversation_id: None,
+        account_id: None,
+        thread_id: None,
+    };
+
+    let address_status = client
+        .acp_status_for_address_read_model_request(&address_request)
+        .await
+        .expect("read gateway ACP status for structured address as typed payload");
+    assert_eq!(
+        address_status.resolved_session_key,
+        "agent:codex:gateway-session"
+    );
+    assert_eq!(address_status.status.backend_id, backend_id);
+    assert_eq!(address_status.status.state, "ready");
+
+    let dispatch = client
+        .acp_dispatch_request(&address_request)
+        .await
+        .expect("read gateway ACP dispatch");
+    let dispatch_read_model = client
+        .acp_dispatch_read_model_request(&address_request)
+        .await
+        .expect("read gateway ACP dispatch as typed payload");
+    assert_eq!(dispatch["address"]["session_id"], "gateway-session");
+    assert_eq!(
+        dispatch["dispatch"]["decision"]["route_via_acp"]
+            .as_bool()
+            .expect("route via ACP flag"),
+        dispatch_read_model.dispatch.decision.route_via_acp
+    );
+    assert_eq!(dispatch_read_model.address.session_id, "gateway-session");
+    assert_eq!(
+        dispatch_read_model
+            .dispatch
+            .decision
+            .target
+            .original_session_id,
+        "gateway-session"
+    );
+
+    let close_request = loong_protocol::ControlPlaneAcpSessionCloseRequest {
+        session_key: None,
+        conversation_id: Some("gateway-session".to_owned()),
+        route_session_id: None,
+    };
+    let close_read_model = client
+        .acp_close_read_model(&close_request)
+        .await
+        .expect("close gateway ACP session as typed payload");
+    assert_eq!(
+        close_read_model.resolved_session_key,
+        "agent:codex:gateway-session"
+    );
+    assert!(close_read_model.closed);
+    assert!(close_read_model.hook_dispatched);
+    assert_eq!(close_read_model.shutdown_reason, "explicit_close");
 
     request_gateway_stop(runtime_dir.as_path()).expect("request gateway stop");
 

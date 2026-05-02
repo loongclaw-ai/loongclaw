@@ -18,9 +18,11 @@ use crate::CliResult;
 
 use super::{
     read_models::{
-        GatewayNodeInventoryReadModel, GatewayOperatorSummaryReadModel,
-        GatewayPairingCompleteReadModel, GatewayPairingEventsReadModel,
-        GatewayPairingSessionReadModel, GatewayPairingStartReadModel,
+        GatewayAcpCloseReadModel, GatewayAcpDispatchReadModel, GatewayAcpObservabilityReadModel,
+        GatewayAcpSessionListReadModel, GatewayAcpStatusReadModel, GatewayNodeInventoryReadModel,
+        GatewayOperatorSummaryReadModel, GatewayPairingCompleteReadModel,
+        GatewayPairingEventsReadModel, GatewayPairingSessionReadModel,
+        GatewayPairingStartReadModel,
     },
     state::{
         GatewayOwnerStatus, default_gateway_runtime_state_dir, gateway_control_token_path,
@@ -48,6 +50,19 @@ pub struct GatewayAcpStatusRequest<'a> {
     pub conversation_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub route_session_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GatewayAcpAddressRequest<'a> {
+    pub session_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -325,12 +340,28 @@ impl GatewayLocalClient {
     }
 
     pub async fn acp_sessions(&self, request: &GatewayAcpSessionsRequest) -> CliResult<Value> {
+        let payload = self.acp_sessions_read_model(request).await?;
+        gateway_json_value_from_payload(&payload)
+    }
+
+    pub async fn acp_sessions_read_model(
+        &self,
+        request: &GatewayAcpSessionsRequest,
+    ) -> CliResult<GatewayAcpSessionListReadModel> {
         let path = "/api/gateway/acp/sessions";
         self.request_json_with_query(Method::GET, path, request)
             .await
     }
 
     pub async fn acp_status(&self, request: &GatewayAcpStatusRequest<'_>) -> CliResult<Value> {
+        let payload = self.acp_status_read_model(request).await?;
+        gateway_json_value_from_payload(&payload)
+    }
+
+    pub async fn acp_status_read_model(
+        &self,
+        request: &GatewayAcpStatusRequest<'_>,
+    ) -> CliResult<GatewayAcpStatusReadModel> {
         let path = "/api/gateway/acp/status";
         self.request_json_with_query(Method::GET, path, request)
             .await
@@ -340,12 +371,27 @@ impl GatewayLocalClient {
         &self,
         request: &ControlPlaneAcpSessionCloseRequest,
     ) -> CliResult<Value> {
+        let payload = self.acp_close_read_model(request).await?;
+        gateway_json_value_from_payload(&payload)
+    }
+
+    pub async fn acp_close_read_model(
+        &self,
+        request: &ControlPlaneAcpSessionCloseRequest,
+    ) -> CliResult<GatewayAcpCloseReadModel> {
         let path = "/api/gateway/acp/close";
         self.request_json_with_body(Method::POST, path, request)
             .await
     }
 
     pub async fn acp_observability(&self) -> CliResult<Value> {
+        let payload = self.acp_observability_read_model().await?;
+        gateway_json_value_from_payload(&payload)
+    }
+
+    pub async fn acp_observability_read_model(
+        &self,
+    ) -> CliResult<GatewayAcpObservabilityReadModel> {
         let path = "/v1/acp/observability";
         self.request_json(Method::GET, path).await
     }
@@ -358,14 +404,51 @@ impl GatewayLocalClient {
         account_id: Option<&str>,
         thread_id: Option<&str>,
     ) -> CliResult<Value> {
-        let path = "/v1/acp/status";
-        let query = build_gateway_acp_address_query(
+        let request = GatewayAcpAddressRequest {
             session_id,
             channel_id,
             conversation_id,
             account_id,
             thread_id,
-        );
+        };
+        self.acp_status_for_address_request(&request).await
+    }
+
+    pub async fn acp_status_for_address_request(
+        &self,
+        request: &GatewayAcpAddressRequest<'_>,
+    ) -> CliResult<Value> {
+        let payload = self
+            .acp_status_for_address_read_model_request(request)
+            .await?;
+        gateway_json_value_from_payload(&payload)
+    }
+
+    pub async fn acp_status_for_address_read_model(
+        &self,
+        session_id: &str,
+        channel_id: Option<&str>,
+        conversation_id: Option<&str>,
+        account_id: Option<&str>,
+        thread_id: Option<&str>,
+    ) -> CliResult<GatewayAcpStatusReadModel> {
+        let request = GatewayAcpAddressRequest {
+            session_id,
+            channel_id,
+            conversation_id,
+            account_id,
+            thread_id,
+        };
+        self.acp_status_for_address_read_model_request(&request)
+            .await
+    }
+
+    pub async fn acp_status_for_address_read_model_request(
+        &self,
+        request: &GatewayAcpAddressRequest<'_>,
+    ) -> CliResult<GatewayAcpStatusReadModel> {
+        let path = "/v1/acp/status";
+        let query = build_gateway_acp_address_query(request);
         self.request_json_with_query(Method::GET, path, &query)
             .await
     }
@@ -378,14 +461,48 @@ impl GatewayLocalClient {
         account_id: Option<&str>,
         thread_id: Option<&str>,
     ) -> CliResult<Value> {
-        let path = "/v1/acp/dispatch";
-        let query = build_gateway_acp_address_query(
+        let request = GatewayAcpAddressRequest {
             session_id,
             channel_id,
             conversation_id,
             account_id,
             thread_id,
-        );
+        };
+        self.acp_dispatch_request(&request).await
+    }
+
+    pub async fn acp_dispatch_request(
+        &self,
+        request: &GatewayAcpAddressRequest<'_>,
+    ) -> CliResult<Value> {
+        let payload = self.acp_dispatch_read_model_request(request).await?;
+        gateway_json_value_from_payload(&payload)
+    }
+
+    pub async fn acp_dispatch_read_model(
+        &self,
+        session_id: &str,
+        channel_id: Option<&str>,
+        conversation_id: Option<&str>,
+        account_id: Option<&str>,
+        thread_id: Option<&str>,
+    ) -> CliResult<GatewayAcpDispatchReadModel> {
+        let request = GatewayAcpAddressRequest {
+            session_id,
+            channel_id,
+            conversation_id,
+            account_id,
+            thread_id,
+        };
+        self.acp_dispatch_read_model_request(&request).await
+    }
+
+    pub async fn acp_dispatch_read_model_request(
+        &self,
+        request: &GatewayAcpAddressRequest<'_>,
+    ) -> CliResult<GatewayAcpDispatchReadModel> {
+        let path = "/v1/acp/dispatch";
+        let query = build_gateway_acp_address_query(request);
         self.request_json_with_query(Method::GET, path, &query)
             .await
     }
@@ -666,31 +783,27 @@ impl GatewayLocalClient {
 }
 
 fn build_gateway_acp_address_query(
-    session_id: &str,
-    channel_id: Option<&str>,
-    conversation_id: Option<&str>,
-    account_id: Option<&str>,
-    thread_id: Option<&str>,
+    request: &GatewayAcpAddressRequest<'_>,
 ) -> Vec<(String, String)> {
     let mut query = Vec::new();
-    query.push(("session_id".to_owned(), session_id.to_owned()));
+    query.push(("session_id".to_owned(), request.session_id.to_owned()));
 
-    let channel_id = trimmed_non_empty(channel_id);
+    let channel_id = trimmed_non_empty(request.channel_id);
     if let Some(channel_id) = channel_id {
         query.push(("channel_id".to_owned(), channel_id));
     }
 
-    let conversation_id = trimmed_non_empty(conversation_id);
+    let conversation_id = trimmed_non_empty(request.conversation_id);
     if let Some(conversation_id) = conversation_id {
         query.push(("conversation_id".to_owned(), conversation_id));
     }
 
-    let account_id = trimmed_non_empty(account_id);
+    let account_id = trimmed_non_empty(request.account_id);
     if let Some(account_id) = account_id {
         query.push(("account_id".to_owned(), account_id));
     }
 
-    let thread_id = trimmed_non_empty(thread_id);
+    let thread_id = trimmed_non_empty(request.thread_id);
     if let Some(thread_id) = thread_id {
         query.push(("thread_id".to_owned(), thread_id));
     }
@@ -719,6 +832,14 @@ async fn parse_json_response(response: Response) -> CliResult<Value> {
         .json::<Value>()
         .await
         .map_err(|error| format!("decode gateway JSON response failed: {error}"))
+}
+
+fn gateway_json_value_from_payload<T>(payload: &T) -> CliResult<Value>
+where
+    T: Serialize,
+{
+    serde_json::to_value(payload)
+        .map_err(|error| format!("serialize gateway payload failed: {error}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1253,6 +1374,29 @@ mod tests {
             request_text
                 .starts_with("GET /v1/pairing/events?after_seq=7&limit=10&ack_seq=9 HTTP/1.1"),
             "unexpected request line: {request_text}"
+        );
+    }
+
+    #[test]
+    fn gateway_acp_address_query_trims_optional_request_fields() {
+        let request = GatewayAcpAddressRequest {
+            session_id: "opaque-session",
+            channel_id: Some(" telegram "),
+            conversation_id: Some("  "),
+            account_id: Some("ops-bot"),
+            thread_id: Some(" thread-1 "),
+        };
+
+        let query = build_gateway_acp_address_query(&request);
+
+        assert_eq!(
+            query,
+            vec![
+                ("session_id".to_owned(), "opaque-session".to_owned()),
+                ("channel_id".to_owned(), "telegram".to_owned()),
+                ("account_id".to_owned(), "ops-bot".to_owned()),
+                ("thread_id".to_owned(), "thread-1".to_owned()),
+            ]
         );
     }
 }
