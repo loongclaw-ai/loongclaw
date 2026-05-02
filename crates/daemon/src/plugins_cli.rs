@@ -5640,4 +5640,57 @@ mod tests {
         assert!(error.contains(crate::kernel::TRUSTED_HOST_EXTENSION_FAMILY));
         assert!(error.contains(crate::kernel::TRUSTED_HOST_EXTENSION_TRUST_LANE));
     }
+
+    #[tokio::test]
+    async fn checked_in_trusted_host_example_probes_successfully() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("repo root");
+        let package_root =
+            repo_root.join("examples/plugins-process/native-extension-trusted-host-javascript");
+        let package_root = package_root.display().to_string();
+
+        let hook_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            command: PluginsCommands::InvokeHostHook(PluginInvokeHostHookCommand {
+                root: package_root.clone(),
+                plugin_id: "trusted-host-extension-javascript-example".to_owned(),
+                hook: "turn_start".to_owned(),
+                payload: "{\"turn_id\":\"demo-turn\"}".to_owned(),
+                allow_commands: vec!["node".to_owned()],
+            }),
+        })
+        .await
+        .expect("checked-in trusted host example should probe host hook");
+
+        let PluginsCommandExecution::InvokeHostHook(hook_execution) = hook_execution else {
+            panic!("expected invoke-host-hook execution");
+        };
+        assert_eq!(
+            hook_execution.response_payload["handled_hook"],
+            serde_json::json!("turn_start")
+        );
+
+        let surface_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            command: PluginsCommands::InvokeTuiSurface(PluginInvokeTuiSurfaceCommand {
+                root: package_root,
+                plugin_id: "trusted-host-extension-javascript-example".to_owned(),
+                tui_surface: "command_palette".to_owned(),
+                payload: "{\"query\":\":ext\"}".to_owned(),
+                allow_commands: vec!["node".to_owned()],
+            }),
+        })
+        .await
+        .expect("checked-in trusted host example should probe tui surface");
+
+        let PluginsCommandExecution::InvokeTuiSurface(surface_execution) = surface_execution else {
+            panic!("expected invoke-tui-surface execution");
+        };
+        assert_eq!(
+            surface_execution.response_payload["handled_tui_surface"],
+            serde_json::json!("command_palette")
+        );
+    }
 }
