@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use kernel::{
     IntegrationCatalog, PluginActivationCandidate, PluginActivationInventoryEntry,
     PluginActivationPlan, PluginActivationStatus, PluginBridgeKind, PluginDiagnosticFinding,
-    PluginScanReport, PluginTranslationReport,
+    PluginScanReport, PluginTranslationReport, plugin_native_extension_declarations_from_metadata,
 };
 
 use crate::spec_runtime::{
@@ -258,6 +258,9 @@ pub(super) fn collect_plugin_inventory_results(
                     .setup
                     .as_ref()
                     .and_then(|setup| setup.remediation.clone()),
+                native_extension: plugin_native_extension_declarations_from_metadata(
+                    &manifest.metadata,
+                ),
                 slot_claims: manifest.slot_claims.clone(),
                 diagnostic_findings: activation
                     .map(|entry| entry.diagnostic_findings.clone())
@@ -372,6 +375,7 @@ pub(super) fn collect_plugin_inventory_results(
             setup_default_env_var: entry.setup_default_env_var,
             setup_docs_urls: entry.setup_docs_urls,
             setup_remediation: entry.setup_remediation,
+            native_extension: entry.native_extension,
             slot_claims: entry.slot_claims,
             diagnostic_findings: entry.diagnostic_findings,
             compatibility: entry.compatibility,

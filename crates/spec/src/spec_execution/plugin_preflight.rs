@@ -2159,6 +2159,7 @@ mod tests {
             setup_default_env_var: None,
             setup_docs_urls: Vec::new(),
             setup_remediation: None,
+            native_extension: kernel::PluginNativeExtensionDeclarations::default(),
             slot_claims: Vec::new(),
             diagnostic_findings: Vec::new(),
             compatibility: None,

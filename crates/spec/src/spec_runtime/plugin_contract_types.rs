@@ -1042,6 +1042,7 @@ pub struct PluginInventoryEntry {
     pub setup_default_env_var: Option<String>,
     pub setup_docs_urls: Vec<String>,
     pub setup_remediation: Option<String>,
+    pub native_extension: kernel::PluginNativeExtensionDeclarations,
     pub slot_claims: Vec<PluginSlotClaim>,
     pub diagnostic_findings: Vec<PluginDiagnosticFinding>,
     pub compatibility: Option<PluginCompatibility>,
@@ -1087,6 +1088,8 @@ pub struct PluginInventoryResult {
     pub setup_default_env_var: Option<String>,
     pub setup_docs_urls: Vec<String>,
     pub setup_remediation: Option<String>,
+    #[serde(default)]
+    pub native_extension: kernel::PluginNativeExtensionDeclarations,
     pub slot_claims: Vec<PluginSlotClaim>,
     pub diagnostic_findings: Vec<PluginDiagnosticFinding>,
     pub compatibility: Option<PluginCompatibility>,

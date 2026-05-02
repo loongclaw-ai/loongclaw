@@ -2320,6 +2320,7 @@ fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> Strin
             .runtime_health
             .as_ref()
             .map(|health| health.status.as_str());
+        let native_extension = &result.native_extension;
         let attestation = result
             .activation_attestation
             .as_ref()
@@ -2352,6 +2353,25 @@ fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> Strin
             display_text_or_dash(attestation),
             display_text_or_dash(result.summary.as_deref())
         ));
+        let has_native_extension_projection = native_extension.contract.is_some()
+            || native_extension.family.is_some()
+            || native_extension.trust_lane.is_some()
+            || !native_extension.methods.is_empty()
+            || !native_extension.host_hooks.is_empty()
+            || !native_extension.tui_surfaces.is_empty()
+            || !native_extension.metadata_issues.is_empty();
+        if has_native_extension_projection {
+            lines.push(format!(
+                "  native_extension contract={} family={} trust_lane={} methods={} host_hooks={} tui_surfaces={} metadata_issues={}",
+                display_text_or_dash(native_extension.contract.as_deref()),
+                display_text_or_dash(native_extension.family.as_deref()),
+                display_text_or_dash(native_extension.trust_lane.as_deref()),
+                format_csv_or_dash(&native_extension.methods),
+                format_csv_or_dash(&native_extension.host_hooks),
+                format_csv_or_dash(&native_extension.tui_surfaces),
+                format_csv_or_dash(&native_extension.metadata_issues),
+            ));
+        }
         if let Some(reason) = result.activation_reason.as_deref() {
             lines.push(format!("  activation_reason={reason}"));
         }
@@ -4267,6 +4287,77 @@ mod tests {
                 .setup_required_config_keys
                 .iter()
                 .any(|key| key == "plugins.entries.weather-sdk")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_plugins_inventory_surfaces_trusted_host_extension_declarations() {
+        let plugin_root = unique_temp_dir("loong-plugins-cli-inventory-trusted-host");
+        write_trusted_host_extension_package(&plugin_root);
+
+        let execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            command: PluginsCommands::Inventory(PluginInventoryCommand {
+                source: plugin_scan_source(&plugin_root, "trusted-host-extension"),
+                include_ready: true,
+                include_blocked: true,
+                include_deferred: true,
+                include_examples: false,
+            }),
+        })
+        .await
+        .expect("plugins inventory should execute");
+
+        let PluginsCommandExecution::Inventory(execution) = execution else {
+            panic!("expected inventory execution");
+        };
+        let result = &execution.results[0];
+        assert_eq!(
+            result.native_extension.family.as_deref(),
+            Some(crate::kernel::TRUSTED_HOST_EXTENSION_FAMILY)
+        );
+        assert_eq!(
+            result.native_extension.trust_lane.as_deref(),
+            Some(crate::kernel::TRUSTED_HOST_EXTENSION_TRUST_LANE)
+        );
+        assert_eq!(
+            result.native_extension.methods,
+            vec!["extension/event".to_owned()]
+        );
+        assert_eq!(
+            result.native_extension.host_hooks,
+            vec!["turn_start".to_owned(), "turn_end".to_owned()]
+        );
+        assert_eq!(
+            result.native_extension.tui_surfaces,
+            vec!["command_palette".to_owned()]
+        );
+        assert!(
+            result.native_extension.metadata_issues.is_empty(),
+            "trusted-host inventory projection should stay clean: {:?}",
+            result.native_extension.metadata_issues
+        );
+
+        let rendered = render_plugins_inventory_text(&execution);
+        assert!(rendered.contains("native_extension contract=process_stdio_json_line_v1"));
+        assert!(rendered.contains("family=trusted_host_extension"));
+        assert!(rendered.contains("trust_lane=trusted_host"));
+        assert!(rendered.contains("methods=extension/event"));
+        assert!(rendered.contains("host_hooks=turn_start,turn_end"));
+        assert!(rendered.contains("tui_surfaces=command_palette"));
+
+        let encoded = serde_json::to_value(&execution).expect("serialize inventory execution");
+        assert_eq!(
+            encoded["results"][0]["native_extension"]["family"],
+            serde_json::json!("trusted_host_extension")
+        );
+        assert_eq!(
+            encoded["results"][0]["native_extension"]["host_hooks"],
+            serde_json::json!(["turn_start", "turn_end"])
+        );
+        assert_eq!(
+            encoded["results"][0]["native_extension"]["tui_surfaces"],
+            serde_json::json!(["command_palette"])
         );
     }
 
