@@ -44,6 +44,7 @@ pub(super) fn build_control_plane_router_with_runtime(
         .route("/pairing/resolve", post(pairing_resolve))
         .route("/acp/session/list", get(acp_session_list))
         .route("/acp/session/read", get(acp_session_read))
+        .route("/acp/session/close", post(acp_session_close))
         .with_state(state);
     Ok(router)
 }
@@ -104,6 +105,7 @@ fn build_control_plane_router_without_repository(
         .route("/pairing/resolve", post(pairing_resolve))
         .route("/acp/session/list", get(acp_session_list))
         .route("/acp/session/read", get(acp_session_read))
+        .route("/acp/session/close", post(acp_session_close))
         .with_state(state);
     Ok(router)
 }

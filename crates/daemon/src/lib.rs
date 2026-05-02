@@ -117,6 +117,7 @@ pub fn run_memory_context_benchmark_cli(
 pub use {base64, kernel, sha2};
 
 pub mod acp_cli;
+mod acp_close_runtime;
 pub mod audit_cli;
 mod browser_companion_diagnostics;
 pub mod browser_preview;

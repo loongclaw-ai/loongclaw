@@ -21,6 +21,7 @@ use kernel::{
 };
 use loong_protocol::{
     CONTROL_PLANE_PROTOCOL_VERSION, ControlPlaneAcpBindingScope, ControlPlaneAcpRoutingOrigin,
+    ControlPlaneAcpSessionCloseRequest, ControlPlaneAcpSessionCloseResponse,
     ControlPlaneAcpSessionListResponse, ControlPlaneAcpSessionMetadata, ControlPlaneAcpSessionMode,
     ControlPlaneAcpSessionReadResponse, ControlPlaneAcpSessionState, ControlPlaneAcpSessionStatus,
     ControlPlaneApprovalDecision, ControlPlaneApprovalListResponse,

@@ -407,3 +407,92 @@ pub(super) async fn acp_session_read(
         }
     }
 }
+
+pub(super) async fn acp_session_close(
+    headers: HeaderMap,
+    State(state): State<ControlPlaneHttpState>,
+    Json(request): Json<ControlPlaneAcpSessionCloseRequest>,
+) -> Response {
+    #[cfg(not(feature = "memory-sqlite"))]
+    {
+        let _ = (state, request);
+        error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "acp/session/close requires daemon memory-sqlite support",
+        )
+    }
+    #[cfg(feature = "memory-sqlite")]
+    {
+        if let Err(response) =
+            authorize_control_plane_request(&state, "acp/session/close", &headers)
+        {
+            return *response;
+        }
+        let Some(acp_view) = state.acp_view.as_ref() else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "acp/session/close requires runtime control-plane serve --config <path>",
+            );
+        };
+        let Some(turn_runtime) = state.turn_runtime.as_ref() else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "acp/session/close requires runtime control-plane serve --config <path>",
+            );
+        };
+        let config = &turn_runtime.config;
+        let resolved_session_key = match crate::resolve_acp_status_session_key(
+            config,
+            request.session_key.as_deref(),
+            request.conversation_id.as_deref(),
+            request.route_session_id.as_deref(),
+        ) {
+            Ok(resolved_session_key) => resolved_session_key,
+            Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+        };
+
+        let read_result = acp_view.read_session(&resolved_session_key).await;
+        let view = match read_result {
+            Ok(Some(view)) => view,
+            Ok(None) => {
+                return error_response(
+                    StatusCode::NOT_FOUND,
+                    format!("ACP session `{}` not found", resolved_session_key),
+                );
+            }
+            Err(error) if error == "control_plane_acp_session_key_missing" => {
+                return error_response(StatusCode::BAD_REQUEST, error);
+            }
+            Err(error) if error.starts_with("visibility_denied:") => {
+                return error_response(StatusCode::FORBIDDEN, error);
+            }
+            Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        };
+        let manager = &turn_runtime.acp_manager;
+        let close_target = crate::acp_close_runtime::AcpResolvedCloseTarget {
+            resolved_session_key,
+            status: view.status,
+        };
+        let close_outcome = crate::acp_close_runtime::close_resolved_acp_target(
+            config,
+            manager.as_ref(),
+            &close_target,
+            crate::trusted_host_runtime::TrustedHostSessionShutdownReason::ExplicitClose,
+        )
+        .await;
+        let close_outcome = match close_outcome {
+            Ok(close_outcome) => close_outcome,
+            Err(error) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+            }
+        };
+
+        Json(ControlPlaneAcpSessionCloseResponse {
+            current_session_id: acp_view.current_session_id().to_owned(),
+            resolved_session_key: close_outcome.resolved_session_key,
+            closed: true,
+            hook_dispatched: close_outcome.hook_dispatched,
+        })
+        .into_response()
+    }
+}

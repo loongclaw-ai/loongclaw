@@ -485,6 +485,18 @@ fn acp_session_list_requires_control_acp_capability() {
 }
 
 #[test]
+fn acp_session_close_requires_control_acp_capability() {
+    let router = ProtocolRouter::default();
+    let resolved = router
+        .resolve("acp/session/close")
+        .expect("acp/session/close should resolve");
+    assert_eq!(
+        resolved.policy.required_capability.as_deref(),
+        Some("control_acp")
+    );
+}
+
+#[test]
 fn control_plane_connect_request_roundtrips_through_json() {
     let request = ControlPlaneConnectRequest {
         min_protocol: CONTROL_PLANE_PROTOCOL_VERSION,
@@ -1018,6 +1030,32 @@ fn control_plane_acp_session_read_response_roundtrips_through_json() {
         serde_json::to_string(&response).expect("ACP session read response should serialize");
     let decoded: ControlPlaneAcpSessionReadResponse =
         serde_json::from_str(&encoded).expect("ACP session read response should deserialize");
+    assert_eq!(decoded, response);
+}
+
+#[test]
+fn control_plane_acp_session_close_request_and_response_roundtrip_through_json() {
+    let request = ControlPlaneAcpSessionCloseRequest {
+        session_key: Some("agent:codex:root-session".to_owned()),
+        conversation_id: None,
+        route_session_id: None,
+    };
+    let encoded =
+        serde_json::to_string(&request).expect("ACP session close request should serialize");
+    let decoded: ControlPlaneAcpSessionCloseRequest =
+        serde_json::from_str(&encoded).expect("ACP session close request should deserialize");
+    assert_eq!(decoded, request);
+
+    let response = ControlPlaneAcpSessionCloseResponse {
+        current_session_id: "root-session".to_owned(),
+        resolved_session_key: "agent:codex:root-session".to_owned(),
+        closed: true,
+        hook_dispatched: true,
+    };
+    let encoded =
+        serde_json::to_string(&response).expect("ACP session close response should serialize");
+    let decoded: ControlPlaneAcpSessionCloseResponse =
+        serde_json::from_str(&encoded).expect("ACP session close response should deserialize");
     assert_eq!(decoded, response);
 }
 

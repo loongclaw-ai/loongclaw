@@ -1,6 +1,7 @@
 use super::*;
 use futures_util::StreamExt;
 use loong_contracts::SecretRef;
+use std::path::Path;
 
 fn build_control_plane_router(manager: Arc<mvp::control_plane::ControlPlaneManager>) -> Router {
     super::build_control_plane_router(manager).expect("router")
@@ -229,15 +230,7 @@ fn seeded_turn_runtime(
     backend_id: &'static str,
     state: Arc<TestTurnBackendState>,
 ) -> Arc<ControlPlaneTurnRuntime> {
-    mvp::acp::register_acp_backend(backend_id, {
-        move || {
-            Box::new(TestTurnBackend {
-                id: backend_id,
-                state: state.clone(),
-            })
-        }
-    })
-    .expect("register control-plane turn backend");
+    register_test_turn_backend(backend_id, state);
     let config = turn_runtime_test_config(backend_id);
     let temp_root = std::env::temp_dir().join(format!(
         "loong-control-plane-turn-runtime-{}-{}",
@@ -253,6 +246,48 @@ fn seeded_turn_runtime(
     )
     .expect("write control-plane turn runtime config");
     let acp_manager = Arc::new(mvp::acp::AcpSessionManager::default());
+    Arc::new(ControlPlaneTurnRuntime::with_manager(
+        resolved_path,
+        config,
+        acp_manager,
+    ))
+}
+
+fn register_test_turn_backend(backend_id: &'static str, state: Arc<TestTurnBackendState>) {
+    mvp::acp::register_acp_backend(backend_id, {
+        move || {
+            Box::new(TestTurnBackend {
+                id: backend_id,
+                state: state.clone(),
+            })
+        }
+    })
+    .expect("register control-plane turn backend");
+}
+
+fn seeded_turn_runtime_with_memory_path(
+    backend_id: &'static str,
+    state: Arc<TestTurnBackendState>,
+    sqlite_path: &Path,
+) -> Arc<ControlPlaneTurnRuntime> {
+    register_test_turn_backend(backend_id, state);
+    let mut config = turn_runtime_test_config(backend_id);
+    config.memory.sqlite_path = sqlite_path.display().to_string();
+    let temp_root = std::env::temp_dir().join(format!(
+        "loong-control-plane-turn-runtime-close-{}-{}",
+        backend_id,
+        current_time_ms()
+    ));
+    std::fs::create_dir_all(&temp_root).expect("create control-plane turn runtime temp root");
+    let resolved_path = temp_root.join("config.toml");
+    mvp::config::write(
+        Some(resolved_path.to_str().expect("utf8 config path")),
+        &config,
+        true,
+    )
+    .expect("write control-plane turn runtime config");
+    let acp_manager = mvp::acp::shared_acp_session_manager(&config)
+        .expect("shared acp manager for control-plane close");
     Arc::new(ControlPlaneTurnRuntime::with_manager(
         resolved_path,
         config,
@@ -677,6 +712,92 @@ fn seeded_control_plane_views(
             "root-session",
         )),
     )
+}
+
+#[cfg(feature = "memory-sqlite")]
+async fn seeded_control_plane_close_views(
+    test_name: &str,
+    backend_id: &'static str,
+) -> (
+    Arc<mvp::control_plane::ControlPlaneRepositoryView>,
+    Arc<mvp::control_plane::ControlPlaneAcpView>,
+    Arc<ControlPlaneTurnRuntime>,
+) {
+    let memory_config = isolated_memory_config(test_name);
+    let repo =
+        mvp::session::repository::SessionRepository::new(&memory_config).expect("repository");
+    repo.create_session(mvp::session::repository::NewSessionRecord {
+        session_id: "root-session".to_owned(),
+        kind: mvp::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("Root".to_owned()),
+        state: mvp::session::repository::SessionState::Running,
+    })
+    .expect("create root session");
+    repo.create_session(mvp::session::repository::NewSessionRecord {
+        session_id: "child-session".to_owned(),
+        kind: mvp::session::repository::SessionKind::DelegateChild,
+        parent_session_id: Some("root-session".to_owned()),
+        label: Some("Child".to_owned()),
+        state: mvp::session::repository::SessionState::Running,
+    })
+    .expect("create child session");
+
+    let mut config = mvp::config::LoongConfig::default();
+    let sqlite_path = memory_config
+        .sqlite_path
+        .as_ref()
+        .expect("sqlite path")
+        .display()
+        .to_string();
+    config.memory.sqlite_path = sqlite_path.clone();
+    config.acp.enabled = true;
+    config.acp.backend = Some(backend_id.to_owned());
+    let backend_state = Arc::new(TestTurnBackendState::default());
+    register_test_turn_backend(backend_id, backend_state.clone());
+
+    let manager = mvp::acp::shared_acp_session_manager(&config)
+        .expect("shared acp manager for seeded close views");
+    manager
+        .ensure_session(
+            &config,
+            &mvp::acp::AcpSessionBootstrap {
+                session_key: "agent:codex:child-session".to_owned(),
+                conversation_id: Some("conversation-visible".to_owned()),
+                binding: Some(mvp::acp::AcpSessionBindingScope {
+                    route_session_id: "child-session".to_owned(),
+                    channel_id: Some("feishu".to_owned()),
+                    account_id: Some("lark-prod".to_owned()),
+                    conversation_id: Some("oc-visible".to_owned()),
+                    participant_id: None,
+                    thread_id: Some("thread-visible".to_owned()),
+                }),
+                working_directory: None,
+                initial_prompt: None,
+                mode: Some(mvp::acp::AcpSessionMode::Interactive),
+                mcp_servers: Vec::new(),
+                metadata: std::collections::BTreeMap::new(),
+            },
+        )
+        .await
+        .expect("seed visible ACP session");
+
+    let repository_view = Arc::new(mvp::control_plane::ControlPlaneRepositoryView::new(
+        memory_config.clone(),
+        mvp::config::ToolConfig::default(),
+        "root-session",
+    ));
+    let acp_view = Arc::new(mvp::control_plane::ControlPlaneAcpView::new(
+        config.clone(),
+        "root-session",
+    ));
+    let turn_runtime = seeded_turn_runtime_with_memory_path(
+        backend_id,
+        backend_state,
+        memory_config.sqlite_path.as_ref().expect("sqlite path"),
+    );
+
+    (repository_view, acp_view, turn_runtime)
 }
 
 #[test]
@@ -2486,6 +2607,106 @@ async fn acp_session_read_returns_live_status_for_visible_session() {
             .is_some_and(|error| error.starts_with("status_unavailable:")),
         "expected ACP session read to degrade with status_unavailable when backend is absent"
     );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn acp_session_close_closes_visible_session() {
+    let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
+    let backend_id: &'static str =
+        Box::leak(format!("acp-close-visible-{}", current_time_ms()).into_boxed_str());
+    let (repository_view, acp_view, turn_runtime) =
+        seeded_control_plane_close_views("acp-close-visible", backend_id).await;
+    let router = build_control_plane_router_with_turn_runtime_and_views(
+        manager,
+        repository_view,
+        acp_view.clone(),
+        turn_runtime,
+    );
+    let token = connect_token(
+        &router,
+        std::collections::BTreeSet::from([ControlPlaneScope::OperatorAcp]),
+    )
+    .await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/acp/session/close")
+                .method("POST")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&ControlPlaneAcpSessionCloseRequest {
+                        session_key: Some("agent:codex:child-session".to_owned()),
+                        conversation_id: None,
+                        route_session_id: None,
+                    })
+                    .expect("encode ACP session close request"),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("ACP session close response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body bytes");
+    let close: ControlPlaneAcpSessionCloseResponse =
+        serde_json::from_slice(&body).expect("ACP session close json");
+    assert_eq!(close.current_session_id, "root-session");
+    assert_eq!(close.resolved_session_key, "agent:codex:child-session");
+    assert!(close.closed);
+    assert!(close.hook_dispatched);
+    let remaining = acp_view
+        .list_sessions(50)
+        .expect("visible ACP session list after close");
+    assert!(
+        remaining
+            .sessions
+            .iter()
+            .all(|session| session.session_key != "agent:codex:child-session")
+    );
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[tokio::test]
+async fn acp_session_close_rejects_insufficient_scope() {
+    let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
+    let backend_id: &'static str =
+        Box::leak(format!("acp-close-scope-{}", current_time_ms()).into_boxed_str());
+    let (repository_view, acp_view, turn_runtime) =
+        seeded_control_plane_close_views("acp-close-scope", backend_id).await;
+    let router = build_control_plane_router_with_turn_runtime_and_views(
+        manager,
+        repository_view,
+        acp_view,
+        turn_runtime,
+    );
+    let token = connect_token(
+        &router,
+        std::collections::BTreeSet::from([ControlPlaneScope::OperatorRead]),
+    )
+    .await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/acp/session/close")
+                .method("POST")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&ControlPlaneAcpSessionCloseRequest {
+                        session_key: Some("agent:codex:child-session".to_owned()),
+                        conversation_id: None,
+                        route_session_id: None,
+                    })
+                    .expect("encode ACP session close request"),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("ACP session close response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

@@ -19,6 +19,7 @@ const CONTROL_ACP_CAPABILITY: &str = "control_acp";
 
 pub use control_plane::{
     CONTROL_PLANE_PROTOCOL_VERSION, ControlPlaneAcpBindingScope, ControlPlaneAcpRoutingOrigin,
+    ControlPlaneAcpSessionCloseRequest, ControlPlaneAcpSessionCloseResponse,
     ControlPlaneAcpSessionListResponse, ControlPlaneAcpSessionMetadata, ControlPlaneAcpSessionMode,
     ControlPlaneAcpSessionReadResponse, ControlPlaneAcpSessionState, ControlPlaneAcpSessionStatus,
     ControlPlaneApprovalDecision, ControlPlaneApprovalListResponse,
@@ -94,6 +95,7 @@ pub enum ProtocolRoute {
     PairingResolve,
     AcpSessionList,
     AcpSessionRead,
+    AcpSessionClose,
     Custom(String),
 }
 
@@ -122,6 +124,7 @@ impl ProtocolRoute {
             "pairing/resolve" => Self::PairingResolve,
             "acp/session/list" => Self::AcpSessionList,
             "acp/session/read" => Self::AcpSessionRead,
+            "acp/session/close" => Self::AcpSessionClose,
             other => Self::Custom(other.to_owned()),
         }
     }
@@ -150,6 +153,7 @@ impl ProtocolRoute {
             Self::PairingResolve => "pairing/resolve",
             Self::AcpSessionList => "acp/session/list",
             Self::AcpSessionRead => "acp/session/read",
+            Self::AcpSessionClose => "acp/session/close",
             Self::Custom(method) => method,
         }
     }
@@ -179,6 +183,7 @@ impl ProtocolRoute {
                 | Self::PairingResolve
                 | Self::AcpSessionList
                 | Self::AcpSessionRead
+                | Self::AcpSessionClose
         )
     }
 }
@@ -307,7 +312,9 @@ impl ProtocolRouter {
                     required_capability: Some(CONTROL_PAIRING_CAPABILITY.to_owned()),
                 },
             }),
-            ProtocolRoute::AcpSessionList | ProtocolRoute::AcpSessionRead => Ok(ResolvedRoute {
+            ProtocolRoute::AcpSessionList
+            | ProtocolRoute::AcpSessionRead
+            | ProtocolRoute::AcpSessionClose => Ok(ResolvedRoute {
                 route,
                 policy: RoutePolicy {
                     allow_anonymous: false,
