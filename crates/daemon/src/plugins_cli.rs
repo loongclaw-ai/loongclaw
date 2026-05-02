@@ -26,7 +26,8 @@ use crate::native_extension_authoring::{
     process_stdio_native_extension_language_profile, process_stdio_scaffold_args,
     render_authoring_actions_command, render_authoring_doctor_command,
     render_authoring_host_hook_probe_command, render_authoring_inventory_command,
-    render_rust_extension_cargo_toml, summarize_native_extension_authoring_guidance,
+    render_authoring_tui_surface_probe_command, render_rust_extension_cargo_toml,
+    summarize_native_extension_authoring_guidance,
 };
 use crate::{
     BridgeSupportSpec, CliResult, HumanApprovalMode, HumanApprovalSpec, JsonSchemaDescriptor,
@@ -51,6 +52,7 @@ pub const PLUGINS_ACTIONS_SCHEMA_PURPOSE: &str = "operator_action_plan";
 pub const PLUGINS_INIT_SCHEMA_PURPOSE: &str = "package_scaffold";
 pub const PLUGINS_INVOKE_EXTENSION_SCHEMA_PURPOSE: &str = "native_extension_smoke_probe";
 pub const PLUGINS_INVOKE_HOST_HOOK_SCHEMA_PURPOSE: &str = "trusted_host_hook_probe";
+pub const PLUGINS_INVOKE_TUI_SURFACE_SCHEMA_PURPOSE: &str = "trusted_host_tui_surface_probe";
 
 fn plugins_command_schema(purpose: &str) -> JsonSchemaDescriptor {
     let version = PLUGINS_COMMAND_SCHEMA_VERSION;
@@ -67,6 +69,8 @@ pub enum PluginsCommands {
     InvokeExtension(PluginInvokeExtensionCommand),
     /// Invoke a declared trusted-host hook through the bounded process bridge probe surface
     InvokeHostHook(PluginInvokeHostHookCommand),
+    /// Invoke a declared trusted-host TUI surface through the bounded process bridge probe surface
+    InvokeTuiSurface(PluginInvokeTuiSurfaceCommand),
     /// Inspect manifest-first package truth across one or more plugin roots
     Inventory(PluginInventoryCommand),
     /// Diagnose manifest-first plugin packages with author-facing remediation
@@ -385,6 +389,29 @@ pub struct PluginInvokeHostHookCommand {
     #[arg(long, default_value = "{}")]
     pub payload: String,
     /// Explicit process command allowlist entries for the host-hook probe
+    #[arg(long = "allow-command")]
+    pub allow_commands: Vec<String>,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[command(
+    about = "Probe a declared trusted-host TUI surface through the bounded process bridge",
+    long_about = "Probe a declared trusted-host TUI surface through the bounded process bridge.\n\nThis command scans a package root, selects the named plugin package, verifies that it declares the trusted host extension family and trust lane plus the named shell-first TUI surface, and invokes the surface through the existing process_stdio bridge with a read-only TUI envelope. It is a bounded authoring probe, not live shell dispatch."
+)]
+pub struct PluginInvokeTuiSurfaceCommand {
+    /// Package root containing the extension package manifest
+    #[arg(long = "root", value_name = "ROOT")]
+    pub root: String,
+    /// Stable plugin identity to select from the scanned root
+    #[arg(long)]
+    pub plugin_id: String,
+    /// Declared trusted-host TUI surface name to invoke
+    #[arg(long = "tui-surface")]
+    pub tui_surface: String,
+    /// Optional JSON payload to attach as TUI surface context
+    #[arg(long, default_value = "{}")]
+    pub payload: String,
+    /// Explicit process command allowlist entries for the TUI-surface probe
     #[arg(long = "allow-command")]
     pub allow_commands: Vec<String>,
 }
@@ -912,11 +939,29 @@ pub struct PluginsInvokeHostHookExecution {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct PluginsInvokeTuiSurfaceExecution {
+    pub schema_version: u32,
+    pub schema: JsonSchemaDescriptor,
+    pub package_root: String,
+    pub plugin_id: String,
+    pub extension_family: Option<String>,
+    pub extension_trust_lane: Option<String>,
+    pub bridge_kind: String,
+    pub source_language: Option<String>,
+    pub tui_surface: String,
+    pub payload: Value,
+    pub dispatched_method: String,
+    pub response_payload: Value,
+    pub runtime_evidence: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum PluginsCommandExecution {
     Init(Box<PluginsInitExecution>),
     InvokeExtension(Box<PluginsInvokeExtensionExecution>),
     InvokeHostHook(Box<PluginsInvokeHostHookExecution>),
+    InvokeTuiSurface(Box<PluginsInvokeTuiSurfaceExecution>),
     Inventory(Box<PluginsInventoryExecution>),
     Doctor(Box<PluginsDoctorExecution>),
     BridgeProfiles(Box<PluginsBridgeProfilesExecution>),
@@ -956,6 +1001,10 @@ pub async fn execute_plugins_command(
         PluginsCommands::InvokeHostHook(command) => {
             let execution = execute_plugins_invoke_host_hook(command).await?;
             Ok(PluginsCommandExecution::InvokeHostHook(Box::new(execution)))
+        }
+        PluginsCommands::InvokeTuiSurface(command) => {
+            let execution = execute_plugins_invoke_tui_surface(command).await?;
+            Ok(PluginsCommandExecution::InvokeTuiSurface(Box::new(execution)))
         }
         PluginsCommands::Inventory(command) => {
             let context = build_plugin_inventory_context(
@@ -1956,6 +2005,13 @@ fn build_native_extension_authoring_profile(
                 smoke_hook.as_str(),
                 profile.smoke_allow_command,
             )
+        } else if let Some(tui_surface) = declared_tui_surfaces.first() {
+            render_authoring_tui_surface_probe_command(
+                package_root,
+                plugin_id,
+                tui_surface.as_str(),
+                profile.smoke_allow_command,
+            )
         } else {
             crate::native_extension_authoring::render_authoring_smoke_test_command(
                 package_root,
@@ -2258,6 +2314,94 @@ async fn execute_plugins_invoke_host_hook(
     })
 }
 
+async fn execute_plugins_invoke_tui_surface(
+    command: PluginInvokeTuiSurfaceCommand,
+) -> CliResult<PluginsInvokeTuiSurfaceExecution> {
+    let package_root = normalize_required_cli_value("--root", &command.root)?;
+    let plugin_id = normalize_required_cli_value("--plugin-id", &command.plugin_id)?;
+    let tui_surface = normalize_required_cli_value("--tui-surface", &command.tui_surface)?;
+    let payload = serde_json::from_str::<Value>(command.payload.as_str()).map_err(|error| {
+        format!("plugins invoke-tui-surface requires --payload to be valid JSON: {error}")
+    })?;
+    let plugin = scan_single_plugin_from_root(
+        package_root.as_str(),
+        plugin_id.as_str(),
+        "plugins invoke-tui-surface",
+    )?;
+    ensure_process_stdio_invocable_plugin(
+        &plugin,
+        plugin_id.as_str(),
+        "plugins invoke-tui-surface",
+        "trusted-host TUI surfaces",
+    )?;
+
+    let extension_declarations =
+        crate::kernel::plugin_native_extension_declarations_from_metadata(&plugin.metadata);
+    if extension_declarations.family.as_deref()
+        != Some(crate::kernel::TRUSTED_HOST_EXTENSION_FAMILY)
+        || extension_declarations.trust_lane.as_deref()
+            != Some(crate::kernel::TRUSTED_HOST_EXTENSION_TRUST_LANE)
+    {
+        return Err(format!(
+            "plugins invoke-tui-surface requires plugin `{plugin_id}` to declare loong_extension_family=`{}` and loong_extension_trust_lane=`{}`",
+            crate::kernel::TRUSTED_HOST_EXTENSION_FAMILY,
+            crate::kernel::TRUSTED_HOST_EXTENSION_TRUST_LANE
+        ));
+    }
+    if !extension_declarations
+        .methods
+        .iter()
+        .any(|method| method == "extension/event")
+    {
+        return Err(format!(
+            "plugins invoke-tui-surface requires plugin `{plugin_id}` to declare extension/event in loong_extension_methods_json"
+        ));
+    }
+    if !extension_declarations
+        .tui_surfaces
+        .iter()
+        .any(|surface| surface == &tui_surface)
+    {
+        return Err(format!(
+            "plugins invoke-tui-surface requires plugin `{plugin_id}` to declare TUI surface `{tui_surface}` in loong_extension_tui_surfaces_json"
+        ));
+    }
+
+    let bridge_policy =
+        crate::trusted_host_runtime::build_process_stdio_bridge_policy_from_allow_commands(
+            command.allow_commands,
+            "plugins invoke-tui-surface requires at least one --allow-command for process_stdio TUI-surface probes",
+        )?;
+    let surface_payload = crate::trusted_host_runtime::build_read_only_trusted_host_tui_surface_payload(
+        tui_surface.as_str(),
+        payload.clone(),
+    );
+    let outcome = crate::trusted_host_runtime::invoke_process_stdio_extension_operation(
+        &plugin,
+        "extension/event",
+        surface_payload,
+        &bridge_policy,
+    )
+    .await
+    .map_err(|error| format!("plugins invoke-tui-surface failed: {error}"))?;
+
+    Ok(PluginsInvokeTuiSurfaceExecution {
+        schema_version: PLUGINS_COMMAND_SCHEMA_VERSION,
+        schema: plugins_command_schema(PLUGINS_INVOKE_TUI_SURFACE_SCHEMA_PURPOSE),
+        package_root,
+        plugin_id,
+        extension_family: extension_declarations.family,
+        extension_trust_lane: extension_declarations.trust_lane,
+        bridge_kind: plugin.runtime.bridge_kind.as_str().to_owned(),
+        source_language: Some(plugin.runtime.source_language.clone()),
+        tui_surface,
+        payload,
+        dispatched_method: "extension/event".to_owned(),
+        response_payload: outcome.response_payload,
+        runtime_evidence: outcome.runtime_evidence,
+    })
+}
+
 fn scan_single_plugin_from_root(
     package_root: &str,
     plugin_id: &str,
@@ -2360,6 +2504,35 @@ fn render_plugins_invoke_host_hook_text(execution: &PluginsInvokeHostHookExecuti
     .join("\n")
 }
 
+fn render_plugins_invoke_tui_surface_text(execution: &PluginsInvokeTuiSurfaceExecution) -> String {
+    let source_language = execution.source_language.as_deref().unwrap_or("-");
+    let response_payload = serde_json::to_string_pretty(&execution.response_payload)
+        .unwrap_or_else(|_| execution.response_payload.to_string());
+    let runtime_evidence = serde_json::to_string_pretty(&execution.runtime_evidence)
+        .unwrap_or_else(|_| execution.runtime_evidence.to_string());
+
+    [
+        format!(
+            "plugins invoke-tui-surface package_root={} plugin_id={} extension_family={} extension_trust_lane={} bridge_kind={} source_language={} tui_surface={} dispatched_method={}",
+            execution.package_root,
+            execution.plugin_id,
+            display_text_or_dash(execution.extension_family.as_deref()),
+            display_text_or_dash(execution.extension_trust_lane.as_deref()),
+            execution.bridge_kind,
+            source_language,
+            execution.tui_surface,
+            execution.dispatched_method
+        ),
+        "payload:".to_owned(),
+        execution.payload.to_string(),
+        "response_payload:".to_owned(),
+        response_payload,
+        "runtime_evidence:".to_owned(),
+        runtime_evidence,
+    ]
+    .join("\n")
+}
+
 fn render_plugins_cli_text(execution: &PluginsCommandExecution) -> String {
     let (title, body) = match execution {
         PluginsCommandExecution::Init(execution) => {
@@ -2372,6 +2545,10 @@ fn render_plugins_cli_text(execution: &PluginsCommandExecution) -> String {
         PluginsCommandExecution::InvokeHostHook(execution) => (
             "plugins invoke-host-hook",
             render_plugins_invoke_host_hook_text(execution),
+        ),
+        PluginsCommandExecution::InvokeTuiSurface(execution) => (
+            "plugins invoke-tui-surface",
+            render_plugins_invoke_tui_surface_text(execution),
         ),
         PluginsCommandExecution::Inventory(execution) => (
             "plugins inventory",
@@ -4691,7 +4868,8 @@ mod tests {
     "loong_extension_methods_json": "[\"extension/event\"]",
     "loong_extension_events_json": "[\"session_start\"]",
     "loong_extension_host_hooks_json": "[\"turn_start\",\"turn_end\"]",
-    "loong_extension_host_actions_json": "[]"
+    "loong_extension_host_actions_json": "[]",
+    "loong_extension_tui_surfaces_json": "[\"command_palette\"]"
   },
   "summary": "Trusted host read-only hook probe example",
   "compatibility": {
@@ -4703,7 +4881,7 @@ mod tests {
         .expect("write trusted-host package manifest");
         fs::write(
             format!("{package_root}/index.js"),
-            "#!/usr/bin/env node\nfunction buildExtensionPayload(operation, payload) {\n  if (operation === 'extension/event') {\n    return { ok: true, handled_event: payload.event ?? 'unknown', handled_hook: payload.host_hook ?? 'unknown', received_hook_payload: payload.hook_payload ?? null };\n  }\n  return { error: `unsupported method: ${operation}` };\n}\nfunction emitResponse(line) {\n  const trimmed = line.trim();\n  if (!trimmed) return;\n  const request = JSON.parse(trimmed);\n  const payload = request.payload ?? {};\n  const response = { method: request.method ?? '', id: request.id ?? null, payload: buildExtensionPayload(payload.operation ?? '', payload.payload ?? {}) };\n  process.stdout.write(`${JSON.stringify(response)}\\n`);\n}\nprocess.stdin.setEncoding('utf8');\nlet buffered = '';\nprocess.stdin.on('data', (chunk) => { buffered += chunk; let newlineIndex = buffered.indexOf('\\n'); while (newlineIndex !== -1) { const line = buffered.slice(0, newlineIndex); buffered = buffered.slice(newlineIndex + 1); emitResponse(line); newlineIndex = buffered.indexOf('\\n'); } });\nprocess.stdin.on('end', () => { if (buffered.trim()) emitResponse(buffered); });\nprocess.stdin.resume();\n",
+            "#!/usr/bin/env node\nfunction buildExtensionPayload(operation, payload) {\n  if (operation === 'extension/event') {\n    return { ok: true, handled_event: payload.event ?? 'unknown', handled_hook: payload.host_hook ?? 'unknown', handled_tui_surface: payload.host_tui_surface ?? 'unknown', received_hook_payload: payload.hook_payload ?? null, received_surface_payload: payload.surface_payload ?? null };\n  }\n  return { error: `unsupported method: ${operation}` };\n}\nfunction emitResponse(line) {\n  const trimmed = line.trim();\n  if (!trimmed) return;\n  const request = JSON.parse(trimmed);\n  const payload = request.payload ?? {};\n  const response = { method: request.method ?? '', id: request.id ?? null, payload: buildExtensionPayload(payload.operation ?? '', payload.payload ?? {}) };\n  process.stdout.write(`${JSON.stringify(response)}\\n`);\n}\nprocess.stdin.setEncoding('utf8');\nlet buffered = '';\nprocess.stdin.on('data', (chunk) => { buffered += chunk; let newlineIndex = buffered.indexOf('\\n'); while (newlineIndex !== -1) { const line = buffered.slice(0, newlineIndex); buffered = buffered.slice(newlineIndex + 1); emitResponse(line); newlineIndex = buffered.indexOf('\\n'); } });\nprocess.stdin.on('end', () => { if (buffered.trim()) emitResponse(buffered); });\nprocess.stdin.resume();\n",
         )
         .expect("write trusted-host package entrypoint");
     }
@@ -6750,6 +6928,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_plugins_invoke_tui_surface_runs_trusted_host_extension_probe() {
+        let temp_root = unique_temp_dir("loong-plugins-cli-invoke-tui-surface");
+        let package_root = format!("{temp_root}/trusted-host-extension");
+        write_trusted_host_extension_package(&package_root);
+
+        let surface_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            command: PluginsCommands::InvokeTuiSurface(PluginInvokeTuiSurfaceCommand {
+                root: package_root,
+                plugin_id: "trusted-host-extension".to_owned(),
+                tui_surface: "command_palette".to_owned(),
+                payload: "{\"query\":\":ext\"}".to_owned(),
+                allow_commands: vec!["node".to_owned()],
+            }),
+        })
+        .await
+        .expect("invoke-tui-surface should execute trusted host extension");
+
+        let PluginsCommandExecution::InvokeTuiSurface(surface_execution) = surface_execution else {
+            panic!("expected invoke-tui-surface execution");
+        };
+        assert_eq!(
+            surface_execution.extension_family.as_deref(),
+            Some(crate::kernel::TRUSTED_HOST_EXTENSION_FAMILY)
+        );
+        assert_eq!(surface_execution.tui_surface, "command_palette");
+        assert_eq!(
+            surface_execution.response_payload["handled_event"],
+            json!("tui_surface")
+        );
+        assert_eq!(
+            surface_execution.response_payload["handled_tui_surface"],
+            json!("command_palette")
+        );
+        assert_eq!(
+            surface_execution.response_payload["received_surface_payload"]["query"],
+            json!(":ext")
+        );
+    }
+
+    #[tokio::test]
     async fn execute_plugins_invoke_host_hook_rejects_governed_sidecar_extension() {
         let temp_root = unique_temp_dir("loong-plugins-cli-invoke-host-hook-governed");
         let package_root = format!("{temp_root}/host-hook-extension");
@@ -7385,6 +7604,10 @@ mod tests {
             assert!(
                 doc.contains("invoke-host-hook"),
                 "doc should mention trusted-host probe commands"
+            );
+            assert!(
+                doc.contains("invoke-tui-surface"),
+                "doc should mention trusted-host TUI probe commands"
             );
             assert!(
                 doc.contains("command_palette"),

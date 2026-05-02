@@ -193,6 +193,17 @@ These TUI declarations are contract-first today: Loong inventories and validates
 them on the trusted host lane, but live TUI dispatch is still a separate follow-up
 seam.
 
+You can still probe the declared TUI contract through the bounded bridge:
+
+```bash
+loong plugins invoke-tui-surface \
+  --root "./weather-host-ui" \
+  --plugin-id weather-host-ui \
+  --tui-surface command_palette \
+  --payload '{"query":":ext"}' \
+  --allow-command node
+```
+
 with the current live runtime coverage intentionally bounded to daemon-owned
 surfaces first.
 

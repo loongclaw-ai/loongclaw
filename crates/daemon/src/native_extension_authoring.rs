@@ -270,6 +270,17 @@ pub(crate) fn render_authoring_host_hook_probe_command(
     )
 }
 
+pub(crate) fn render_authoring_tui_surface_probe_command(
+    package_root: &str,
+    plugin_id: &str,
+    surface: &str,
+    allow_command: &str,
+) -> String {
+    format!(
+        "loong plugins invoke-tui-surface --root \"{package_root}\" --plugin-id \"{plugin_id}\" --tui-surface {surface} --payload '{{}}' --allow-command {allow_command}"
+    )
+}
+
 pub(crate) fn build_native_extension_authoring_guidance(
     plugin: &PluginInventoryResult,
 ) -> Option<NativeExtensionAuthoringGuidanceView> {

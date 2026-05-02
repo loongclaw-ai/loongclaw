@@ -175,6 +175,17 @@ These TUI declarations are contract-first today: Loong inventories and
 validates them on the trusted host lane, while live shell-surface dispatch
 remains a separate follow-up seam.
 
+Bounded TUI probe:
+
+```bash
+loong plugins invoke-tui-surface \
+  --root "./weather-host-ui" \
+  --plugin-id weather-host-ui \
+  --tui-surface command_palette \
+  --payload '{"query":":ext"}' \
+  --allow-command node
+```
+
 Automatic trusted-host dispatch currently covers:
 
 - `turn_start`

@@ -67,6 +67,18 @@ pub(crate) fn build_read_only_trusted_host_hook_payload(hook: &str, payload: Val
     })
 }
 
+pub(crate) fn build_read_only_trusted_host_tui_surface_payload(
+    surface: &str,
+    payload: Value,
+) -> Value {
+    json!({
+        "event": "tui_surface",
+        "host_tui_surface": surface,
+        "surface_kind": "read_only",
+        "surface_payload": payload,
+    })
+}
+
 pub(crate) async fn invoke_process_stdio_extension_operation(
     plugin: &PluginIR,
     operation: &str,
