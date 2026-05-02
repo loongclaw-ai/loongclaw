@@ -383,6 +383,11 @@ pub struct GatewayOperatorRuntimeSummaryReadModel {
     pub runtime_plugin_roots_source: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub runtime_plugin_capability_distribution: BTreeMap<String, usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_plugin_shadowed_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_plugin_discovery_guidance:
+        Option<crate::runtime_plugin_discovery::RuntimePluginDiscoveryGuidanceView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_plugin_authoring_summary: Option<GatewayRuntimePluginAuthoringSummaryReadModel>,
     pub visible_tool_count: usize,
@@ -1526,6 +1531,10 @@ fn build_operator_runtime_summary_read_model(
         json_string_field(&runtime_snapshot.runtime_plugins, "roots_source");
     let runtime_plugin_capability_distribution =
         runtime_plugin_capability_distribution(&runtime_snapshot.runtime_plugins);
+    let runtime_plugin_shadowed_ids =
+        runtime_plugin_shadowed_ids(&runtime_snapshot.runtime_plugins);
+    let runtime_plugin_discovery_guidance =
+        runtime_plugin_discovery_guidance(&runtime_snapshot.runtime_plugins);
     let runtime_plugin_authoring_summary =
         runtime_plugin_authoring_summary(&runtime_snapshot.runtime_plugins);
     let visible_tool_count = runtime_snapshot.tools.visible_tool_count;
@@ -1554,6 +1563,8 @@ fn build_operator_runtime_summary_read_model(
         enabled_outbound_only_channel_ids,
         runtime_plugin_roots_source,
         runtime_plugin_capability_distribution,
+        runtime_plugin_shadowed_ids,
+        runtime_plugin_discovery_guidance,
         runtime_plugin_authoring_summary,
         visible_tool_count,
         visible_direct_tool_names,
@@ -1583,6 +1594,27 @@ fn runtime_plugin_capability_distribution(runtime_plugins: &Value) -> BTreeMap<S
     }
 
     distribution
+}
+
+fn runtime_plugin_shadowed_ids(runtime_plugins: &Value) -> Vec<String> {
+    runtime_plugins
+        .get("shadowed_plugin_ids")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn runtime_plugin_discovery_guidance(
+    runtime_plugins: &Value,
+) -> Option<crate::runtime_plugin_discovery::RuntimePluginDiscoveryGuidanceView> {
+    let value = runtime_plugins.get("discovery_guidance")?;
+    serde_json::from_value(value.clone()).ok()
 }
 
 fn runtime_plugin_authoring_summary(
@@ -2540,6 +2572,35 @@ mod tests {
             },
             runtime_plugins: serde_json::json!({
                 "roots_source": "configured",
+                "shadowed_plugin_ids": ["shared-extension"],
+                "discovery_guidance": {
+                    "precedence_rule": "project_local_over_global",
+                    "project_local_root": ".loong/extensions/",
+                    "global_root": "~/.loong/agent/extensions/",
+                    "shadowed_plugin_ids": ["shared-extension"],
+                    "shadowed_conflicts": [
+                        {
+                            "plugin_id": "shared-extension",
+                            "effective_source_path": ".loong/extensions/search/loong.plugin.json",
+                            "shadowed_source_paths": ["~/.loong/agent/extensions/search/loong.plugin.json"]
+                        }
+                    ],
+                    "discovery_actions": [
+                        {
+                            "kind": "inspect_effective_package",
+                            "role": "operator",
+                            "execution_kind": "read_only_cli",
+                            "agent_runnable": true,
+                            "plugin_id": "shared-extension",
+                            "target_source_path": ".loong/extensions/search/loong.plugin.json",
+                            "target_package_root": ".loong/extensions/search",
+                            "summary": "Inspect the effective project-local package for shared-extension",
+                            "command": "loong plugins doctor --root '.loong/extensions/search' --profile sdk-release"
+                        }
+                    ],
+                    "recommended_action": "review_global_duplicate",
+                    "resolution_hint": "Project-local .loong/extensions overrides ~/.loong/agent/extensions"
+                },
                 "plugins": [
                     {
                         "plugin_id": "weather-extension",
@@ -2575,6 +2636,17 @@ mod tests {
                 .runtime_plugin_capability_distribution
                 .get("observe_telemetry"),
             Some(&1)
+        );
+        assert_eq!(
+            summary.runtime_plugin_shadowed_ids,
+            vec!["shared-extension".to_owned()]
+        );
+        assert_eq!(
+            summary
+                .runtime_plugin_discovery_guidance
+                .as_ref()
+                .and_then(|guidance| guidance.recommended_action.as_deref()),
+            Some("review_global_duplicate")
         );
         assert_eq!(
             summary

@@ -71,6 +71,7 @@ pub use self::operator_inventory_cli::{
     render_channel_surfaces_text, render_channel_target_kind_ids, run_channels_cli,
     run_list_context_engines_cli, run_list_memory_systems_cli, run_safe_lane_summary_cli,
 };
+pub use self::runtime_plugin_discovery::RuntimePluginDiscoveryGuidanceView;
 pub use loong_bench::{
     run_programmatic_pressure_baseline_lint_cli, run_programmatic_pressure_benchmark_cli,
     run_wasm_cache_benchmark_cli,
@@ -177,6 +178,7 @@ mod provider_route_diagnostics;
 pub mod runtime_capability_cli;
 pub mod runtime_cli;
 pub mod runtime_experiment_cli;
+mod runtime_plugin_discovery;
 pub mod runtime_restore_cli;
 mod runtime_snapshot_compaction_assessment;
 mod runtime_snapshot_compaction_hygiene;
@@ -1781,6 +1783,9 @@ pub struct RuntimeSnapshotRuntimePluginsState {
     pub ready_plugin_count: usize,
     pub setup_incomplete_plugin_count: usize,
     pub blocked_plugin_count: usize,
+    pub shadowed_plugin_ids: Vec<String>,
+    pub discovery_guidance:
+        Option<crate::runtime_plugin_discovery::RuntimePluginDiscoveryGuidanceView>,
     pub plugins: Vec<RuntimeSnapshotRuntimePluginState>,
 }
 
@@ -2289,6 +2294,8 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
             ready_plugin_count: 0,
             setup_incomplete_plugin_count: 0,
             blocked_plugin_count: 0,
+            shadowed_plugin_ids: Vec::new(),
+            discovery_guidance: None,
             plugins: Vec::new(),
         };
     }
@@ -2314,6 +2321,8 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
             ready_plugin_count: 0,
             setup_incomplete_plugin_count: 0,
             blocked_plugin_count: 0,
+            shadowed_plugin_ids: Vec::new(),
+            discovery_guidance: None,
             plugins: Vec::new(),
         };
     }
@@ -2343,6 +2352,8 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
                     ready_plugin_count: 0,
                     setup_incomplete_plugin_count: 0,
                     blocked_plugin_count: 0,
+                    shadowed_plugin_ids: Vec::new(),
+                    discovery_guidance: None,
                     plugins: Vec::new(),
                 };
             }
@@ -2369,6 +2380,8 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
                 ready_plugin_count: 0,
                 setup_incomplete_plugin_count: 0,
                 blocked_plugin_count: 0,
+                shadowed_plugin_ids: Vec::new(),
+                discovery_guidance: None,
                 plugins: Vec::new(),
             };
         }
@@ -2484,6 +2497,30 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
             }
         })
         .collect::<Vec<_>>();
+    let (plugins, shadowed_plugin_ids, shadowed_by_plugin_id) = if roots_source == "auto_discovered"
+    {
+        let selection =
+            kernel::prefer_first_plugin_ids(plugins, |plugin| plugin.plugin_id.as_str());
+        (
+            selection.effective,
+            selection.shadowed_plugin_ids,
+            selection.shadowed_by_plugin_id,
+        )
+    } else {
+        (plugins, Vec::new(), BTreeMap::new())
+    };
+    let shadowed_conflicts =
+        crate::runtime_plugin_discovery::build_runtime_plugin_shadowing_conflicts(
+            &plugins,
+            &shadowed_by_plugin_id,
+            |plugin| plugin.plugin_id.as_str(),
+            |plugin| plugin.source_path.as_str(),
+        );
+    let discovery_guidance =
+        crate::runtime_plugin_discovery::build_runtime_plugin_discovery_guidance(
+            Some(roots_source.as_str()),
+            shadowed_conflicts,
+        );
 
     RuntimeSnapshotRuntimePluginsState {
         enabled: true,
@@ -2501,6 +2538,8 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
         ready_plugin_count: activation.ready_plugins,
         setup_incomplete_plugin_count: activation.setup_incomplete_plugins,
         blocked_plugin_count: activation.blocked_plugins,
+        shadowed_plugin_ids,
+        discovery_guidance,
         plugins,
     }
 }

@@ -298,6 +298,11 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
         options.fix,
         path_env.as_deref(),
     );
+    for step in crate::runtime_plugin_discovery::build_runtime_plugin_discovery_next_steps(
+        runtime_plugins_surface.state.discovery_guidance.as_ref(),
+    ) {
+        push_unique_step(&mut next_steps, step);
+    }
     for step in compaction_hygiene_signal.next_steps.clone() {
         push_unique_step(&mut next_steps, step);
     }

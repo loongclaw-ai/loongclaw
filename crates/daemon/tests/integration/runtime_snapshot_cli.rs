@@ -70,6 +70,24 @@ impl Drop for RuntimeSnapshotEnvGuard {
     }
 }
 
+struct RuntimeSnapshotCurrentDirGuard {
+    previous: PathBuf,
+}
+
+impl RuntimeSnapshotCurrentDirGuard {
+    fn set(target: &Path) -> Self {
+        let previous = std::env::current_dir().expect("read current dir");
+        std::env::set_current_dir(target).expect("set current dir");
+        Self { previous }
+    }
+}
+
+impl Drop for RuntimeSnapshotCurrentDirGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.previous);
+    }
+}
+
 struct RuntimeSnapshotPolicyResetGuard {
     runtime_config: mvp::tools::runtime_config::ToolRuntimeConfig,
 }
@@ -281,6 +299,61 @@ fn install_trusted_host_runtime_plugin_package(root: &Path, config_path: &Path) 
     reloaded.runtime_plugins.roots = vec![root.join("runtime-plugins").display().to_string()];
     mvp::config::write(Some(&path_string.display().to_string()), &reloaded, true)
         .expect("rewrite config fixture with trusted-host runtime plugin roots");
+}
+
+fn install_auto_discovered_shadowed_runtime_plugins(root: &Path, home: &Path, config_path: &Path) {
+    write_file(
+        root,
+        ".loong/extensions/search/loong.plugin.json",
+        r#"{
+  "api_version": "v1alpha1",
+  "version": "1.0.0",
+  "plugin_id": "shared-extension",
+  "provider_id": "project-extension",
+  "connector_name": "project-extension",
+  "capabilities": ["InvokeConnector"],
+  "summary": "Project-local extension",
+  "metadata": {
+    "bridge_kind": "process_stdio",
+    "adapter_family": "python-stdio-adapter",
+    "entrypoint": "stdin/stdout::invoke",
+    "source_language": "python",
+    "command": "python3",
+    "args_json": "[\"index.py\"]",
+    "process_timeout_ms": "5000"
+  }
+}"#,
+    );
+    write_file(
+        home,
+        ".loong/agent/extensions/search/loong.plugin.json",
+        r#"{
+  "api_version": "v1alpha1",
+  "version": "1.0.0",
+  "plugin_id": "shared-extension",
+  "provider_id": "global-extension",
+  "connector_name": "global-extension",
+  "capabilities": ["InvokeConnector"],
+  "summary": "Global extension",
+  "metadata": {
+    "bridge_kind": "process_stdio",
+    "adapter_family": "python-stdio-adapter",
+    "entrypoint": "stdin/stdout::invoke",
+    "source_language": "python",
+    "command": "python3",
+    "args_json": "[\"index.py\"]",
+    "process_timeout_ms": "5000"
+  }
+}"#,
+    );
+
+    let config_path_text = config_path.to_str().expect("config path should be utf-8");
+    let (resolved_path, mut config) =
+        mvp::config::load(Some(config_path_text)).expect("reload config");
+    config.runtime_plugins.enabled = true;
+    config.runtime_plugins.roots = vec!["   ".to_owned()];
+    mvp::config::write(Some(&resolved_path.display().to_string()), &config, true)
+        .expect("rewrite config fixture with auto-discovered runtime plugins");
 }
 
 fn array_contains_string(array: &Value, needle: &str) -> bool {
@@ -527,6 +600,68 @@ fn runtime_snapshot_json_payload_projects_trusted_host_extension_declarations() 
     );
 
     fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_snapshot_json_payload_reports_auto_discovered_shadow_conflicts() {
+    let root = unique_temp_dir("loong-runtime-snapshot-shadowed-json");
+    let home = unique_temp_dir("loong-runtime-snapshot-shadowed-home");
+    fs::create_dir_all(&root).expect("create root");
+    fs::create_dir_all(&home).expect("create home");
+    let home_text = home.display().to_string();
+    let _env = RuntimeSnapshotEnvGuard::set(&[
+        ("HOME", Some(home_text.as_str())),
+        ("LOONG_BROWSER_COMPANION_READY", Some("true")),
+    ]);
+    let _cwd = RuntimeSnapshotCurrentDirGuard::set(&root);
+    let (config_path, _config) = write_runtime_snapshot_config(&root);
+    install_auto_discovered_shadowed_runtime_plugins(&root, &home, &config_path);
+
+    let snapshot = collect_runtime_snapshot_cli_state(Some(
+        config_path.to_str().expect("config path should be utf-8"),
+    ))
+    .expect("collect runtime snapshot");
+    let payload =
+        build_runtime_snapshot_cli_json_payload(&snapshot).expect("build runtime snapshot payload");
+
+    assert_eq!(
+        payload["runtime_plugins"]["roots_source"],
+        "auto_discovered"
+    );
+    assert_eq!(
+        payload["runtime_plugins"]["shadowed_plugin_ids"],
+        serde_json::json!(["shared-extension"])
+    );
+    assert_eq!(
+        payload["runtime_plugins"]["discovery_guidance"]["precedence_rule"],
+        serde_json::json!("project_local_over_global")
+    );
+    assert_eq!(
+        payload["runtime_plugins"]["discovery_guidance"]["recommended_action"],
+        serde_json::json!("review_global_duplicate")
+    );
+    assert_eq!(
+        payload["runtime_plugins"]["discovery_guidance"]["shadowed_conflicts"][0]["plugin_id"],
+        serde_json::json!("shared-extension")
+    );
+    assert_eq!(
+        payload["runtime_plugins"]["discovery_guidance"]["discovery_actions"][0]["kind"],
+        serde_json::json!("inspect_effective_package")
+    );
+    let plugin = array_object_with_string_field(
+        &payload["runtime_plugins"]["plugins"],
+        "plugin_id",
+        "shared-extension",
+    )
+    .expect("shared extension should be present");
+    assert!(
+        plugin["source_path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with(".loong/extensions/search/loong.plugin.json"))
+    );
+
+    fs::remove_dir_all(&root).ok();
+    fs::remove_dir_all(&home).ok();
 }
 
 #[test]
@@ -823,4 +958,34 @@ fn runtime_snapshot_text_projects_trusted_host_extension_declarations() {
     assert!(rendered.contains("smoke_test=loong plugins invoke-host-hook"));
 
     fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_snapshot_text_reports_auto_discovered_shadow_conflicts() {
+    let root = unique_temp_dir("loong-runtime-snapshot-shadowed-text");
+    let home = unique_temp_dir("loong-runtime-snapshot-shadowed-text-home");
+    fs::create_dir_all(&root).expect("create root");
+    fs::create_dir_all(&home).expect("create home");
+    let home_text = home.display().to_string();
+    let _env = RuntimeSnapshotEnvGuard::set(&[
+        ("HOME", Some(home_text.as_str())),
+        ("LOONG_BROWSER_COMPANION_READY", Some("true")),
+    ]);
+    let _cwd = RuntimeSnapshotCurrentDirGuard::set(&root);
+    let (config_path, _config) = write_runtime_snapshot_config(&root);
+    install_auto_discovered_shadowed_runtime_plugins(&root, &home, &config_path);
+
+    let snapshot = collect_runtime_snapshot_cli_state(Some(
+        config_path.to_str().expect("config path should be utf-8"),
+    ))
+    .expect("collect runtime snapshot");
+    let rendered = render_runtime_snapshot_text(&snapshot);
+
+    assert!(rendered.contains("roots_source=auto_discovered"));
+    assert!(rendered.contains("shadowed_plugin_ids=shared-extension"));
+    assert!(rendered.contains("precedence_rule=project_local_over_global"));
+    assert!(rendered.contains("recommended_action=review_global_duplicate"));
+
+    fs::remove_dir_all(&root).ok();
+    fs::remove_dir_all(&home).ok();
 }

@@ -454,6 +454,50 @@ fn render_runtime_plugins_lines(snapshot: &RuntimeSnapshotRuntimePluginsState) -
         snapshot.blocked_plugin_count,
     )];
 
+    if !snapshot.shadowed_plugin_ids.is_empty() {
+        lines.push(format!(
+            "  shadowed_plugin_ids={}",
+            crate::render_line_safe_text_values(
+                snapshot.shadowed_plugin_ids.iter().map(String::as_str),
+                ",",
+            )
+        ));
+    }
+    if let Some(discovery_guidance) = snapshot.discovery_guidance.as_ref() {
+        let recommended_action = crate::render_line_safe_optional_text_value(
+            discovery_guidance.recommended_action.as_deref(),
+        );
+        let discovery_action_kinds = crate::render_line_safe_text_values(
+            discovery_guidance
+                .discovery_actions
+                .iter()
+                .map(|action| action.kind.as_str()),
+            ",",
+        );
+        let first_conflict = discovery_guidance.shadowed_conflicts.first();
+        let effective_source_path = crate::render_line_safe_optional_text_value(
+            first_conflict.map(|conflict| conflict.effective_source_path.as_str()),
+        );
+        let shadowed_source_paths = first_conflict
+            .map(|conflict| {
+                crate::render_line_safe_text_values(
+                    conflict.shadowed_source_paths.iter().map(String::as_str),
+                    ",",
+                )
+            })
+            .unwrap_or_else(|| "-".to_owned());
+        lines.push(format!(
+            "  discovery_guidance precedence_rule={} precedence_roots={}>{} recommended_action={} discovery_action_kinds={} effective_source_path={} shadowed_source_paths={}",
+            crate::render_line_safe_text_value(&discovery_guidance.precedence_rule),
+            crate::render_line_safe_text_value(&discovery_guidance.project_local_root),
+            crate::render_line_safe_text_value(&discovery_guidance.global_root),
+            recommended_action,
+            discovery_action_kinds,
+            effective_source_path,
+            shadowed_source_paths,
+        ));
+    }
+
     if let Some(error) = snapshot.inventory_error.as_deref() {
         let rendered_error = crate::render_line_safe_text_value(error);
 
@@ -782,6 +826,8 @@ pub(crate) fn runtime_snapshot_runtime_plugins_json(
         "ready_plugin_count": snapshot.ready_plugin_count,
         "setup_incomplete_plugin_count": snapshot.setup_incomplete_plugin_count,
         "blocked_plugin_count": snapshot.blocked_plugin_count,
+        "shadowed_plugin_ids": snapshot.shadowed_plugin_ids,
+        "discovery_guidance": snapshot.discovery_guidance,
         "plugins": snapshot.plugins.iter().map(|plugin| {
             json!({
                 "plugin_id": plugin.plugin_id,

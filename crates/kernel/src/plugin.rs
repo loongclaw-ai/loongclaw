@@ -488,6 +488,45 @@ pub struct PluginScanReport {
     pub descriptors: Vec<PluginDescriptor>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginIdPrecedenceSelection<T> {
+    pub effective: Vec<T>,
+    pub shadowed_plugin_ids: Vec<String>,
+    pub shadowed_by_plugin_id: BTreeMap<String, Vec<T>>,
+}
+
+pub fn prefer_first_plugin_ids<T, F>(
+    items: Vec<T>,
+    plugin_id_of: F,
+) -> PluginIdPrecedenceSelection<T>
+where
+    F: Fn(&T) -> &str,
+{
+    let mut seen_plugin_ids = BTreeSet::new();
+    let mut shadowed_plugin_ids = BTreeSet::new();
+    let mut shadowed_by_plugin_id = BTreeMap::new();
+    let mut effective = Vec::new();
+
+    for item in items {
+        let plugin_id = plugin_id_of(&item).trim().to_owned();
+        if seen_plugin_ids.insert(plugin_id.clone()) {
+            effective.push(item);
+        } else if !plugin_id.is_empty() {
+            shadowed_plugin_ids.insert(plugin_id);
+            shadowed_by_plugin_id
+                .entry(plugin_id_of(&item).trim().to_owned())
+                .or_insert_with(Vec::new)
+                .push(item);
+        }
+    }
+
+    PluginIdPrecedenceSelection {
+        effective,
+        shadowed_plugin_ids: shadowed_plugin_ids.into_iter().collect(),
+        shadowed_by_plugin_id,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PluginAbsorbReport {
     pub absorbed_plugins: usize,

@@ -444,6 +444,21 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
             .collect::<Vec<_>>()
             .join(",")
     };
+    let runtime_plugin_shadowed_ids = if runtime.runtime_plugin_shadowed_ids.is_empty() {
+        "-".to_owned()
+    } else {
+        runtime.runtime_plugin_shadowed_ids.join(",")
+    };
+    let runtime_plugin_precedence_rule = runtime
+        .runtime_plugin_discovery_guidance
+        .as_ref()
+        .map(|guidance| guidance.precedence_rule.as_str())
+        .unwrap_or("-");
+    let runtime_plugin_recommended_action = runtime
+        .runtime_plugin_discovery_guidance
+        .as_ref()
+        .and_then(|guidance| guidance.recommended_action.as_deref())
+        .unwrap_or("-");
     let runtime_plugin_authoring = runtime
         .runtime_plugin_authoring_summary
         .as_ref()
@@ -790,6 +805,18 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
             loong_app::tui_surface::TuiKeyValueSpec::Plain {
                 key: "runtime plugin capabilities".to_owned(),
                 value: runtime_plugin_capabilities,
+            },
+            loong_app::tui_surface::TuiKeyValueSpec::Plain {
+                key: "runtime plugin shadowed ids".to_owned(),
+                value: runtime_plugin_shadowed_ids,
+            },
+            loong_app::tui_surface::TuiKeyValueSpec::Plain {
+                key: "runtime plugin precedence".to_owned(),
+                value: runtime_plugin_precedence_rule.to_owned(),
+            },
+            loong_app::tui_surface::TuiKeyValueSpec::Plain {
+                key: "runtime plugin review action".to_owned(),
+                value: runtime_plugin_recommended_action.to_owned(),
             },
             loong_app::tui_surface::TuiKeyValueSpec::Plain {
                 key: "runtime plugin authoring".to_owned(),
@@ -1421,6 +1448,19 @@ mod tests {
                     ("invoke_connector".to_owned(), 1),
                     ("observe_telemetry".to_owned(), 1),
                 ]),
+                runtime_plugin_shadowed_ids: vec!["shared-extension".to_owned()],
+                runtime_plugin_discovery_guidance: Some(
+                    crate::RuntimePluginDiscoveryGuidanceView {
+                        precedence_rule: "project_local_over_global".to_owned(),
+                        project_local_root: ".loong/extensions/".to_owned(),
+                        global_root: "~/.loong/agent/extensions/".to_owned(),
+                        shadowed_plugin_ids: vec!["shared-extension".to_owned()],
+                        shadowed_conflicts: Vec::new(),
+                        discovery_actions: Vec::new(),
+                        recommended_action: Some("review_global_duplicate".to_owned()),
+                        resolution_hint: None,
+                    },
+                ),
                 runtime_plugin_authoring_summary: Some(
                     crate::gateway::read_models::GatewayRuntimePluginAuthoringSummaryReadModel {
                         guided_plugin_count: 1,
@@ -1609,6 +1649,9 @@ mod tests {
             rendered
                 .contains("runtime plugin capabilities: invoke_connector:1,observe_telemetry:1")
         );
+        assert!(rendered.contains("runtime plugin shadowed ids: shared-extension"));
+        assert!(rendered.contains("runtime plugin precedence: project_local_over_global"));
+        assert!(rendered.contains("runtime plugin review action: review_global_duplicate"));
         assert!(rendered.contains("runtime plugin authoring"), "{rendered}");
         assert!(rendered.contains("guided=1"), "{rendered}");
         assert!(rendered.contains("metadata_issues=0"), "{rendered}");
@@ -1777,6 +1820,8 @@ mod tests {
                 enabled_outbound_only_channel_ids: Vec::new(),
                 runtime_plugin_roots_source: Some("configured".to_owned()),
                 runtime_plugin_capability_distribution: std::collections::BTreeMap::new(),
+                runtime_plugin_shadowed_ids: Vec::new(),
+                runtime_plugin_discovery_guidance: None,
                 runtime_plugin_authoring_summary: None,
                 visible_tool_count: 4,
                 visible_direct_tool_names: vec!["read".to_owned(), "exec".to_owned()],
@@ -1929,6 +1974,8 @@ mod tests {
                 enabled_outbound_only_channel_ids: Vec::new(),
                 runtime_plugin_roots_source: Some("configured".to_owned()),
                 runtime_plugin_capability_distribution: std::collections::BTreeMap::new(),
+                runtime_plugin_shadowed_ids: Vec::new(),
+                runtime_plugin_discovery_guidance: None,
                 runtime_plugin_authoring_summary: None,
                 visible_tool_count: 4,
                 visible_direct_tool_names: vec!["read".to_owned(), "exec".to_owned()],
@@ -2069,6 +2116,8 @@ mod tests {
                 enabled_outbound_only_channel_ids: Vec::new(),
                 runtime_plugin_roots_source: Some("configured".to_owned()),
                 runtime_plugin_capability_distribution: std::collections::BTreeMap::new(),
+                runtime_plugin_shadowed_ids: Vec::new(),
+                runtime_plugin_discovery_guidance: None,
                 runtime_plugin_authoring_summary: None,
                 visible_tool_count: 4,
                 visible_direct_tool_names: vec!["read".to_owned(), "exec".to_owned()],
