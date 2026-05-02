@@ -1007,15 +1007,24 @@ mod tests {
         write_default_config(&config_path);
         let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "1"]);
 
-        let error =
-            run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
-                .expect_err("empty save should stay invalid");
+        run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
+            .expect("recommended defaults should save");
         let load_result =
             mvp::config::load(Some(config_path_string.as_str())).expect("reload config");
         let (_, loaded_config) = load_result;
+        let personalization = loaded_config
+            .memory
+            .personalization
+            .expect("recommended defaults should be saved");
 
-        assert!(error.contains("at least one operator preference"));
-        assert_eq!(loaded_config.memory.personalization, None);
+        assert_eq!(
+            personalization.response_density,
+            Some(mvp::config::ResponseDensity::Balanced)
+        );
+        assert_eq!(
+            personalization.initiative_level,
+            Some(mvp::config::InitiativeLevel::Balanced)
+        );
 
         let _ = std::fs::remove_file(config_path);
     }
@@ -1041,21 +1050,23 @@ mod tests {
         write_config(&config_path, &config);
         let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "1"]);
 
-        let error =
-            run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
-                .expect_err("empty suppressed save should stay invalid");
+        run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
+            .expect("recommended defaults should unsuppress personalization");
         let load_result =
             mvp::config::load(Some(config_path_string.as_str())).expect("reload config");
         let (_, loaded_config) = load_result;
         let personalization = loaded_config
             .memory
             .personalization
-            .expect("suppressed state should remain present");
+            .expect("personalization should remain present");
 
-        assert!(error.contains("at least one operator preference"));
         assert_eq!(
-            personalization.prompt_state,
-            mvp::config::PersonalizationPromptState::Suppressed
+            personalization.response_density,
+            Some(mvp::config::ResponseDensity::Balanced)
+        );
+        assert_eq!(
+            personalization.initiative_level,
+            Some(mvp::config::InitiativeLevel::Balanced)
         );
 
         let _ = std::fs::remove_file(config_path);
@@ -1092,8 +1103,8 @@ mod tests {
             draft,
             PersonalizationDraft {
                 preferred_name: None,
-                response_density: None,
-                initiative_level: None,
+                response_density: Some(mvp::config::ResponseDensity::Balanced),
+                initiative_level: Some(mvp::config::InitiativeLevel::Balanced),
                 standing_boundaries: None,
                 timezone: None,
                 locale: None,
@@ -1135,7 +1146,7 @@ mod tests {
 
         let action = select_review_action(&mut ui, &draft).expect("select review action");
 
-        assert_eq!(action, PersonalizeReviewAction::Save);
+        assert_eq!(action, PersonalizeReviewAction::SkipForNow);
         assert_eq!(
             ui.select_labels,
             vec!["What should Loong do with this draft?"],
@@ -1160,7 +1171,7 @@ mod tests {
 
         let selection = select_response_density(&mut ui, None).expect("select response density");
 
-        assert_eq!(selection, None);
+        assert_eq!(selection, Some(mvp::config::ResponseDensity::Balanced));
         assert_eq!(
             ui.select_labels,
             vec!["How detailed should Loong usually be?"],
@@ -1197,7 +1208,7 @@ mod tests {
 
         let selection = select_initiative_level(&mut ui, None).expect("select initiative level");
 
-        assert_eq!(selection, None);
+        assert_eq!(selection, Some(mvp::config::InitiativeLevel::Balanced));
         assert_eq!(
             ui.select_labels,
             vec!["How proactive should Loong be?"],

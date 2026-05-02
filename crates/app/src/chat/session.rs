@@ -29,9 +29,6 @@ use self::live::*;
 #[path = "session/term.rs"]
 mod term;
 use self::term::*;
-pub(crate) use self::term::{
-    interactive_terminal_surface_supported, run_cli_chat_surface, run_concurrent_cli_host_surface,
-};
 #[path = "session/actions.rs"]
 mod actions;
 #[path = "session/control.rs"]

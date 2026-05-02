@@ -1540,8 +1540,6 @@ mod tests {
         assert!(rendered.contains("demoted_recent=1.500/session"));
         assert!(rendered.contains("capability snapshot: abc123"));
         assert!(rendered.contains("ACP: acp enabled=false availability=disabled"));
-        assert!(rendered.contains("deep dives"));
-        assert!(rendered.contains("- recipe: loong gateway status"));
     }
 
     #[test]

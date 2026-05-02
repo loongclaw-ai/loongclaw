@@ -3662,6 +3662,7 @@ fn push_unique_step(steps: &mut Vec<DoctorNextStep>, step: impl Into<DoctorNextS
     }
 }
 
+#[cfg(test)]
 fn merge_doctor_next_steps<I>(mut steps: Vec<String>, supplemental_steps: I) -> Vec<String>
 where
     I: IntoIterator<Item = String>,

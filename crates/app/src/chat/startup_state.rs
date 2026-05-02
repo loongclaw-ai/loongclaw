@@ -43,8 +43,8 @@ pub(super) fn build_cli_chat_startup_summary(
     let acp_selection = resolve_acp_backend_selection(&runtime.config);
     let workspace_root = runtime.config.tools.runtime_workspace_root.clone();
     let active_provider_profile_id = runtime.config.active_provider_id();
-    let active_provider_profile = active_provider_profile_id
-        .and_then(|profile_id| runtime.config.providers.get(profile_id));
+    let active_provider_profile =
+        active_provider_profile_id.and_then(|profile_id| runtime.config.providers.get(profile_id));
     let provider_label = active_provider_profile
         .map(|profile| {
             format!(
