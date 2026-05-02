@@ -15,6 +15,7 @@ use ratatui::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandAction {
     RunCommand(&'static str),
+    RunCommandOwned(String),
     OpenSettings(SettingsSurfaceFocus),
     ApplySettings(SettingsCommandAction),
     OpenModelReasoning(ProviderModelCatalogEntry),
@@ -53,6 +54,12 @@ pub struct SlashCommandSpec {
     pub command: &'static str,
     pub description: &'static str,
     pub ready: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicCommandEntry {
+    pub command: String,
+    pub description: String,
 }
 
 const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
@@ -218,7 +225,7 @@ pub struct SkillEntry {
 
 #[derive(Debug, Clone)]
 struct CommandEntry {
-    command: &'static str,
+    command: String,
     description: String,
     action: CommandAction,
 }
@@ -236,6 +243,7 @@ pub struct SettingsEntry {
 pub struct CommandPalette {
     query: String,
     commands: Vec<CommandEntry>,
+    dynamic_commands: Vec<CommandEntry>,
     settings: Vec<SettingsEntry>,
     settings_status: Option<String>,
     settings_focus: SettingsSurfaceFocus,
@@ -272,11 +280,12 @@ impl CommandPalette {
             commands: SLASH_COMMAND_SPECS
                 .iter()
                 .map(|spec| CommandEntry {
-                    command: spec.command,
+                    command: spec.command.to_owned(),
                     description: spec.description.to_owned(),
                     action: CommandAction::RunCommand(spec.command),
                 })
                 .collect(),
+            dynamic_commands: Vec::new(),
             settings: Vec::new(),
             settings_status: None,
             settings_focus: SettingsSurfaceFocus::Overview,
@@ -298,6 +307,17 @@ impl CommandPalette {
         self.query = query.trim().trim_start_matches(['/', ':']).to_string();
         self.settings_status = None;
         self.scroll_state.reset();
+    }
+
+    pub fn set_dynamic_commands(&mut self, entries: Vec<DynamicCommandEntry>) {
+        self.dynamic_commands = entries
+            .into_iter()
+            .map(|entry| CommandEntry {
+                command: entry.command.clone(),
+                description: entry.description,
+                action: CommandAction::RunCommandOwned(entry.command),
+            })
+            .collect();
     }
 
     pub fn show_settings(
@@ -1248,6 +1268,12 @@ impl CommandPalette {
         let query = self.query.trim().to_ascii_lowercase();
         self.commands
             .iter()
+            .chain(
+                (!query.is_empty())
+                    .then_some(self.dynamic_commands.iter())
+                    .into_iter()
+                    .flatten(),
+            )
             .filter(|entry| {
                 if query.is_empty() {
                     return true;
@@ -1376,7 +1402,7 @@ impl CommandPalette {
     }
 
     fn display_label(&self, entry: &CommandEntry) -> String {
-        entry.command.to_owned()
+        entry.command.clone()
     }
 
     fn visible_rows_for_total(total: usize) -> usize {

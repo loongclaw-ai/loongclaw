@@ -39,8 +39,8 @@ use crate::tui_surface::{TuiCalloutTone, TuiKeyValueSpec, TuiMessageSpec, TuiSec
 use loong_kernel::{PluginActivationInventoryEntry, PluginIR};
 
 use super::command_palette::{
-    CommandAction, CommandPalette, SettingsCommandAction, SettingsEntry, SettingsSurfaceFocus,
-    SkillEntry, slash_command_specs,
+    CommandAction, CommandPalette, DynamicCommandEntry, SettingsCommandAction, SettingsEntry,
+    SettingsSurfaceFocus, SkillEntry, slash_command_specs,
 };
 use super::composer::Composer;
 use super::i18n::{I18nService, Language, SurfaceCopy, resolve_default_language};
@@ -1018,6 +1018,11 @@ impl App {
                 self.focus = Focus::Composer;
                 Some(command.to_owned())
             }
+            CommandAction::RunCommandOwned(command) => {
+                self.inline_skill_popup_active = false;
+                self.focus = Focus::Composer;
+                Some(command)
+            }
             CommandAction::OpenSettings(_)
             | CommandAction::ApplySettings(_)
             | CommandAction::OpenModelReasoning(_)
@@ -1333,7 +1338,7 @@ pub async fn run_app<B: Backend>(
                                     } else {
                                         '/'
                                     };
-                                    open_slash_command_palette(&mut app, prefix, "");
+                                    open_slash_command_palette(&mut app, &runtime, prefix, "");
                                 } else if app.handle_inline_skill_popup_key(key) {
                                 } else if should_route_composer_key_to_transcript(&app, key) {
                                     app.message_list.handle_key(key);
@@ -1363,7 +1368,7 @@ pub async fn run_app<B: Backend>(
                                     } else {
                                         '/'
                                     };
-                                    open_slash_command_palette(&mut app, prefix, "");
+                                    open_slash_command_palette(&mut app, &runtime, prefix, "");
                                 } else if should_focus_composer_for_transcript_key(key) {
                                     pending_submission =
                                         route_transcript_key_to_composer(&mut app, key);
@@ -1410,7 +1415,7 @@ pub async fn run_app<B: Backend>(
                                 } else {
                                     '/'
                                 };
-                                open_slash_command_palette(&mut app, prefix, "");
+                                open_slash_command_palette(&mut app, &runtime, prefix, "");
                                 dirty = true;
                                 continue;
                             }
@@ -1475,7 +1480,7 @@ pub async fn run_app<B: Backend>(
                                 } else {
                                     '/'
                                 };
-                                open_slash_command_palette(&mut app, prefix, "");
+                                open_slash_command_palette(&mut app, &runtime, prefix, "");
                             } else if app.handle_inline_skill_popup_key(key) {
                             } else if should_route_composer_key_to_transcript(&app, key) {
                                 app.message_list.handle_key(key);
@@ -1538,7 +1543,7 @@ pub async fn run_app<B: Backend>(
                             } else {
                                 '/'
                             };
-                            open_slash_command_palette(&mut app, prefix, "");
+                            open_slash_command_palette(&mut app, &runtime, prefix, "");
                             continue;
                         }
 
@@ -2386,13 +2391,86 @@ fn paste_into_composer(app: &mut App, text: &str) {
     app.sync_inline_skill_popup();
 }
 
-fn open_slash_command_palette(app: &mut App, prefix: char, query: &str) {
+fn open_slash_command_palette(app: &mut App, runtime: &CliTurnRuntime, prefix: char, query: &str) {
     let normalized_prefix = if prefix == ':' { ':' } else { '/' };
+    sync_runtime_extension_command_palette(app, runtime);
     app.command_palette.show_commands(query);
     app.composer
         .set_input(format!("{normalized_prefix}{}", query.trim()));
     app.inline_skill_popup_active = false;
     app.focus = Focus::CommandPalette;
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn sync_runtime_extension_command_palette(app: &mut App, runtime: &CliTurnRuntime) {
+    app.command_palette
+        .set_dynamic_commands(build_runtime_extension_command_palette_entries(runtime));
+}
+
+#[cfg(not(feature = "channel-plugin-bridge"))]
+fn sync_runtime_extension_command_palette(_app: &mut App, _runtime: &CliTurnRuntime) {}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn build_runtime_extension_command_palette_entries(
+    runtime: &CliTurnRuntime,
+) -> Vec<DynamicCommandEntry> {
+    if !runtime.config.runtime_plugins.enabled {
+        return Vec::new();
+    }
+
+    let Ok(inventory) = collect_runtime_plugin_inventory_snapshot(&runtime.config) else {
+        return Vec::new();
+    };
+
+    let mut seen_plugin_ids = HashSet::new();
+    let mut entries = Vec::new();
+    for plugin in &inventory.translation.entries {
+        if !seen_plugin_ids.insert(plugin.plugin_id.clone()) {
+            continue;
+        }
+
+        let Some(candidate) = inventory
+            .activation
+            .candidate_for(&plugin.source_path, &plugin.plugin_id)
+        else {
+            continue;
+        };
+        if candidate.status != loong_kernel::PluginActivationStatus::Ready {
+            continue;
+        }
+
+        let extension_family = plugin
+            .metadata
+            .get("loong_extension_family")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let extension_trust_lane = plugin
+            .metadata
+            .get("loong_extension_trust_lane")
+            .map(String::as_str)
+            .unwrap_or_default();
+        let declared_tui_surfaces =
+            metadata_string_list(&plugin.metadata, "loong_extension_tui_surfaces_json");
+        if extension_family != "trusted_host_extension"
+            || extension_trust_lane != "trusted_host"
+            || !declared_tui_surfaces
+                .iter()
+                .any(|surface| surface == "command_palette")
+        {
+            continue;
+        }
+
+        entries.push(DynamicCommandEntry {
+            command: format!("/extensions {}", plugin.plugin_id),
+            description: format!(
+                "inspect trusted command palette extension · {} · {}",
+                plugin.runtime.source_language,
+                plugin.runtime.bridge_kind.as_str()
+            ),
+        });
+    }
+    entries.sort_by(|left, right| left.command.cmp(&right.command));
+    entries
 }
 
 fn sync_slash_palette_composer(app: &mut App) {
@@ -3208,6 +3286,14 @@ fn dispatch_palette_action(
             app.inline_skill_popup_active = false;
             app.focus = Focus::Composer;
             Ok(Some(command.to_owned()))
+        }
+        CommandAction::RunCommandOwned(command) => {
+            if should_clear_slash_buffer {
+                clear_slash_palette_composer(app);
+            }
+            app.inline_skill_popup_active = false;
+            app.focus = Focus::Composer;
+            Ok(Some(command))
         }
         CommandAction::OpenSettings(focus) => {
             if should_clear_slash_buffer {
@@ -8771,8 +8857,9 @@ description: "actual description"
     #[test]
     fn slash_palette_open_and_sync_mirror_query_into_composer() {
         let mut app = blank_app();
+        let runtime = test_runtime_with_path(PathBuf::from("/tmp/loong-chat-surface-config.toml"));
 
-        super::open_slash_command_palette(&mut app, '/', "");
+        super::open_slash_command_palette(&mut app, &runtime, '/', "");
         assert_eq!(app.focus, Focus::CommandPalette);
         assert_eq!(app.composer.text(), "/");
 
@@ -8796,11 +8883,91 @@ description: "actual description"
     #[test]
     fn clearing_slash_palette_buffer_resets_composer() {
         let mut app = blank_app();
-        super::open_slash_command_palette(&mut app, '/', "model");
+        let runtime = test_runtime_with_path(PathBuf::from("/tmp/loong-chat-surface-config.toml"));
+        super::open_slash_command_palette(&mut app, &runtime, '/', "model");
 
         super::clear_slash_palette_composer(&mut app);
 
         assert!(app.composer.is_empty());
+    }
+
+    #[test]
+    fn slash_palette_surfaces_runtime_command_palette_extensions() {
+        let root = std::env::temp_dir().join(format!(
+            "loong-chat-extension-palette-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("mkdir extension root");
+        write_runtime_plugin_manifest(
+            root.as_path(),
+            "weather-extension",
+            &sample_runtime_plugin_manifest("weather-extension"),
+        );
+
+        let mut config = LoongConfig::default();
+        config.runtime_plugins.enabled = true;
+        config.runtime_plugins.roots = vec![root.display().to_string()];
+
+        let runtime = test_runtime_with_config(root.join("loong.toml"), config);
+        let mut app = blank_app();
+        super::open_slash_command_palette(&mut app, &runtime, '/', "weather");
+
+        match app
+            .command_palette
+            .handle_key(crossterm::event::KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            )) {
+            Some(CommandAction::RunCommandOwned(command))
+                if command == "/extensions weather-extension" => {}
+            other => {
+                panic!("expected runtime extension palette entry, got {other:?}");
+            }
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn slash_palette_keeps_default_command_order_when_query_is_empty() {
+        let root = std::env::temp_dir().join(format!(
+            "loong-chat-extension-palette-default-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("mkdir extension root");
+        write_runtime_plugin_manifest(
+            root.as_path(),
+            "weather-extension",
+            &sample_runtime_plugin_manifest("weather-extension"),
+        );
+
+        let mut config = LoongConfig::default();
+        config.runtime_plugins.enabled = true;
+        config.runtime_plugins.roots = vec![root.display().to_string()];
+
+        let runtime = test_runtime_with_config(root.join("loong.toml"), config);
+        let mut app = blank_app();
+        super::open_slash_command_palette(&mut app, &runtime, '/', "");
+
+        match app
+            .command_palette
+            .handle_key(crossterm::event::KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            )) {
+            Some(CommandAction::RunCommand("/model")) => {}
+            other => {
+                panic!("expected default slash palette ordering, got {other:?}");
+            }
+        }
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
