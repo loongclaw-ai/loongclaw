@@ -743,7 +743,7 @@ fn build_tool_catalog() -> ToolCatalog {
             name: "bash",
             provider_name: "bash",
             aliases: &[],
-            description: "Run a guarded bash command from the current runtime file root",
+            description: "Run a guarded bash command from the current runtime file root. Prefer portable macOS/BSD-safe commands over GNU-only flags.",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Direct,

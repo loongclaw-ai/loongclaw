@@ -418,7 +418,7 @@ pub(super) fn route_direct_browser_tool_name(payload: &Value) -> Result<&'static
     if let Some(action) = action {
         return match action {
             "start" => {
-                if has_url && !has_session_id {
+                if has_url {
                     Ok("browser.companion.session.start")
                 } else {
                     Err(
@@ -926,6 +926,18 @@ mod tests {
             unavailable_runtime_hint(managed_browser_route, &runtime_view)
                 .contains("read-only browser inspection")
         );
+    }
+
+    #[test]
+    fn direct_browser_start_ignores_caller_supplied_session_id_noise() {
+        let routed = route_direct_browser_tool_name(&json!({
+            "action": "start",
+            "url": "https://example.com",
+            "session_id": "stale-session"
+        }))
+        .expect("managed browser start should tolerate stale session ids");
+
+        assert_eq!(routed, "browser.companion.session.start");
     }
 
     #[test]

@@ -171,6 +171,7 @@ const EDIT_GUIDELINES: &[&str] = &[
 const BASH_GUIDELINES: &[&str] = &[
     "Use bash for guarded shell commands from the current runtime file root.",
     "Keep the command in one string, even when it uses pipes, redirects, or chaining.",
+    "Prefer portable commands that work on macOS and BSD userlands; avoid GNU-only flags such as `find -printf`.",
     "If bash output is truncated, prefer `details.handoff.recommended_payload` with `read`; if needed, inspect `details.handoff.recipes.*` for alternate first-page / last-page / wider-byte windows.",
 ];
 const WEB_GUIDELINES: &[&str] = &[
