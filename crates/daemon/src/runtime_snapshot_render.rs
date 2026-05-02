@@ -483,6 +483,7 @@ fn render_runtime_plugins_lines(snapshot: &RuntimeSnapshotRuntimePluginsState) -
                 .map(String::as_str),
             ",",
         );
+        let native_extension = &plugin.native_extension;
         let slot_claims =
             crate::render_line_safe_text_values(plugin.slot_claims.iter().map(String::as_str), ",");
         let conflicting_slot_claims = crate::render_line_safe_text_values(
@@ -508,6 +509,25 @@ fn render_runtime_plugins_lines(snapshot: &RuntimeSnapshotRuntimePluginsState) -
             slot_claims,
             conflicting_slot_claims,
         ));
+        let has_native_extension_projection = native_extension.contract.is_some()
+            || native_extension.family.is_some()
+            || native_extension.trust_lane.is_some()
+            || !native_extension.methods.is_empty()
+            || !native_extension.host_hooks.is_empty()
+            || !native_extension.tui_surfaces.is_empty()
+            || !native_extension.metadata_issues.is_empty();
+        if has_native_extension_projection {
+            lines.push(format!(
+                "    native_extension contract={} family={} trust_lane={} methods={} host_hooks={} tui_surfaces={} metadata_issues={}",
+                crate::render_line_safe_optional_text_value(native_extension.contract.as_deref()),
+                crate::render_line_safe_optional_text_value(native_extension.family.as_deref()),
+                crate::render_line_safe_optional_text_value(native_extension.trust_lane.as_deref()),
+                crate::render_line_safe_text_values(native_extension.methods.iter().map(String::as_str), ","),
+                crate::render_line_safe_text_values(native_extension.host_hooks.iter().map(String::as_str), ","),
+                crate::render_line_safe_text_values(native_extension.tui_surfaces.iter().map(String::as_str), ","),
+                crate::render_line_safe_text_values(native_extension.metadata_issues.iter().map(String::as_str), ","),
+            ));
+        }
     }
 
     lines
@@ -766,6 +786,7 @@ pub(crate) fn runtime_snapshot_runtime_plugins_json(
                 "reason": plugin.reason,
                 "missing_required_env_vars": plugin.missing_required_env_vars,
                 "missing_required_config_keys": plugin.missing_required_config_keys,
+                "native_extension": plugin.native_extension,
             })
         }).collect::<Vec<_>>(),
     })

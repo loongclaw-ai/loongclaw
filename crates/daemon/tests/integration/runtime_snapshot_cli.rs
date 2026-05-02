@@ -238,6 +238,51 @@ fn install_demo_runtime_plugin_package(root: &Path, config_path: &Path) {
         .expect("rewrite config fixture with runtime plugin roots");
 }
 
+fn install_trusted_host_runtime_plugin_package(root: &Path, config_path: &Path) {
+    write_file(
+        root,
+        "runtime-plugins/trusted-host/loong.plugin.json",
+        r#"{
+  "api_version": "v1alpha1",
+  "version": "0.1.0",
+  "plugin_id": "trusted-host-extension",
+  "provider_id": "trusted-host-extension",
+  "connector_name": "trusted-host-extension",
+  "capabilities": ["InvokeConnector"],
+  "metadata": {
+    "bridge_kind": "process_stdio",
+    "adapter_family": "javascript-stdio-adapter",
+    "entrypoint": "stdin/stdout::invoke",
+    "source_language": "javascript",
+    "command": "node",
+    "args_json": "[\"./index.js\"]",
+    "process_timeout_ms": "15000",
+    "loong_extension_contract": "process_stdio_json_line_v1",
+    "loong_extension_family": "trusted_host_extension",
+    "loong_extension_trust_lane": "trusted_host",
+    "loong_extension_methods_json": "[\"extension/event\"]",
+    "loong_extension_host_hooks_json": "[\"turn_start\",\"turn_end\"]",
+    "loong_extension_tui_surfaces_json": "[\"command_palette\"]"
+  },
+  "summary": "Trusted host read-only hook probe example"
+}"#,
+    );
+    write_file(
+        root,
+        "runtime-plugins/trusted-host/index.js",
+        "#!/usr/bin/env node\nprocess.stdin.resume();\n",
+    );
+
+    let (path_string, mut reloaded) = mvp::config::load(Some(
+        config_path.to_str().expect("config path should be utf-8"),
+    ))
+    .expect("reload config");
+    reloaded.runtime_plugins.enabled = true;
+    reloaded.runtime_plugins.roots = vec![root.join("runtime-plugins").display().to_string()];
+    mvp::config::write(Some(&path_string.display().to_string()), &reloaded, true)
+        .expect("rewrite config fixture with trusted-host runtime plugin roots");
+}
+
 fn array_contains_string(array: &Value, needle: &str) -> bool {
     array.as_array().is_some_and(|items| {
         items
@@ -407,6 +452,62 @@ fn runtime_snapshot_json_payload_marks_x_api_key_profiles_as_credential_resolved
     assert_eq!(
         anthropic_profile["descriptor"]["feature"]["family"],
         serde_json::json!("anthropic")
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_snapshot_json_payload_projects_trusted_host_extension_declarations() {
+    let root = unique_temp_dir("loong-runtime-snapshot-trusted-host-json");
+    let _env = RuntimeSnapshotEnvGuard::set(&[
+        ("RUNTIME_SNAPSHOT_DEEPSEEK_KEY", Some("demo-token")),
+        ("LOONG_BROWSER_COMPANION_READY", Some("true")),
+    ]);
+    let (config_path, _config) = write_runtime_snapshot_config(&root);
+    install_trusted_host_runtime_plugin_package(&root, &config_path);
+
+    let snapshot = collect_runtime_snapshot_cli_state(Some(
+        config_path.to_str().expect("config path should be utf-8"),
+    ))
+    .expect("collect runtime snapshot");
+    let payload =
+        build_runtime_snapshot_cli_json_payload(&snapshot).expect("build runtime snapshot payload");
+
+    let plugin = array_object_with_string_field(
+        &payload["runtime_plugins"]["plugins"],
+        "plugin_id",
+        "trusted-host-extension",
+    )
+    .expect("trusted-host runtime plugin should be present");
+
+    assert_eq!(
+        plugin["native_extension"]["contract"],
+        serde_json::json!("process_stdio_json_line_v1")
+    );
+    assert_eq!(
+        plugin["native_extension"]["family"],
+        serde_json::json!("trusted_host_extension")
+    );
+    assert_eq!(
+        plugin["native_extension"]["trust_lane"],
+        serde_json::json!("trusted_host")
+    );
+    assert_eq!(
+        plugin["native_extension"]["methods"],
+        serde_json::json!(["extension/event"])
+    );
+    assert_eq!(
+        plugin["native_extension"]["host_hooks"],
+        serde_json::json!(["turn_start", "turn_end"])
+    );
+    assert_eq!(
+        plugin["native_extension"]["tui_surfaces"],
+        serde_json::json!(["command_palette"])
+    );
+    assert_eq!(
+        plugin["native_extension"]["metadata_issues"],
+        serde_json::json!([])
     );
 
     fs::remove_dir_all(&root).ok();
@@ -672,6 +773,34 @@ fn runtime_snapshot_text_highlights_experiment_relevant_sections() {
     assert!(rendered.contains("missing_env_vars=RUNTIME_PLUGIN_DEMO_KEY"));
     assert!(rendered.contains("external_skills inventory_status=ok override_active=false"));
     assert!(rendered.contains("demo-skill"));
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn runtime_snapshot_text_projects_trusted_host_extension_declarations() {
+    let root = unique_temp_dir("loong-runtime-snapshot-trusted-host-text");
+    let _env = RuntimeSnapshotEnvGuard::set(&[
+        ("RUNTIME_SNAPSHOT_DEEPSEEK_KEY", Some("demo-token")),
+        ("LOONG_BROWSER_COMPANION_READY", Some("true")),
+    ]);
+    let (config_path, _config) = write_runtime_snapshot_config(&root);
+    install_trusted_host_runtime_plugin_package(&root, &config_path);
+
+    let snapshot = collect_runtime_snapshot_cli_state(Some(
+        config_path.to_str().expect("config path should be utf-8"),
+    ))
+    .expect("collect runtime snapshot");
+    let rendered = render_runtime_snapshot_text(&snapshot);
+
+    assert!(rendered.contains("trusted-host-extension"));
+    assert!(rendered.contains("bridge=process_stdio"));
+    assert!(rendered.contains("native_extension contract=process_stdio_json_line_v1"));
+    assert!(rendered.contains("family=trusted_host_extension"));
+    assert!(rendered.contains("trust_lane=trusted_host"));
+    assert!(rendered.contains("methods=extension/event"));
+    assert!(rendered.contains("host_hooks=turn_start,turn_end"));
+    assert!(rendered.contains("tui_surfaces=command_palette"));
 
     fs::remove_dir_all(&root).ok();
 }

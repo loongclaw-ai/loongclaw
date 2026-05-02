@@ -1802,6 +1802,7 @@ pub struct RuntimeSnapshotRuntimePluginState {
     pub reason: String,
     pub missing_required_env_vars: Vec<String>,
     pub missing_required_config_keys: Vec<String>,
+    pub native_extension: kernel::PluginNativeExtensionDeclarations,
 }
 
 pub(crate) const RUNTIME_WEB_ACCESS_SEPARATION_NOTE: &str = "web-search provider settings affect only query search mode; ordinary network access stays separately governed";
@@ -2453,6 +2454,9 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
                 reason,
                 missing_required_env_vars,
                 missing_required_config_keys,
+                native_extension: kernel::plugin_native_extension_declarations_from_metadata(
+                    &entry.metadata,
+                ),
             }
         })
         .collect::<Vec<_>>();
