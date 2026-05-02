@@ -40,10 +40,43 @@ installable and inspectable.
 Best fit when the capability needs a runtime lane, setup metadata, and explicit
 ownership intent.
 
+### Trusted host extension
+
+Best fit when the capability needs declared host hooks or shell-first TUI
+surfaces under an explicit trusted lane.
+
 ### Workflow or flow asset
 
 Best fit when the behavior is more structured than prompt guidance and belongs
 closer to reusable orchestration.
+
+## Current Fast Path
+
+For trusted host extensions, the shortest current loop is:
+
+1. declare the package metadata for the trusted host lane
+2. declare host hooks or TUI surfaces
+3. run `loong plugins inventory`
+4. run `loong plugins doctor`
+5. probe with:
+   - `loong plugins invoke-host-hook`
+   - `loong plugins invoke-tui-surface`
+
+If you are already inside the shell-first TUI, Loong now exposes matching live
+operator routes:
+
+- `/extensions`
+- `/extensions <plugin-id>`
+- `/extensions run <plugin-id> <surface>`
+
+Current live shell-first surfaces:
+
+- `command_palette`
+- `settings_flow`
+- `startup_onboarding`
+
+Those live routes are bounded probe surfaces, not a general-purpose in-process
+executor promise.
 
 ## Validation
 

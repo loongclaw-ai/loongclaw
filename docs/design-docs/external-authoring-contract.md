@@ -50,6 +50,24 @@ They should declare:
 
 without implying trusted in-process execution.
 
+### Trusted host extensions
+
+Trusted host extensions are the narrow high-trust family for host-facing
+runtime seams.
+
+They currently support:
+
+- declared host hooks
+- declared shell-first TUI surfaces
+- bounded probe execution through the Loong CLI
+- operator-visible runtime and doctor truth
+
+Current shell-first TUI surface declarations include:
+
+- `command_palette`
+- `settings_flow`
+- `startup_onboarding`
+
 ### Workflow and flow assets
 
 These are strategically important, especially because promotion already points
@@ -66,6 +84,30 @@ Every public artifact family should follow the same rules:
 - explicit ownership and intent
 - controlled runtime lanes
 - installability and inspectability
+
+Trusted host extensions add one more rule:
+
+- high-trust execution must stay explicit, bounded, and inspectable
+
+## Current Operator Surfaces
+
+Today, an external author can rely on these operator-visible surfaces:
+
+- `loong plugins inventory`
+- `loong plugins doctor`
+- `loong plugins invoke-host-hook`
+- `loong plugins invoke-tui-surface`
+- shell-first TUI inspection with `/extensions`
+- shell-first bounded TUI probe routing with `/extensions run <plugin-id> <surface>`
+
+The live shell-first TUI currently routes these declared surfaces:
+
+- `command_palette`
+- `settings_flow`
+- `startup_onboarding`
+
+That routing is additive. It does not yet imply a general in-process TUI
+executor contract.
 
 ## What Is Not Promised
 
