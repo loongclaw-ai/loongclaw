@@ -376,6 +376,7 @@ pub(super) fn collect_plugin_inventory_results(
             setup_docs_urls: entry.setup_docs_urls,
             setup_remediation: entry.setup_remediation,
             native_extension: entry.native_extension,
+            authoring_guidance: None,
             slot_claims: entry.slot_claims,
             diagnostic_findings: entry.diagnostic_findings,
             compatibility: entry.compatibility,

@@ -1,5 +1,4 @@
 use crate::{CliResult, kernel};
-use serde::{Deserialize, Serialize};
 
 pub(crate) const PROCESS_STDIO_NATIVE_EXTENSION_CONTRACT: &str = "process_stdio_json_line_v1";
 pub(crate) const PROCESS_STDIO_NATIVE_EXTENSION_METHODS: &[&str] =
@@ -21,13 +20,6 @@ pub(crate) struct ProcessStdioNativeExtensionLanguageProfile {
     pub process_timeout_ms: u64,
     pub smoke_allow_command: &'static str,
     pub scaffold_files: &'static [RuntimeScaffoldTemplateFile],
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ProcessStdioNativeExtensionAuthoringGuidance {
-    pub validate_command: String,
-    pub operator_actions_command: String,
-    pub smoke_test_command: String,
 }
 
 const PYTHON_EXTENSION_SCAFFOLD_FILES: &[RuntimeScaffoldTemplateFile] =
@@ -187,7 +179,7 @@ pub(crate) fn process_stdio_native_extension_authoring_guidance(
     plugin_id: &str,
     source_language: Option<&str>,
     native_extension: &kernel::PluginNativeExtensionDeclarations,
-) -> Option<ProcessStdioNativeExtensionAuthoringGuidance> {
+) -> Option<crate::PluginNativeExtensionAuthoringGuidance> {
     let profile =
         process_stdio_native_extension_language_profile_for_source_language(source_language?)?;
     let has_native_extension_contract = native_extension.contract.as_deref()
@@ -217,7 +209,7 @@ pub(crate) fn process_stdio_native_extension_authoring_guidance(
         render_authoring_smoke_test_command(package_root, plugin_id, profile.smoke_allow_command)
     };
 
-    Some(ProcessStdioNativeExtensionAuthoringGuidance {
+    Some(crate::PluginNativeExtensionAuthoringGuidance {
         validate_command: format!(
             "loong plugins doctor --root \"{package_root}\" --profile sdk-release"
         ),

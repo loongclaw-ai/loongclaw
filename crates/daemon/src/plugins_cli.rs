@@ -913,7 +913,10 @@ pub async fn execute_plugins_command(
                 return Err(format!("plugin inventory blocked: {reason}"));
             }
             let bridge_support_provenance = context.bridge_support_provenance();
-            let results = decode_plugin_inventory_results(&report)?;
+            let mut results = decode_plugin_inventory_results(&report)?;
+            for result in &mut results {
+                populate_native_extension_authoring_guidance(result);
+            }
             let summary = summarize_plugin_inventory_results(&results);
 
             Ok(PluginsCommandExecution::Inventory(Box::new(
@@ -949,7 +952,10 @@ pub async fn execute_plugins_command(
             let bridge_support_provenance = context.bridge_support_provenance();
             let preflight_summary =
                 decode_preflight_summary(&report, bridge_support_provenance.clone())?;
-            let results = decode_preflight_results(&report)?;
+            let mut results = decode_preflight_results(&report)?;
+            for result in &mut results {
+                populate_native_extension_authoring_guidance(&mut result.plugin);
+            }
             let summary = summarize_plugin_doctor_results(&results, &preflight_summary);
 
             Ok(PluginsCommandExecution::Doctor(Box::new(
@@ -2270,19 +2276,35 @@ fn render_plugins_init_text(execution: &PluginsInitExecution) -> String {
     lines.join("\n")
 }
 
+fn populate_native_extension_authoring_guidance(result: &mut PluginInventoryResult) {
+    if result.authoring_guidance.is_none()
+        && result.bridge_kind == PluginBridgeKind::ProcessStdio.as_str()
+    {
+        result.authoring_guidance =
+            crate::native_extension_authoring::process_stdio_native_extension_authoring_guidance(
+                result.package_root.as_str(),
+                result.plugin_id.as_str(),
+                result.source_language.as_deref(),
+                &result.native_extension,
+            );
+    }
+}
+
 fn plugin_native_extension_authoring_guidance(
     result: &PluginInventoryResult,
-) -> Option<crate::native_extension_authoring::ProcessStdioNativeExtensionAuthoringGuidance> {
-    if result.bridge_kind != PluginBridgeKind::ProcessStdio.as_str() {
-        return None;
-    }
+) -> Option<crate::PluginNativeExtensionAuthoringGuidance> {
+    result.authoring_guidance.clone().or_else(|| {
+        if result.bridge_kind != PluginBridgeKind::ProcessStdio.as_str() {
+            return None;
+        }
 
-    crate::native_extension_authoring::process_stdio_native_extension_authoring_guidance(
-        result.package_root.as_str(),
-        result.plugin_id.as_str(),
-        result.source_language.as_deref(),
-        &result.native_extension,
-    )
+        crate::native_extension_authoring::process_stdio_native_extension_authoring_guidance(
+            result.package_root.as_str(),
+            result.plugin_id.as_str(),
+            result.source_language.as_deref(),
+            &result.native_extension,
+        )
+    })
 }
 
 fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> String {
@@ -4417,6 +4439,13 @@ mod tests {
             encoded["results"][0]["native_extension"]["tui_surfaces"],
             serde_json::json!(["command_palette"])
         );
+        assert_eq!(
+            encoded["results"][0]["authoring_guidance"]["operator_actions_command"],
+            serde_json::json!(format!(
+                "loong plugins actions --root \"{}\" --profile sdk-release",
+                result.package_root
+            ))
+        );
     }
 
     #[tokio::test]
@@ -4579,6 +4608,13 @@ mod tests {
         assert_eq!(
             encoded["results"][0]["plugin"]["native_extension"]["tui_surfaces"],
             serde_json::json!(["command_palette"])
+        );
+        assert_eq!(
+            encoded["results"][0]["plugin"]["authoring_guidance"]["smoke_test_command"],
+            serde_json::json!(format!(
+                "loong plugins invoke-host-hook --root \"{}\" --plugin-id \"{}\" --hook turn_start --payload '{{}}' --allow-command node",
+                result.package_root, result.plugin_id
+            ))
         );
     }
 

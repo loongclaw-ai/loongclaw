@@ -1090,6 +1090,8 @@ pub struct PluginInventoryResult {
     pub setup_remediation: Option<String>,
     #[serde(default)]
     pub native_extension: kernel::PluginNativeExtensionDeclarations,
+    #[serde(default)]
+    pub authoring_guidance: Option<PluginNativeExtensionAuthoringGuidance>,
     pub slot_claims: Vec<PluginSlotClaim>,
     pub diagnostic_findings: Vec<PluginDiagnosticFinding>,
     pub compatibility: Option<PluginCompatibility>,
@@ -1104,6 +1106,13 @@ pub struct PluginInventoryResult {
     pub output_examples: Vec<Value>,
     pub deferred: bool,
     pub loaded: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PluginNativeExtensionAuthoringGuidance {
+    pub validate_command: String,
+    pub operator_actions_command: String,
+    pub smoke_test_command: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
