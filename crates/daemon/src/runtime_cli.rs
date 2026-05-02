@@ -108,6 +108,8 @@ pub enum RuntimeAcpCommands {
     Sessions(RuntimeReadArgs),
     /// Inspect live ACP session status by session key or conversation identity
     Status(RuntimeAcpStatusArgs),
+    /// Close one live ACP session explicitly by session key or conversation identity
+    Close(RuntimeAcpCloseArgs),
     /// Inspect ACP control-plane observability snapshot from the shared session manager
     Observability(RuntimeReadArgs),
     /// Print ACP runtime event summary for a conversation session
@@ -199,6 +201,20 @@ pub struct RuntimeRestoreArgs {
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeAcpStatusArgs {
+    #[arg(long)]
+    pub config: Option<String>,
+    #[arg(long, conflicts_with_all = ["conversation_id", "route_session_id"])]
+    pub session: Option<String>,
+    #[arg(long, conflicts_with_all = ["session", "route_session_id"])]
+    pub conversation_id: Option<String>,
+    #[arg(long, conflicts_with_all = ["session", "conversation_id"])]
+    pub route_session_id: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeAcpCloseArgs {
     #[arg(long)]
     pub config: Option<String>,
     #[arg(long, conflicts_with_all = ["conversation_id", "route_session_id"])]
@@ -390,6 +406,16 @@ pub async fn run_runtime_cli(command: RuntimeCommands) -> CliResult<()> {
             }
             RuntimeAcpCommands::Status(args) => {
                 acp_cli::run_acp_status_cli(
+                    args.config.as_deref(),
+                    args.session.as_deref(),
+                    args.conversation_id.as_deref(),
+                    args.route_session_id.as_deref(),
+                    args.json,
+                )
+                .await
+            }
+            RuntimeAcpCommands::Close(args) => {
+                acp_cli::run_acp_close_cli(
                     args.config.as_deref(),
                     args.session.as_deref(),
                     args.conversation_id.as_deref(),

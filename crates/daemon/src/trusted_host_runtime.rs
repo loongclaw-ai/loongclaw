@@ -12,6 +12,19 @@ use crate::kernel::{
 };
 use crate::mvp;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TrustedHostSessionShutdownReason {
+    ExplicitClose,
+}
+
+impl TrustedHostSessionShutdownReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExplicitClose => "explicit_close",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub(crate) struct ProcessStdioExtensionInvocationOutcome {
     pub response_payload: Value,
@@ -204,6 +217,21 @@ pub(crate) async fn dispatch_session_start_hook_for_new_acp_session(
     };
     payload_object.insert("session_key".to_owned(), json!(session_key));
     dispatch_trusted_host_hook(config, "session_start", payload)
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn dispatch_session_shutdown_hook_for_acp_status(
+    config: &mvp::config::LoongConfig,
+    status: &mvp::acp::AcpSessionStatus,
+    reason: TrustedHostSessionShutdownReason,
+) -> CliResult<()> {
+    let payload = json!({
+        "session_key": status.session_key,
+        "reason": reason.as_str(),
+        "status_before_close": status,
+    });
+    dispatch_trusted_host_hook(config, "session_shutdown", payload)
         .await
         .map(|_| ())
 }
