@@ -89,12 +89,14 @@ Right now, trusted host scaffolds are intentionally limited to:
 - generated local runtime stub files
 - bounded smoke probes, not implicit live execution
 
-## Reference Example
+## Reference Examples
 
-The repository now keeps one checked-in trusted-host example package you can
-diff against directly:
+The repository now keeps three checked-in trusted-host example packages you can
+diff against directly, depending on the `--source-language` you want to author:
 
 - `examples/plugins-process/native-extension-trusted-host-javascript/`
+- `examples/plugins-process/native-extension-trusted-host-go/`
+- `examples/plugins-process/native-extension-trusted-host-rust/`
 
 When runtime plugins are enabled but `runtime_plugins.roots` is left empty,
 Loong now auto-discovers the standard local roots first:

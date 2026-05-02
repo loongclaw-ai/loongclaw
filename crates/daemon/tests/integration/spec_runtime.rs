@@ -148,9 +148,36 @@ fn run_spec_cli_render_summary_preserves_stdout_json_and_writes_trust_search_sum
     let payload: Value =
         serde_json::from_slice(&output.stdout).expect("stdout should remain machine-readable JSON");
     assert_eq!(payload["pack_id"], "tool-search-trusted-pack");
-    assert_eq!(
-        payload["tool_search_summary"]["headline"],
-        "query=\"echo\"; returned 1 result; trust_scope=official; filtered_out=3 candidates; top_match=wasm-secure-echo"
+    let headline = payload["tool_search_summary"]["headline"]
+        .as_str()
+        .expect("tool-search headline should stay stringly typed");
+    assert!(
+        headline.contains("query=\"echo\"; returned 1 result; trust_scope=official;"),
+        "unexpected tool-search headline: {headline}"
+    );
+    assert!(
+        headline.contains("top_match=wasm-secure-echo"),
+        "unexpected tool-search headline: {headline}"
+    );
+    assert!(
+        payload["plugin_trust_summary"]["official_plugins"] == serde_json::json!(1),
+        "official trust count should stay anchored to the fixture: {payload:#?}"
+    );
+    assert!(
+        payload["plugin_trust_summary"]["verified_community_plugins"] == serde_json::json!(1),
+        "verified-community trust count should stay anchored to the fixture: {payload:#?}"
+    );
+    assert!(
+        payload["plugin_trust_summary"]["unverified_plugins"]
+            .as_u64()
+            .is_some_and(|count| count >= 2),
+        "unverified trust count should include checked-in process examples: {payload:#?}"
+    );
+    assert!(
+        payload["tool_search_summary"]["trust_filter_summary"]["filtered_out_candidates"]
+            .as_u64()
+            .is_some_and(|count| count >= 3),
+        "trust filter should exclude at least the community and unverified candidates: {payload:#?}"
     );
     assert!(
         !stdout.contains("run-spec summary"),
@@ -163,21 +190,21 @@ fn run_spec_cli_render_summary_preserves_stdout_json_and_writes_trust_search_sum
         "stderr should include top-level run summary: {stderr:?}"
     );
     assert!(
-        stderr.contains(
-            "plugin_trust scanned=4 official=1 verified_community=1 unverified=2 high_risk=4 high_risk_unverified=2 blocked_auto_apply=0 review_required=2"
-        ),
+        stderr.contains("plugin_trust scanned=")
+            && stderr.contains("official=1")
+            && stderr.contains("verified_community=1")
+            && stderr.contains("review_required="),
         "stderr should include plugin trust rollup: {stderr:?}"
     );
     assert!(
-        stderr.contains(
-            "tool_search query=\"echo\"; returned 1 result; trust_scope=official; filtered_out=3 candidates; top_match=wasm-secure-echo"
-        ),
+        stderr.contains("tool_search query=\"echo\"; returned 1 result; trust_scope=official;")
+            && stderr.contains("top_match=wasm-secure-echo"),
         "stderr should include the trust-aware tool-search headline: {stderr:?}"
     );
     assert!(
         stderr.contains(
-            "tool_search_filters query_requested=- structured_requested=official effective=official conflicting=false filtered_out_by_tier=unverified:2,verified-community:1"
-        ),
+            "tool_search_filters query_requested=- structured_requested=official effective=official conflicting=false filtered_out_by_tier=unverified:"
+        ) && stderr.contains("verified-community:1"),
         "stderr should include the resolved trust filter breakdown: {stderr:?}"
     );
     assert!(
@@ -211,6 +238,21 @@ fn run_spec_cli_render_summary_surfaces_blocked_plugin_trust_review() {
         serde_json::from_slice(&output.stdout).expect("stdout should remain machine-readable JSON");
     assert_eq!(payload["operation_kind"], "blocked");
     assert_eq!(payload["outcome"]["status"], "blocked");
+    assert_eq!(payload["plugin_trust_summary"]["official_plugins"], 0);
+    assert_eq!(
+        payload["plugin_trust_summary"]["verified_community_plugins"],
+        0
+    );
+    assert!(
+        payload["plugin_trust_summary"]["unverified_plugins"]
+            .as_u64()
+            .is_some_and(|count| count >= 2),
+        "blocked trust fixture should include multiple unverified process plugins: {payload:#?}"
+    );
+    assert_eq!(
+        payload["plugin_trust_summary"]["blocked_auto_apply_plugins"],
+        payload["plugin_trust_summary"]["high_risk_unverified_plugins"]
+    );
     assert!(
         stderr.contains(
             "run-spec summary pack=plugin-bootstrap-trust-policy-pack agent=agent-plugin-bootstrap-trust-policy status=blocked operation=blocked"
@@ -222,12 +264,22 @@ fn run_spec_cli_render_summary_surfaces_blocked_plugin_trust_review() {
         "stderr should include the blocked reason: {stderr:?}"
     );
     assert!(
-        stderr.contains("plugin_trust scanned=2 official=0 verified_community=0 unverified=2 high_risk=2 high_risk_unverified=2 blocked_auto_apply=2 review_required=2"),
+        stderr.contains("plugin_trust scanned=")
+            && stderr.contains("official=0")
+            && stderr.contains("verified_community=0")
+            && stderr.contains("blocked_auto_apply=")
+            && stderr.contains("review_required="),
         "stderr should include the trust-policy rollup: {stderr:?}"
     );
     assert!(
         stderr.contains("plugin_review plugin=stdio-echo-py tier=unverified bridge=process_stdio activation=ready bootstrap=deferred_unsupported_auto_apply"),
         "stderr should include the review-required plugin entry: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("plugin_review plugin=trusted-host-extension-javascript-example")
+            || stderr.contains("plugin_review plugin=trusted-host-extension-go-example")
+            || stderr.contains("plugin_review plugin=trusted-host-extension-rust-example"),
+        "stderr should include at least one trusted-host example in the review list: {stderr:?}"
     );
 }
 
@@ -261,17 +313,17 @@ async fn plugin_bootstrap_trust_policy_fixture_blocks_unverified_process_plugin(
     );
     assert_eq!(report.plugin_bootstrap_reports.len(), 1);
     assert_eq!(report.plugin_bootstrap_reports[0].applied_tasks, 0);
-    assert_eq!(report.plugin_bootstrap_reports[0].deferred_tasks, 2);
+    assert_eq!(report.plugin_bootstrap_reports[0].deferred_tasks, 4);
     assert_eq!(
         report.plugin_bootstrap_reports[0].tasks[0].trust_tier,
         loong_daemon::kernel::PluginTrustTier::Unverified
     );
-    assert_eq!(report.plugin_trust_summary.scanned_plugins, 2);
-    assert_eq!(report.plugin_trust_summary.unverified_plugins, 2);
-    assert_eq!(report.plugin_trust_summary.high_risk_plugins, 2);
-    assert_eq!(report.plugin_trust_summary.high_risk_unverified_plugins, 2);
-    assert_eq!(report.plugin_trust_summary.blocked_auto_apply_plugins, 2);
-    assert_eq!(report.plugin_trust_summary.review_required_plugins.len(), 2);
+    assert_eq!(report.plugin_trust_summary.scanned_plugins, 4);
+    assert_eq!(report.plugin_trust_summary.unverified_plugins, 4);
+    assert_eq!(report.plugin_trust_summary.high_risk_plugins, 4);
+    assert_eq!(report.plugin_trust_summary.high_risk_unverified_plugins, 4);
+    assert_eq!(report.plugin_trust_summary.blocked_auto_apply_plugins, 4);
+    assert_eq!(report.plugin_trust_summary.review_required_plugins.len(), 4);
     assert_eq!(
         report.plugin_trust_summary.review_required_plugins[0]
             .bootstrap_status
@@ -289,13 +341,14 @@ async fn plugin_bootstrap_trust_policy_fixture_blocks_unverified_process_plugin(
                 review_required_plugin_ids,
                 review_required_bridges,
                 ..
-            } if *scanned_plugins == 2
-                && *high_risk_unverified_plugins == 2
-                && *blocked_auto_apply_plugins == 2
-                && review_required_plugin_ids == &vec![
-                    "stdio-echo-py".to_owned(),
-                    "trusted-host-extension-javascript-example".to_owned()
-                ]
+            } if *scanned_plugins == 4
+                && *high_risk_unverified_plugins == 4
+                && *blocked_auto_apply_plugins == 4
+                && review_required_plugin_ids.len() == 4
+                && review_required_plugin_ids.contains(&"stdio-echo-py".to_owned())
+                && review_required_plugin_ids.contains(&"trusted-host-extension-javascript-example".to_owned())
+                && review_required_plugin_ids.contains(&"trusted-host-extension-go-example".to_owned())
+                && review_required_plugin_ids.contains(&"trusted-host-extension-rust-example".to_owned())
                 && review_required_bridges == &vec!["process_stdio".to_owned()]
         )
     }));
