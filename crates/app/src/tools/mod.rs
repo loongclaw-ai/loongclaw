@@ -180,7 +180,6 @@ pub use tool_snapshot::{
 pub use tool_surface::ToolSurfaceState;
 pub(crate) use tool_surface::visible_direct_tool_states_for_view;
 
-#[cfg(test)]
 pub(crate) fn tool_id_visible_in_view(tool_id: &str, view: &ToolView) -> bool {
     tool_search::tool_id_visible_in_view(tool_id, view)
 }
@@ -228,6 +227,26 @@ pub(crate) fn model_visible_external_skill_ids_with_config(
         .into_iter()
         .map(|entry| entry.skill_id)
         .collect()
+}
+
+pub(crate) fn install_bundled_preinstall_targets_for_bootstrap(
+    config: &runtime_config::ToolRuntimeConfig,
+    selected_target_ids: &BTreeSet<String>,
+) -> Result<Vec<String>, String> {
+    external_skills::install_bundled_preinstall_targets_for_bootstrap(config, selected_target_ids)
+}
+
+pub(crate) fn remove_bundled_preinstall_targets_for_bootstrap(
+    config: &runtime_config::ToolRuntimeConfig,
+    selected_target_ids: &BTreeSet<String>,
+) -> Result<Vec<String>, String> {
+    external_skills::remove_bundled_preinstall_targets_for_bootstrap(config, selected_target_ids)
+}
+
+pub(crate) fn installed_managed_skill_ids_for_bootstrap(
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<BTreeSet<String>, String> {
+    external_skills::installed_managed_skill_ids_for_bootstrap(config)
 }
 
 pub fn external_skills_operator_search_with_config(

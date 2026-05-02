@@ -1,11 +1,13 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 
+use crate::personalize_presentation::personalize_action_label;
 use loong_app as mvp;
+use serde::Serialize;
 
 pub use mvp::chat::DEFAULT_FIRST_PROMPT as DEFAULT_FIRST_ASK_MESSAGE;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum SetupNextActionKind {
     Ask,
     Chat,
@@ -79,14 +81,14 @@ pub(crate) fn collect_setup_next_actions_with_path_env(
             channel_action_id: None,
             browser_preview_phase: None,
             label: "chat".to_owned(),
-            command: crate::cli_handoff::format_subcommand_with_config("chat", config_path),
+            command: crate::cli_handoff::format_root_entry_with_config(config_path),
         });
         if should_suggest_personalization(config) {
             actions.push(SetupNextAction {
                 kind: SetupNextActionKind::Personalize,
                 channel_action_id: None,
                 browser_preview_phase: None,
-                label: "working preferences".to_owned(),
+                label: personalize_action_label().to_owned(),
                 command: crate::cli_handoff::format_subcommand_with_config(
                     "personalize",
                     config_path,
@@ -506,6 +508,7 @@ fn managed_bridge_runtime_doctor_action_label(
     format!("inspect managed bridge runtimes: {rendered_surface_ids}")
 }
 
+#[cfg(test)]
 pub(crate) fn is_managed_bridge_doctor_action(action: &SetupNextAction) -> bool {
     let is_doctor = action.kind == SetupNextActionKind::Doctor;
     let label = action.label.as_str();
@@ -759,7 +762,7 @@ mod tests {
             Some(crate::migration::channels::CHANNEL_CATALOG_ACTION_ID)
         );
         assert_eq!(action.browser_preview_phase, None);
-        assert_eq!(action.label, "channels");
+        assert_eq!(action.label, "choose a channel");
         assert_eq!(action.command, "loong channels --config '/tmp/loong.toml'");
     }
 
@@ -776,11 +779,49 @@ mod tests {
         assert_eq!(actions[0].kind, SetupNextActionKind::Ask);
         assert_eq!(actions[1].kind, SetupNextActionKind::Chat);
         assert_eq!(actions[2].kind, SetupNextActionKind::Personalize);
-        assert_eq!(actions[2].label, "working preferences");
+        assert_eq!(actions[2].label, personalize_action_label());
         assert_eq!(
             actions[2].command,
             "loong personalize --config '/tmp/loong.toml'"
         );
+    }
+
+    #[test]
+    fn collect_setup_next_actions_uses_root_entry_for_chat_followup() {
+        let config = mvp::config::LoongConfig::default();
+
+        let actions = collect_setup_next_actions_with_path_env(
+            &config,
+            "/tmp/loong.toml",
+            Some(std::ffi::OsStr::new("")),
+        );
+
+        assert_eq!(actions[1].kind, SetupNextActionKind::Chat);
+        assert_eq!(
+            actions[1].command,
+            "LOONG_CONFIG_PATH='/tmp/loong.toml' loong"
+        );
+    }
+
+    #[test]
+    fn collect_setup_next_actions_uses_plain_root_entry_for_default_config_path() {
+        let mut env = crate::test_support::ScopedEnv::new();
+        let home = unique_temp_dir("loong-next-actions-default-home");
+        fs::create_dir_all(home.join(".loong")).expect("create default home");
+        env.set("HOME", &home);
+        env.remove("LOONG_HOME");
+        env.remove("LOONG_CONFIG_PATH");
+
+        let config = mvp::config::LoongConfig::default();
+        let default_config_path = crate::resolved_default_entry_config_path();
+        let actions = collect_setup_next_actions_with_path_env(
+            &config,
+            default_config_path.to_str().expect("utf8 config path"),
+            Some(std::ffi::OsStr::new("")),
+        );
+
+        assert_eq!(actions[1].kind, SetupNextActionKind::Chat);
+        assert_eq!(actions[1].command, "loong");
     }
 
     #[test]

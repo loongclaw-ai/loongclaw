@@ -15,6 +15,7 @@ use crate::acp::{
     AcpConversationTurnOptions, AcpTurnEventSink, AcpTurnProvenance, JsonlAcpTurnEventSink,
 };
 
+mod chat_surface;
 mod boot;
 mod checkpoint;
 mod checkpoint_labels;
@@ -287,8 +288,10 @@ fn format_onboard_command_hint(config_path: Option<&str>, resolved_config_path: 
     command
 }
 
+#[derive(Clone)]
 pub(crate) struct CliTurnRuntime {
     pub(crate) resolved_path: PathBuf,
+    pub(crate) config_present: bool,
     pub(crate) config: LoongConfig,
     pub(crate) session_id: String,
     pub(crate) session_address: ConversationSessionAddress,
@@ -331,11 +334,66 @@ pub async fn run_cli_chat(
     options: &CliChatOptions,
 ) -> CliResult<()> {
     ensure_cli_channel_enabled_for_entrypoint(config_path)?;
-    if session::interactive_terminal_surface_supported() {
-        return session::run_cli_chat_surface(config_path, session_hint, options).await;
+    let resolved_config_path = config_path
+        .map(config::expand_path)
+        .unwrap_or_else(config::default_config_path);
+    let config_path_exists = resolved_config_path.try_exists().map_err(|error| {
+        format!(
+            "failed to access config path {}: {error}",
+            resolved_config_path.display()
+        )
+    })?;
+    let config_path_is_directory = config_path_exists && resolved_config_path.is_dir();
+
+    if should_run_cli_chat_surface(
+        config_path_is_directory,
+        chat_surface::interactive_terminal_surface_supported(),
+    ) {
+        return chat_surface::run_cli_chat_surface(config_path, session_hint, options).await;
     }
 
     run_cli_chat_repl(config_path, session_hint, options).await
+}
+
+const fn should_run_cli_chat_surface(
+    config_path_is_directory: bool,
+    terminal_supported: bool,
+) -> bool {
+    terminal_supported && !config_path_is_directory
+}
+
+pub(crate) fn initialize_cli_chat_surface_runtime(
+    config_path: Option<&str>,
+    session_hint: Option<&str>,
+    options: &CliChatOptions,
+    kernel_scope: &'static str,
+) -> CliResult<CliTurnRuntime> {
+    let resolved_path = config_path
+        .map(config::expand_path)
+        .unwrap_or_else(config::default_config_path);
+    let config_exists = resolved_path.try_exists().map_err(|error| {
+        format!(
+            "failed to access config path {}: {error}",
+            resolved_path.display()
+        )
+    })?;
+    if config_exists {
+        return initialize_cli_turn_runtime(config_path, session_hint, options, kernel_scope);
+    }
+
+    initialize_cli_turn_runtime_with_loaded_config(
+        resolved_path,
+        LoongConfig::default(),
+        session_hint,
+        options,
+        kernel_scope,
+        CliSessionRequirement::AllowImplicitDefault,
+        false,
+    )
+    .map(|mut runtime| {
+        runtime.config_present = false;
+        runtime
+    })
 }
 
 #[allow(clippy::print_stdout)] // CLI REPL output

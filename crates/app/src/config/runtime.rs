@@ -25,7 +25,7 @@ use super::{
         NextcloudTalkChannelConfig, NostrChannelConfig, QqbotChannelConfig, SignalChannelConfig,
         SlackChannelConfig, SynologyChatChannelConfig, TeamsChannelConfig, TelegramChannelConfig,
         TlonChannelConfig, TwitchChannelConfig, WebhookChannelConfig, WecomChannelConfig,
-        WhatsappChannelConfig,
+        WhatsappChannelConfig, WhatsappPersonalChannelConfig,
     },
     conversation::ConversationConfig,
     feishu_integration::FeishuIntegrationConfig,
@@ -132,6 +132,8 @@ pub struct LoongConfig {
     pub qqbot: QqbotChannelConfig,
     #[serde(default)]
     pub onebot: OnebotChannelConfig,
+    #[serde(default)]
+    pub whatsapp_personal: WhatsappPersonalChannelConfig,
     #[serde(default)]
     pub discord: DiscordChannelConfig,
     #[serde(default)]

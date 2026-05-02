@@ -39,7 +39,6 @@ pub(crate) fn demote_governed_advisory_headings_with_allowed_roots(
     rendered_lines.join("\n")
 }
 
-#[cfg(test)]
 pub(crate) fn render_governed_advisory_inline_value(value: &str) -> String {
     let compacted = compact_governed_advisory_inline_value(value);
     let encoded = serde_json::to_string(&compacted);
@@ -47,7 +46,6 @@ pub(crate) fn render_governed_advisory_inline_value(value: &str) -> String {
     encoded.unwrap_or_else(|_| "\"[governed_advisory_text_unrenderable]\"".to_owned())
 }
 
-#[cfg(test)]
 pub(crate) fn render_governed_advisory_inline_list(values: &[String], separator: &str) -> String {
     let mut rendered_values = Vec::new();
 
@@ -59,7 +57,6 @@ pub(crate) fn render_governed_advisory_inline_list(values: &[String], separator:
     rendered_values.join(separator)
 }
 
-#[cfg(test)]
 fn compact_governed_advisory_inline_value(value: &str) -> String {
     let trimmed = value.trim();
     let mut compacted = String::new();

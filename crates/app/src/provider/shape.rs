@@ -5,6 +5,8 @@ use std::{
 
 use serde_json::{Value, json};
 
+use super::ProviderModelCatalogEntry;
+use crate::config::ReasoningEffort;
 use crate::conversation::turn_engine::{ProviderTurn, ToolIntent};
 use crate::tools;
 
@@ -2163,11 +2165,19 @@ fn markdown_fence_marker(line: &str) -> Option<char> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ModelCandidate {
     id: String,
+    display_name: Option<String>,
+    description: Option<String>,
     created: Option<i64>,
     created_text: Option<String>,
+    is_default: bool,
+    hidden: bool,
     deprecated: bool,
+    default_reasoning_effort: Option<ReasoningEffort>,
+    supported_reasoning_efforts: Vec<ReasoningEffort>,
+    supported_reasoning_effort_descriptions: Vec<(ReasoningEffort, String)>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn extract_model_ids(body: &Value) -> Vec<String> {
     let mut candidates = collect_model_candidates(body);
     if candidates.is_empty() {
@@ -2196,6 +2206,46 @@ pub(super) fn extract_model_ids(body: &Value) -> Vec<String> {
     ids
 }
 
+pub(super) fn extract_model_catalog_entries(body: &Value) -> Vec<ProviderModelCatalogEntry> {
+    let mut candidates = collect_model_candidates(body);
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    candidates.sort_by(|left, right| {
+        left.deprecated
+            .cmp(&right.deprecated)
+            .then_with(|| {
+                right
+                    .created
+                    .cmp(&left.created)
+                    .then_with(|| right.created_text.cmp(&left.created_text))
+            })
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    let mut seen = BTreeSet::new();
+    let mut entries = Vec::new();
+    for candidate in candidates {
+        if !seen.insert(candidate.id.clone()) {
+            continue;
+        }
+        entries.push(ProviderModelCatalogEntry {
+            model: candidate.id,
+            display_name: candidate.display_name,
+            description: candidate.description,
+            is_default: candidate.is_default,
+            hidden: candidate.hidden,
+            deprecated: candidate.deprecated,
+            default_reasoning_effort: candidate.default_reasoning_effort,
+            supported_reasoning_efforts: candidate.supported_reasoning_efforts,
+            supported_reasoning_effort_descriptions: candidate
+                .supported_reasoning_effort_descriptions,
+        });
+    }
+    entries
+}
+
 fn collect_model_candidates(body: &Value) -> Vec<ModelCandidate> {
     let mut out = Vec::new();
     let Some(items) = model_items(body) else {
@@ -2209,13 +2259,164 @@ fn collect_model_candidates(body: &Value) -> Vec<ModelCandidate> {
         if let Some(id) = model_id_from_value(item) {
             out.push(ModelCandidate {
                 id,
+                display_name: model_display_name_from_value(item),
+                description: model_description_from_value(item),
                 created: model_created_from_value(item),
                 created_text: model_created_text_from_value(item),
+                is_default: model_is_default(item),
+                hidden: model_is_hidden(item),
                 deprecated: model_is_deprecated(item),
+                default_reasoning_effort: model_default_reasoning_effort_from_value(item),
+                supported_reasoning_efforts: model_supported_reasoning_efforts_from_value(item),
+                supported_reasoning_effort_descriptions:
+                    model_supported_reasoning_effort_descriptions_from_value(item),
             });
         }
     }
     out
+}
+
+fn model_is_default(value: &Value) -> bool {
+    value
+        .get("is_default")
+        .or_else(|| value.get("isDefault"))
+        .or_else(|| value.get("default"))
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+
+fn model_display_name_from_value(value: &Value) -> Option<String> {
+    for key in ["display_name", "displayName", "modelName", "name"] {
+        if let Some(text) = value.get(key).and_then(Value::as_str)
+            && let Some(normalized) = normalize_text(text)
+        {
+            return Some(normalized);
+        }
+    }
+    None
+}
+
+fn model_description_from_value(value: &Value) -> Option<String> {
+    for key in ["description", "modelDescription"] {
+        if let Some(text) = value.get(key).and_then(Value::as_str)
+            && let Some(normalized) = normalize_text(text)
+        {
+            return Some(normalized);
+        }
+    }
+    None
+}
+
+fn parse_reasoning_effort_token(raw: &str) -> Option<ReasoningEffort> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "none" | "off" => Some(ReasoningEffort::None),
+        "minimal" => Some(ReasoningEffort::Minimal),
+        "low" => Some(ReasoningEffort::Low),
+        "medium" => Some(ReasoningEffort::Medium),
+        "high" => Some(ReasoningEffort::High),
+        "xhigh" | "x-high" | "max" => Some(ReasoningEffort::Xhigh),
+        _ => None,
+    }
+}
+
+fn reasoning_effort_from_value(value: &Value) -> Option<ReasoningEffort> {
+    value
+        .as_str()
+        .and_then(parse_reasoning_effort_token)
+        .or_else(|| {
+            value
+                .get("effort")
+                .and_then(Value::as_str)
+                .and_then(parse_reasoning_effort_token)
+        })
+        .or_else(|| {
+            value
+                .get("reasoning_effort")
+                .and_then(Value::as_str)
+                .and_then(parse_reasoning_effort_token)
+        })
+        .or_else(|| {
+            value
+                .get("reasoningEffort")
+                .and_then(Value::as_str)
+                .and_then(parse_reasoning_effort_token)
+        })
+}
+
+fn model_default_reasoning_effort_from_value(value: &Value) -> Option<ReasoningEffort> {
+    for key in [
+        "default_reasoning_effort",
+        "defaultReasoningEffort",
+        "default_reasoning_level",
+        "defaultReasoningLevel",
+    ] {
+        if let Some(effort) = value.get(key).and_then(reasoning_effort_from_value) {
+            return Some(effort);
+        }
+    }
+    None
+}
+
+fn model_supported_reasoning_efforts_from_value(value: &Value) -> Vec<ReasoningEffort> {
+    for key in [
+        "supported_reasoning_efforts",
+        "supportedReasoningEfforts",
+        "supported_reasoning_levels",
+        "supportedReasoningLevels",
+    ] {
+        if let Some(items) = value.get(key).and_then(Value::as_array) {
+            let mut supported = Vec::new();
+            for item in items {
+                if let Some(effort) = reasoning_effort_from_value(item)
+                    && !supported.contains(&effort)
+                {
+                    supported.push(effort);
+                }
+            }
+            if !supported.is_empty() {
+                return supported;
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn model_supported_reasoning_effort_descriptions_from_value(
+    value: &Value,
+) -> Vec<(ReasoningEffort, String)> {
+    for key in [
+        "supported_reasoning_efforts",
+        "supportedReasoningEfforts",
+        "supported_reasoning_levels",
+        "supportedReasoningLevels",
+    ] {
+        if let Some(items) = value.get(key).and_then(Value::as_array) {
+            let mut descriptions = Vec::new();
+            for item in items {
+                let Some(effort) = reasoning_effort_from_value(item) else {
+                    continue;
+                };
+                let Some(description) = item
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .and_then(normalize_text)
+                else {
+                    continue;
+                };
+                if descriptions
+                    .iter()
+                    .any(|(candidate, _)| *candidate == effort)
+                {
+                    continue;
+                }
+                descriptions.push((effort, description));
+            }
+            if !descriptions.is_empty() {
+                return descriptions;
+            }
+        }
+    }
+    Vec::new()
 }
 
 fn model_items(body: &Value) -> Option<&[Value]> {
@@ -2330,6 +2531,38 @@ fn model_is_archived(value: &Value) -> bool {
         .and_then(Value::as_bool)
         .or_else(|| value.get("is_archived").and_then(Value::as_bool))
         == Some(true)
+}
+
+fn model_is_hidden(value: &Value) -> bool {
+    if value
+        .get("hidden")
+        .and_then(Value::as_bool)
+        .is_some_and(|hidden| hidden)
+    {
+        return true;
+    }
+    if value
+        .get("show_in_picker")
+        .and_then(Value::as_bool)
+        .is_some_and(|show| !show)
+    {
+        return true;
+    }
+    if value
+        .get("showInPicker")
+        .and_then(Value::as_bool)
+        .is_some_and(|show| !show)
+    {
+        return true;
+    }
+    if let Some(visibility) = value
+        .get("visibility")
+        .and_then(Value::as_str)
+        .map(|visibility| visibility.trim().to_ascii_lowercase())
+    {
+        return matches!(visibility.as_str(), "hide" | "hidden" | "none");
+    }
+    false
 }
 
 fn model_has_explicit_non_text_output_capability(value: &Value) -> bool {
@@ -3357,5 +3590,135 @@ mod tests {
         });
         let ids = extract_model_ids(&body);
         assert_eq!(ids, vec!["model-a", "model-b"]);
+    }
+
+    #[test]
+    fn extract_model_catalog_entries_surfaces_reasoning_metadata_when_present() {
+        let body = json!({
+            "data": [
+                {
+                    "id": "gpt-5.4",
+                    "default_reasoning_level": "xhigh",
+                    "supported_reasoning_levels": [
+                        {"effort": "low", "description": "Fast responses with lighter reasoning"},
+                        {"effort": "medium", "description": "Balances speed and reasoning depth"},
+                        {"effort": "xhigh", "description": "Extra high reasoning depth"}
+                    ]
+                }
+            ]
+        });
+
+        let entries = extract_model_catalog_entries(&body);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].model, "gpt-5.4");
+        assert_eq!(
+            entries[0].default_reasoning_effort,
+            Some(ReasoningEffort::Xhigh)
+        );
+        assert_eq!(
+            entries[0].supported_reasoning_efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::Xhigh
+            ]
+        );
+        assert_eq!(
+            entries[0].supported_reasoning_effort_descriptions,
+            vec![
+                (
+                    ReasoningEffort::Low,
+                    "Fast responses with lighter reasoning".to_owned()
+                ),
+                (
+                    ReasoningEffort::Medium,
+                    "Balances speed and reasoning depth".to_owned()
+                ),
+                (
+                    ReasoningEffort::Xhigh,
+                    "Extra high reasoning depth".to_owned()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_model_catalog_entries_supports_reasoning_effort_alias_keys() {
+        let body = json!({
+            "models": [
+                {
+                    "model": "gpt-5.5",
+                    "defaultReasoningEffort": "medium",
+                    "supportedReasoningEfforts": [
+                        {"reasoningEffort": "low"},
+                        {"reasoningEffort": "high"}
+                    ]
+                }
+            ]
+        });
+
+        let entries = extract_model_catalog_entries(&body);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].model, "gpt-5.5");
+        assert_eq!(
+            entries[0].default_reasoning_effort,
+            Some(ReasoningEffort::Medium)
+        );
+        assert_eq!(
+            entries[0].supported_reasoning_efforts,
+            vec![ReasoningEffort::Low, ReasoningEffort::High]
+        );
+    }
+
+    #[test]
+    fn extract_model_catalog_entries_surfaces_hidden_and_deprecated_flags() {
+        let body = json!({
+            "data": [
+                {
+                    "id": "hidden-model",
+                    "hidden": true,
+                    "default_reasoning_level": "medium"
+                },
+                {
+                    "id": "deprecated-model",
+                    "deprecated": true,
+                    "supported_reasoning_levels": [{"effort": "low"}]
+                }
+            ]
+        });
+
+        let entries = extract_model_catalog_entries(&body);
+        assert_eq!(entries.len(), 2);
+        let hidden = entries
+            .iter()
+            .find(|entry| entry.model == "hidden-model")
+            .expect("hidden entry");
+        assert!(!hidden.is_default);
+        assert!(hidden.hidden);
+        assert!(!hidden.deprecated);
+        let deprecated = entries
+            .iter()
+            .find(|entry| entry.model == "deprecated-model")
+            .expect("deprecated entry");
+        assert!(!deprecated.is_default);
+        assert!(!deprecated.hidden);
+        assert!(deprecated.deprecated);
+    }
+
+    #[test]
+    fn extract_model_catalog_entries_surfaces_catalog_default_flag() {
+        let body = json!({
+            "data": [
+                {
+                    "id": "default-model",
+                    "is_default": true,
+                    "supported_reasoning_levels": [{"effort": "medium"}]
+                }
+            ]
+        });
+
+        let entries = extract_model_catalog_entries(&body);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_default);
     }
 }

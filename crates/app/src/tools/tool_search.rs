@@ -36,7 +36,6 @@ use result::{tool_search_diagnostics_json, tool_search_result_entry_json};
 pub(crate) use view::runtime_discoverable_tool_entries;
 pub(crate) use view::runtime_tool_search_entries;
 use view::searchable_entry_from_descriptor_for_view;
-#[cfg(test)]
 pub(crate) use view::tool_id_visible_in_view;
 
 #[derive(Debug, Clone)]

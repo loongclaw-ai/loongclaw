@@ -484,6 +484,98 @@ fn gateway_read_model_runtime_snapshot_embeds_inventory_and_tool_summary() {
         encoded["tools"]["tool_calling"]["structured_tool_schema_enabled"],
         true
     );
+    assert_eq!(
+        encoded["context_engine"]["compaction"]["preserve_recent_turns"],
+        serde_json::json!(6)
+    );
+    assert_eq!(
+        encoded["context_engine"]["compaction"]["hygiene"]["strategy"],
+        serde_json::json!("turn_floor_only")
+    );
+    assert_eq!(
+        encoded["context_engine"]["compaction"]["hygiene"]["diagnostics_surface"],
+        serde_json::json!("turn_checkpoint")
+    );
+    assert_eq!(
+        encoded["context_engine"]["compaction_hygiene"]["strategy"],
+        serde_json::json!("turn_floor_only")
+    );
+    assert_eq!(
+        encoded["context_engine"]["compaction_hygiene"]["diagnostics_surface"],
+        serde_json::json!("turn_checkpoint")
+    );
+    let evidence_status = &encoded["context_engine"]["compaction_hygiene"]["evidence_status"];
+    assert!(
+        evidence_status == "idle" || evidence_status == "no_evidence",
+        "unexpected evidence status: {encoded:#?}"
+    );
+    assert_eq!(
+        encoded["context_engine"]["compaction_hygiene"]["sampled_session_read_errors"],
+        serde_json::json!(0)
+    );
+    let diagnostics_coverage_milli =
+        &encoded["context_engine"]["compaction_hygiene"]["metrics"]["diagnostics_coverage_milli"];
+    let expected_failed_open_rate_milli = serde_json::json!(null);
+    assert!(
+        diagnostics_coverage_milli.is_null() || diagnostics_coverage_milli == 0,
+        "unexpected diagnostics coverage: {encoded:#?}"
+    );
+    assert_eq!(
+        encoded["context_engine"]["compaction_hygiene"]["metrics"]["failed_open_rate_milli"],
+        expected_failed_open_rate_milli
+    );
+    assert_eq!(
+        encoded["context_engine"]["compaction_hygiene"]["metrics"]["posture"],
+        serde_json::json!("idle")
+    );
+    assert_eq!(
+        encoded["context_engine"]["compaction_hygiene"]["metrics"]["sample_order"],
+        serde_json::json!("updated_at_desc")
+    );
+    let trend_scope = &encoded["context_engine"]["compaction_hygiene"]["trend_scope"];
+    let expected_reliability_trend = serde_json::json!("insufficient_history");
+    let continuity_health =
+        &encoded["context_engine"]["compaction_hygiene"]["metrics"]["continuity_health"];
+    let continuity_repairability =
+        &encoded["context_engine"]["compaction_hygiene"]["metrics"]["continuity_repairability"];
+    let recovery_posture =
+        &encoded["context_engine"]["compaction_hygiene"]["metrics"]["recovery_posture"];
+    assert!(
+        trend_scope == "idle" || trend_scope == "recent_sessions_fallback",
+        "unexpected trend scope: {encoded:#?}"
+    );
+    assert_eq!(
+        encoded["context_engine"]["compaction_hygiene"]["metrics"]["reliability_trend"],
+        expected_reliability_trend
+    );
+    assert!(
+        encoded["context_engine"]["compaction_hygiene"]["metrics"]["trend_scope"] == "idle"
+            || encoded["context_engine"]["compaction_hygiene"]["metrics"]["trend_scope"]
+                == "recent_sessions_fallback",
+        "unexpected metrics trend scope: {encoded:#?}"
+    );
+    assert!(
+        continuity_health == "idle" || continuity_health == "scope_limited",
+        "unexpected continuity health: {encoded:#?}"
+    );
+    assert!(
+        continuity_repairability == "idle" || continuity_repairability == "scope_limited",
+        "unexpected continuity repairability: {encoded:#?}"
+    );
+    assert!(
+        recovery_posture == "idle" || recovery_posture == "scope_limited",
+        "unexpected recovery posture: {encoded:#?}"
+    );
+    assert_eq!(
+        encoded["context_engine"]["compaction_hygiene"]["strategy"],
+        serde_json::json!("turn_floor_only")
+    );
+    let sampled_session_count =
+        &encoded["context_engine"]["compaction_hygiene"]["recent_window"]["sampled_session_count"];
+    assert!(
+        sampled_session_count == 0 || sampled_session_count == 1,
+        "unexpected sampled session count: {encoded:#?}"
+    );
     assert!(encoded["provider"]["transport_runtime"]["failover_total_events"].is_number());
     assert!(encoded["provider"]["transport_runtime"]["failover_by_reason"].is_object());
     assert!(encoded["provider"]["transport_runtime"]["failover_by_stage"].is_object());

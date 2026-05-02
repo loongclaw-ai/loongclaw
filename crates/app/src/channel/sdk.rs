@@ -73,6 +73,7 @@ pub struct ChannelDescriptor {
 type ChannelEnabledFn = fn(&LoongConfig) -> bool;
 type ChannelValidationFn = fn(&LoongConfig) -> Vec<ConfigValidationIssue>;
 type BackgroundSurfaceEnabledFn = fn(&LoongConfig, Option<&str>) -> CliResult<bool>;
+type GatewayIngressEnabledFn = fn(&LoongConfig, Option<&str>) -> CliResult<bool>;
 
 #[derive(Clone, Copy)]
 pub(crate) struct ChannelIntegrationDescriptor {
@@ -81,6 +82,7 @@ pub(crate) struct ChannelIntegrationDescriptor {
     pub is_enabled: ChannelEnabledFn,
     pub collect_validation_issues: ChannelValidationFn,
     pub background_surface_is_enabled: Option<BackgroundSurfaceEnabledFn>,
+    pub gateway_ingress_is_enabled: Option<GatewayIngressEnabledFn>,
 }
 
 static CHANNEL_DESCRIPTORS: OnceLock<Vec<ChannelDescriptor>> = OnceLock::new();
@@ -91,6 +93,7 @@ const CLI_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegration
     is_enabled: cli_channel_is_enabled,
     collect_validation_issues: collect_cli_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
 
 #[cfg(feature = "channel-telegram")]
@@ -106,6 +109,7 @@ const TELEGRAM_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegr
     is_enabled: telegram_channel_is_enabled,
     collect_validation_issues: collect_telegram_channel_validation_issues,
     background_surface_is_enabled: Some(telegram_background_surface_is_enabled),
+    gateway_ingress_is_enabled: None,
 };
 
 #[cfg(feature = "channel-feishu")]
@@ -121,6 +125,7 @@ const FEISHU_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrat
     is_enabled: feishu_channel_is_enabled,
     collect_validation_issues: collect_feishu_channel_validation_issues,
     background_surface_is_enabled: Some(feishu_background_surface_is_enabled),
+    gateway_ingress_is_enabled: FEISHU_GATEWAY_INGRESS_IS_ENABLED,
 };
 
 #[cfg(feature = "channel-matrix")]
@@ -136,6 +141,7 @@ const MATRIX_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrat
     is_enabled: matrix_channel_is_enabled,
     collect_validation_issues: collect_matrix_channel_validation_issues,
     background_surface_is_enabled: Some(matrix_background_surface_is_enabled),
+    gateway_ingress_is_enabled: None,
 };
 
 #[cfg(feature = "channel-wecom")]
@@ -151,6 +157,7 @@ const WECOM_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrati
     is_enabled: wecom_channel_is_enabled,
     collect_validation_issues: collect_wecom_channel_validation_issues,
     background_surface_is_enabled: Some(wecom_background_surface_is_enabled),
+    gateway_ingress_is_enabled: None,
 };
 
 const WEIXIN_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
@@ -159,6 +166,7 @@ const WEIXIN_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrat
     is_enabled: weixin_channel_is_enabled,
     collect_validation_issues: collect_weixin_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
 
 #[cfg(feature = "channel-qqbot")]
@@ -174,6 +182,7 @@ const QQBOT_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrati
     is_enabled: qqbot_channel_is_enabled,
     collect_validation_issues: collect_qqbot_channel_validation_issues,
     background_surface_is_enabled: Some(qqbot_background_surface_is_enabled),
+    gateway_ingress_is_enabled: None,
 };
 
 const ONEBOT_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
@@ -182,7 +191,18 @@ const ONEBOT_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrat
     is_enabled: onebot_channel_is_enabled,
     collect_validation_issues: collect_onebot_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
+
+const WHATSAPP_PERSONAL_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor =
+    ChannelIntegrationDescriptor {
+        channel_id: "whatsapp-personal",
+        background_runtime: None,
+        is_enabled: whatsapp_personal_channel_is_enabled,
+        collect_validation_issues: collect_whatsapp_personal_channel_validation_issues,
+        background_surface_is_enabled: None,
+        gateway_ingress_is_enabled: None,
+    };
 
 const DISCORD_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
     channel_id: "discord",
@@ -190,6 +210,7 @@ const DISCORD_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegra
     is_enabled: discord_channel_is_enabled,
     collect_validation_issues: collect_discord_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
 
 const SLACK_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
@@ -198,7 +219,22 @@ const SLACK_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrati
     is_enabled: slack_channel_is_enabled,
     collect_validation_issues: collect_slack_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
+
+#[cfg(feature = "channel-feishu")]
+const FEISHU_GATEWAY_INGRESS_IS_ENABLED: Option<GatewayIngressEnabledFn> =
+    Some(feishu_gateway_ingress_is_enabled);
+
+#[cfg(not(feature = "channel-feishu"))]
+const FEISHU_GATEWAY_INGRESS_IS_ENABLED: Option<GatewayIngressEnabledFn> = None;
+
+#[cfg(feature = "channel-line")]
+const LINE_GATEWAY_INGRESS_IS_ENABLED: Option<GatewayIngressEnabledFn> =
+    Some(line_gateway_ingress_is_enabled);
+
+#[cfg(not(feature = "channel-line"))]
+const LINE_GATEWAY_INGRESS_IS_ENABLED: Option<GatewayIngressEnabledFn> = None;
 
 const LINE_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
     channel_id: "line",
@@ -206,6 +242,7 @@ const LINE_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegratio
     is_enabled: line_channel_is_enabled,
     collect_validation_issues: collect_line_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: LINE_GATEWAY_INGRESS_IS_ENABLED,
 };
 
 const DINGTALK_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
@@ -214,6 +251,7 @@ const DINGTALK_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegr
     is_enabled: dingtalk_channel_is_enabled,
     collect_validation_issues: collect_dingtalk_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
 
 #[cfg(feature = "channel-whatsapp")]
@@ -230,12 +268,20 @@ const WHATSAPP_BACKGROUND_SURFACE_IS_ENABLED: Option<BackgroundSurfaceEnabledFn>
 #[cfg(not(feature = "channel-whatsapp"))]
 const WHATSAPP_BACKGROUND_SURFACE_IS_ENABLED: Option<BackgroundSurfaceEnabledFn> = None;
 
+#[cfg(feature = "channel-whatsapp")]
+const WHATSAPP_GATEWAY_INGRESS_IS_ENABLED: Option<GatewayIngressEnabledFn> =
+    Some(whatsapp_gateway_ingress_is_enabled);
+
+#[cfg(not(feature = "channel-whatsapp"))]
+const WHATSAPP_GATEWAY_INGRESS_IS_ENABLED: Option<GatewayIngressEnabledFn> = None;
+
 const WHATSAPP_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
     channel_id: "whatsapp",
     background_runtime: WHATSAPP_BACKGROUND_RUNTIME,
     is_enabled: whatsapp_channel_is_enabled,
     collect_validation_issues: collect_whatsapp_channel_validation_issues,
     background_surface_is_enabled: WHATSAPP_BACKGROUND_SURFACE_IS_ENABLED,
+    gateway_ingress_is_enabled: WHATSAPP_GATEWAY_INGRESS_IS_ENABLED,
 };
 
 const EMAIL_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
@@ -244,7 +290,15 @@ const EMAIL_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrati
     is_enabled: email_channel_is_enabled,
     collect_validation_issues: collect_email_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
+
+#[cfg(feature = "channel-webhook")]
+const WEBHOOK_GATEWAY_INGRESS_IS_ENABLED: Option<GatewayIngressEnabledFn> =
+    Some(webhook_gateway_ingress_is_enabled);
+
+#[cfg(not(feature = "channel-webhook"))]
+const WEBHOOK_GATEWAY_INGRESS_IS_ENABLED: Option<GatewayIngressEnabledFn> = None;
 
 const WEBHOOK_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
     channel_id: "webhook",
@@ -252,6 +306,7 @@ const WEBHOOK_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegra
     is_enabled: webhook_channel_is_enabled,
     collect_validation_issues: collect_webhook_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: WEBHOOK_GATEWAY_INGRESS_IS_ENABLED,
 };
 
 const GOOGLE_CHAT_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor =
@@ -261,6 +316,7 @@ const GOOGLE_CHAT_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor =
         is_enabled: google_chat_channel_is_enabled,
         collect_validation_issues: collect_google_chat_channel_validation_issues,
         background_surface_is_enabled: None,
+        gateway_ingress_is_enabled: None,
     };
 
 const SIGNAL_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
@@ -269,6 +325,7 @@ const SIGNAL_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrat
     is_enabled: signal_channel_is_enabled,
     collect_validation_issues: collect_signal_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
 
 const TWITCH_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
@@ -277,6 +334,7 @@ const TWITCH_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrat
     is_enabled: twitch_channel_is_enabled,
     collect_validation_issues: collect_twitch_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
 
 const TEAMS_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
@@ -285,6 +343,7 @@ const TEAMS_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrati
     is_enabled: teams_channel_is_enabled,
     collect_validation_issues: collect_teams_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
 
 const MATTERMOST_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
@@ -293,6 +352,7 @@ const MATTERMOST_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelInte
     is_enabled: mattermost_channel_is_enabled,
     collect_validation_issues: collect_mattermost_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
 
 const NEXTCLOUD_TALK_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor =
@@ -302,6 +362,7 @@ const NEXTCLOUD_TALK_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor =
         is_enabled: nextcloud_talk_channel_is_enabled,
         collect_validation_issues: collect_nextcloud_talk_channel_validation_issues,
         background_surface_is_enabled: None,
+        gateway_ingress_is_enabled: None,
     };
 
 const SYNOLOGY_CHAT_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor =
@@ -311,6 +372,7 @@ const SYNOLOGY_CHAT_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor =
         is_enabled: synology_chat_channel_is_enabled,
         collect_validation_issues: collect_synology_chat_channel_validation_issues,
         background_surface_is_enabled: None,
+        gateway_ingress_is_enabled: None,
     };
 
 const IRC_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
@@ -319,6 +381,7 @@ const IRC_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegration
     is_enabled: irc_channel_is_enabled,
     collect_validation_issues: collect_irc_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
 
 const IMESSAGE_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
@@ -327,6 +390,7 @@ const IMESSAGE_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegr
     is_enabled: imessage_channel_is_enabled,
     collect_validation_issues: collect_imessage_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
 
 const TLON_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
@@ -335,6 +399,7 @@ const TLON_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegratio
     is_enabled: tlon_channel_is_enabled,
     collect_validation_issues: collect_tlon_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
 
 const NOSTR_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrationDescriptor {
@@ -343,6 +408,7 @@ const NOSTR_CHANNEL_INTEGRATION: ChannelIntegrationDescriptor = ChannelIntegrati
     is_enabled: nostr_channel_is_enabled,
     collect_validation_issues: collect_nostr_channel_validation_issues,
     background_surface_is_enabled: None,
+    gateway_ingress_is_enabled: None,
 };
 
 const CHANNEL_INTEGRATIONS: &[ChannelIntegrationDescriptor] = &[
@@ -354,6 +420,7 @@ const CHANNEL_INTEGRATIONS: &[ChannelIntegrationDescriptor] = &[
     WEIXIN_CHANNEL_INTEGRATION,
     QQBOT_CHANNEL_INTEGRATION,
     ONEBOT_CHANNEL_INTEGRATION,
+    WHATSAPP_PERSONAL_CHANNEL_INTEGRATION,
     DISCORD_CHANNEL_INTEGRATION,
     SLACK_CHANNEL_INTEGRATION,
     LINE_CHANNEL_INTEGRATION,
@@ -564,6 +631,14 @@ pub fn gateway_supervised_channel_descriptors() -> Vec<&'static ChannelDescripto
         .collect()
 }
 
+pub fn gateway_ingress_channel_descriptors() -> Vec<&'static ChannelDescriptor> {
+    ordered_channel_integrations()
+        .into_iter()
+        .filter(|integration| integration.gateway_ingress_is_enabled.is_some())
+        .filter_map(|integration| channel_descriptor(integration.channel_id))
+        .collect()
+}
+
 pub fn standalone_runtime_channel_descriptors() -> Vec<&'static ChannelDescriptor> {
     ordered_channel_integrations()
         .into_iter()
@@ -666,6 +741,19 @@ pub fn is_background_channel_surface_enabled(
     surface_is_enabled(config, account_id)
 }
 
+pub fn is_gateway_ingress_channel_enabled(
+    channel_id: &str,
+    config: &LoongConfig,
+    account_id: Option<&str>,
+) -> CliResult<bool> {
+    let integration = find_channel_integration(channel_id)
+        .ok_or_else(|| format!("unsupported gateway ingress channel `{channel_id}`"))?;
+    let ingress_is_enabled = integration
+        .gateway_ingress_is_enabled
+        .ok_or_else(|| format!("unsupported gateway ingress channel `{channel_id}`"))?;
+    ingress_is_enabled(config, account_id)
+}
+
 fn find_channel_integration(id: &str) -> Option<&'static ChannelIntegrationDescriptor> {
     let exact_integration = CHANNEL_INTEGRATIONS
         .iter()
@@ -712,6 +800,10 @@ fn qqbot_channel_is_enabled(config: &LoongConfig) -> bool {
 
 fn onebot_channel_is_enabled(config: &LoongConfig) -> bool {
     config.onebot.enabled
+}
+
+fn whatsapp_personal_channel_is_enabled(config: &LoongConfig) -> bool {
+    config.whatsapp_personal.enabled
 }
 
 fn discord_channel_is_enabled(config: &LoongConfig) -> bool {
@@ -816,6 +908,12 @@ fn collect_qqbot_channel_validation_issues(config: &LoongConfig) -> Vec<ConfigVa
 
 fn collect_onebot_channel_validation_issues(config: &LoongConfig) -> Vec<ConfigValidationIssue> {
     config.onebot.validate()
+}
+
+fn collect_whatsapp_personal_channel_validation_issues(
+    config: &LoongConfig,
+) -> Vec<ConfigValidationIssue> {
+    config.whatsapp_personal.validate()
 }
 
 fn collect_discord_channel_validation_issues(config: &LoongConfig) -> Vec<ConfigValidationIssue> {
@@ -983,6 +1081,67 @@ fn qqbot_background_surface_is_enabled(
     Ok(resolved.enabled)
 }
 
+#[cfg(feature = "feishu-integration")]
+fn feishu_gateway_ingress_is_enabled(
+    config: &LoongConfig,
+    account_id: Option<&str>,
+) -> CliResult<bool> {
+    if !config.feishu.enabled {
+        return Ok(false);
+    }
+    let resolved = crate::channel::feishu::api::resolve_requested_feishu_account(
+        &config.feishu,
+        account_id,
+        "rerun with `--channel-account <CHANNEL=ACCOUNT>` using one of those configured accounts",
+    )?;
+    Ok(resolved.enabled && resolved.mode != crate::config::FeishuChannelServeMode::Websocket)
+}
+
+#[cfg(not(feature = "feishu-integration"))]
+fn feishu_gateway_ingress_is_enabled(
+    config: &LoongConfig,
+    account_id: Option<&str>,
+) -> CliResult<bool> {
+    if !config.feishu.enabled {
+        return Ok(false);
+    }
+    let resolved = config.feishu.resolve_account(account_id)?;
+    Ok(resolved.enabled && resolved.mode != crate::config::FeishuChannelServeMode::Websocket)
+}
+
+fn line_gateway_ingress_is_enabled(
+    config: &LoongConfig,
+    account_id: Option<&str>,
+) -> CliResult<bool> {
+    if !config.line.enabled {
+        return Ok(false);
+    }
+    let resolved = config.line.resolve_account(account_id)?;
+    Ok(resolved.enabled)
+}
+
+fn whatsapp_gateway_ingress_is_enabled(
+    config: &LoongConfig,
+    account_id: Option<&str>,
+) -> CliResult<bool> {
+    if !config.whatsapp.enabled {
+        return Ok(false);
+    }
+    let resolved = config.whatsapp.resolve_account(account_id)?;
+    Ok(resolved.enabled)
+}
+
+fn webhook_gateway_ingress_is_enabled(
+    config: &LoongConfig,
+    account_id: Option<&str>,
+) -> CliResult<bool> {
+    if !config.webhook.enabled {
+        return Ok(false);
+    }
+    let resolved = config.webhook.resolve_account(account_id)?;
+    Ok(resolved.enabled)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1014,11 +1173,36 @@ mod tests {
     }
 
     fn expected_gateway_supervised_channel_ids() -> Vec<&'static str> {
-        vec!["telegram", "feishu", "matrix", "wecom", "qqbot", "whatsapp"]
+        let channel_id_slots = [
+            Some("telegram"),
+            Some("feishu"),
+            Some("matrix"),
+            Some("wecom"),
+            Some("qqbot"),
+            cfg!(feature = "channel-whatsapp").then_some("whatsapp"),
+        ];
+
+        channel_id_slots.into_iter().flatten().collect::<Vec<_>>()
+    }
+
+    fn expected_gateway_ingress_channel_ids() -> Vec<&'static str> {
+        let channel_id_slots = [
+            cfg!(feature = "channel-feishu").then_some("feishu"),
+            cfg!(feature = "channel-line").then_some("line"),
+            cfg!(feature = "channel-whatsapp").then_some("whatsapp"),
+            cfg!(feature = "channel-webhook").then_some("webhook"),
+        ];
+
+        channel_id_slots.into_iter().flatten().collect::<Vec<_>>()
     }
 
     fn expected_standalone_runtime_channel_ids() -> Vec<&'static str> {
-        vec!["line", "webhook"]
+        let channel_id_slots = [
+            cfg!(feature = "channel-line").then_some("line"),
+            cfg!(feature = "channel-webhook").then_some("webhook"),
+        ];
+
+        channel_id_slots.into_iter().flatten().collect::<Vec<_>>()
     }
 
     #[test]
@@ -1059,6 +1243,17 @@ mod tests {
         let expected_ids = expected_gateway_supervised_channel_ids();
 
         assert_eq!(ids, expected_ids);
+    }
+
+    #[test]
+    fn gateway_ingress_channel_descriptors_follow_explicit_gateway_ingress_contracts() {
+        let descriptors = gateway_ingress_channel_descriptors();
+        let ids = descriptors
+            .into_iter()
+            .map(|descriptor| descriptor.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, expected_gateway_ingress_channel_ids());
     }
 
     #[test]
@@ -1125,6 +1320,24 @@ mod tests {
             ChannelOperationalModel::PluginBacked
         );
         assert_eq!(onebot.serve_subcommand, Some("channels serve onebot"));
+
+        let whatsapp_personal =
+            channel_descriptor("whatsapp-web").expect("whatsapp personal alias should resolve");
+        assert_eq!(whatsapp_personal.id, "whatsapp-personal");
+        assert_eq!(whatsapp_personal.label, "WhatsApp Personal");
+        assert_eq!(whatsapp_personal.surface_label, "whatsapp personal channel");
+        assert_eq!(
+            whatsapp_personal.runtime_kind,
+            ChannelRuntimeKind::PluginBacked
+        );
+        assert_eq!(
+            whatsapp_personal.operational_model,
+            ChannelOperationalModel::PluginBacked
+        );
+        assert_eq!(
+            whatsapp_personal.serve_subcommand,
+            Some("channels serve whatsapp-personal")
+        );
     }
 
     #[test]

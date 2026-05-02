@@ -14,10 +14,10 @@ mod tools;
 pub use crate::channel::{ChannelDescriptor, ChannelOperationalModel, ChannelRuntimeKind};
 #[allow(unused_imports)]
 pub use crate::channel::{
-    catalog_only_channel_descriptors, channel_descriptor, gateway_supervised_channel_descriptors,
-    outbound_only_channel_descriptors, plugin_backed_channel_descriptors,
-    runtime_backed_channel_descriptors, service_channel_descriptors,
-    standalone_runtime_channel_descriptors,
+    catalog_only_channel_descriptors, channel_descriptor, gateway_ingress_channel_descriptors,
+    gateway_supervised_channel_descriptors, outbound_only_channel_descriptors,
+    plugin_backed_channel_descriptors, runtime_backed_channel_descriptors,
+    service_channel_descriptors, standalone_runtime_channel_descriptors,
 };
 pub use crate::mcp::{McpConfig, McpServerConfig, McpServerTransportConfig};
 #[allow(unused_imports)]
@@ -25,7 +25,8 @@ pub use audit::{AuditConfig, AuditMode};
 #[allow(unused_imports)]
 pub use channels::bridge::{
     OnebotAccountConfig, OnebotChannelConfig, ResolvedOnebotChannelConfig,
-    ResolvedWeixinChannelConfig, WeixinAccountConfig, WeixinChannelConfig,
+    ResolvedWeixinChannelConfig, ResolvedWhatsappPersonalChannelConfig, WeixinAccountConfig,
+    WeixinChannelConfig, WhatsappPersonalAccountConfig, WhatsappPersonalChannelConfig,
 };
 #[allow(unused_imports)]
 pub use channels::{
@@ -51,7 +52,7 @@ pub use channels::{
     TeamsChannelConfig, TelegramAccountConfig, TelegramChannelConfig, TelegramStreamingMode,
     TlonAccountConfig, TlonChannelConfig, TwitchAccountConfig, TwitchChannelConfig,
     WebhookAccountConfig, WebhookChannelConfig, WebhookPayloadFormat, WecomAccountConfig,
-    WecomChannelConfig, WhatsappAccountConfig, WhatsappChannelConfig,
+    WecomChannelConfig, WhatsappAccountConfig, WhatsappChannelConfig, normalize_channel_account_id,
 };
 #[allow(unused_imports)]
 pub(crate) use channels::{
@@ -69,9 +70,9 @@ pub(crate) use channels::{
     TLON_CODE_ENV, TLON_SHIP_ENV, TLON_URL_ENV, TWITCH_ACCESS_TOKEN_ENV, WEBHOOK_AUTH_TOKEN_ENV,
     WEBHOOK_ENDPOINT_URL_ENV, WEBHOOK_SIGNING_SECRET_ENV, WECOM_BOT_ID_ENV, WECOM_SECRET_ENV,
     WEIXIN_BRIDGE_ACCESS_TOKEN_ENV, WEIXIN_BRIDGE_URL_ENV, WHATSAPP_ACCESS_TOKEN_ENV,
-    WHATSAPP_APP_SECRET_ENV, WHATSAPP_PHONE_NUMBER_ID_ENV, WHATSAPP_VERIFY_TOKEN_ENV,
-    normalize_channel_account_id, parse_email_smtp_endpoint, parse_nostr_private_key_hex,
-    parse_nostr_public_key_hex,
+    WHATSAPP_APP_SECRET_ENV, WHATSAPP_PERSONAL_AUTH_DIR_ENV, WHATSAPP_PERSONAL_BRIDGE_URL_ENV,
+    WHATSAPP_PHONE_NUMBER_ID_ENV, WHATSAPP_VERIFY_TOKEN_ENV, parse_email_smtp_endpoint,
+    parse_nostr_private_key_hex, parse_nostr_public_key_hex,
 };
 #[allow(unused_imports)]
 pub use conversation::{ConversationConfig, ConversationTurnLoopConfig};
@@ -194,12 +195,16 @@ mod tests {
         vec!["telegram", "feishu", "matrix", "wecom", "qqbot", "whatsapp"]
     }
 
+    fn expected_gateway_ingress_channel_ids() -> Vec<&'static str> {
+        vec!["feishu", "line", "whatsapp", "webhook"]
+    }
+
     fn expected_standalone_runtime_channel_ids() -> Vec<&'static str> {
         vec!["line", "webhook"]
     }
 
     fn expected_plugin_backed_channel_ids() -> Vec<&'static str> {
-        vec!["weixin", "onebot"]
+        vec!["weixin", "onebot", "whatsapp-personal"]
     }
 
     fn expected_outbound_channel_ids() -> Vec<&'static str> {
@@ -459,6 +464,7 @@ mod tests {
         config.weixin.enabled = true;
         config.qqbot.enabled = true;
         config.onebot.enabled = true;
+        config.whatsapp_personal.enabled = true;
         config.discord.enabled = true;
         config.slack.enabled = true;
         config.line.enabled = true;
@@ -519,6 +525,10 @@ mod tests {
             .into_iter()
             .map(|descriptor| descriptor.id)
             .collect::<Vec<_>>();
+        let gateway_ingress_ids = gateway_ingress_channel_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.id)
+            .collect::<Vec<_>>();
         let standalone_runtime_ids = standalone_runtime_channel_descriptors()
             .into_iter()
             .map(|descriptor| descriptor.id)
@@ -541,6 +551,7 @@ mod tests {
             gateway_supervised_ids,
             expected_gateway_supervised_channel_ids()
         );
+        assert_eq!(gateway_ingress_ids, expected_gateway_ingress_channel_ids());
         assert_eq!(
             standalone_runtime_ids,
             expected_standalone_runtime_channel_ids()
@@ -2578,6 +2589,7 @@ compact_enabled = true
 compact_min_messages = 6
 compact_trigger_estimated_tokens = 120
 compact_preserve_recent_turns = 4
+compact_preserve_recent_estimated_tokens = 96
 compact_fail_open = false
 "#;
         let parsed =
@@ -2589,6 +2601,12 @@ compact_fail_open = false
             Some(120)
         );
         assert_eq!(parsed.conversation.compact_preserve_recent_turns(), 4);
+        assert_eq!(
+            parsed
+                .conversation
+                .compact_preserve_recent_estimated_tokens(),
+            Some(96)
+        );
         assert!(!parsed.conversation.compaction_fail_open());
         assert!(!parsed.conversation.should_compact(5));
         assert!(parsed.conversation.should_compact(6));
@@ -2612,6 +2630,7 @@ compact_fail_open = false
         assert!(config.compaction_fail_open());
         assert_eq!(config.compact_preserve_recent_turns(), 6);
         assert_eq!(config.compact_trigger_estimated_tokens(), None);
+        assert_eq!(config.compact_preserve_recent_estimated_tokens(), None);
         assert!(!config.should_compact(0));
         assert!(!config.should_compact_with_estimate(0, None));
         assert!(!config.should_compact_with_estimate(100, Some(10_000)));
@@ -2645,6 +2664,20 @@ compact_fail_open = false
         assert!(!config.should_compact_with_estimate(0, Some(49)));
         assert!(config.should_compact_with_estimate(0, Some(50)));
         assert!(!config.should_compact_with_estimate(100, None));
+        assert_eq!(config.compact_preserve_recent_estimated_tokens(), Some(50));
+    }
+
+    #[test]
+    fn conversation_compaction_recent_token_budget_falls_back_to_trigger_threshold() {
+        let mut config = ConversationConfig {
+            compact_trigger_estimated_tokens: Some(120),
+            ..ConversationConfig::default()
+        };
+
+        assert_eq!(config.compact_preserve_recent_estimated_tokens(), Some(120));
+
+        config.compact_preserve_recent_estimated_tokens = Some(64);
+        assert_eq!(config.compact_preserve_recent_estimated_tokens(), Some(64));
     }
 
     #[test]
@@ -2774,7 +2807,7 @@ MCP_LOG = "warn"
         assert_eq!(config.queue_owner_ttl_ms(), 30_000);
         assert!(!config.bindings_enabled);
         assert!(!config.emit_runtime_events);
-        assert!(!config.allow_mcp_server_injection);
+        assert!(config.allow_mcp_server_injection);
         assert!(config.acpx_profile().is_none());
     }
 

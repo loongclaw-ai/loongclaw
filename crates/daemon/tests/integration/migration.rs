@@ -2016,7 +2016,7 @@ fn channel_registry_collects_catalog_action_when_no_service_channels_are_enabled
 
     assert_eq!(actions.len(), 1);
     assert_eq!(actions[0].id, "channel_catalog");
-    assert_eq!(actions[0].label, "channels");
+    assert_eq!(actions[0].label, "choose a channel");
     assert_eq!(
         actions[0].command,
         "loong channels --config '/tmp/loong-config.toml'"
@@ -2395,10 +2395,8 @@ fn migration_render_preview_falls_back_to_stacked_rows_when_wide_table_would_ove
         "medium-width preview should fall back to stacked domain rows when the wide row would be too long: {lines:#?}"
     );
     assert!(
-        lines
-            .iter()
-            .any(|line| line
-                == "  summary: openai · openai/gpt-5.1-codex · credentials resolved from"),
+        lines.iter().any(|line| line
+            == "  summary: openai · openai/gpt-5.1-codex · credentials resolved from environment"),
         "stacked fallback should keep long summaries readable instead of forcing one overlong table row: {lines:#?}"
     );
 }

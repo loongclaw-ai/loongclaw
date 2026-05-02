@@ -9,7 +9,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     future::Future,
-    io::Write,
+    io::{IsTerminal, Write},
     path::{Path, PathBuf},
     pin::Pin,
     process,
@@ -42,7 +42,8 @@ pub use self::channel_cli_specs::{
     QQBOT_SEND_CLI_SPEC, SIGNAL_SEND_CLI_SPEC, SLACK_SEND_CLI_SPEC, SYNOLOGY_CHAT_SEND_CLI_SPEC,
     TEAMS_SEND_CLI_SPEC, TELEGRAM_SEND_CLI_SPEC, TELEGRAM_SERVE_CLI_SPEC, TWITCH_SEND_CLI_SPEC,
     WEBHOOK_SEND_CLI_SPEC, WECOM_SEND_CLI_SPEC, WECOM_SERVE_CLI_SPEC, WEIXIN_SEND_CLI_SPEC,
-    WEIXIN_SERVE_CLI_SPEC, WHATSAPP_SEND_CLI_SPEC,
+    WEIXIN_SERVE_CLI_SPEC, WHATSAPP_PERSONAL_SEND_CLI_SPEC, WHATSAPP_PERSONAL_SERVE_CLI_SPEC,
+    WHATSAPP_SEND_CLI_SPEC,
 };
 pub use self::channel_send_target_kind::{
     default_twitch_send_target_kind, parse_twitch_send_target_kind,
@@ -56,6 +57,7 @@ pub use self::managed_plugin_bridge_runtime::{
     default_weixin_send_target_kind, parse_onebot_send_target_kind, parse_qqbot_send_target_kind,
     parse_weixin_send_target_kind, run_onebot_send_cli_impl, run_onebot_serve_cli_impl,
     run_qqbot_send_cli_impl, run_weixin_send_cli_impl, run_weixin_serve_cli_impl,
+    run_whatsapp_personal_send_cli_impl, run_whatsapp_personal_serve_cli_impl,
 };
 pub use self::mcp_cli::{
     build_mcp_server_detail_cli_json_payload, build_mcp_servers_cli_json_payload,
@@ -75,11 +77,10 @@ pub use loong_bench::{
 };
 #[cfg(any(feature = "memory-sqlite", feature = "mvp"))]
 pub use memory_context_benchmark::run_memory_context_benchmark_cli;
-pub(crate) use runtime_access::{
-    RUNTIME_TOOL_ACCESS_SEPARATION_NOTE, RuntimeToolAccessSummary, runtime_tool_access_summary,
-};
 pub use runtime_cli::{RuntimeCommands, run_runtime_cli};
+pub use runtime_snapshot_compaction_hygiene::RuntimeSnapshotCompactionHygieneState;
 pub use runtime_trajectory_cli::{format_runtime_trajectory_summary, run_runtime_trajectory_cli};
+pub use whatsapp_personal_cli::run_whatsapp_personal_command;
 #[cfg(not(any(feature = "memory-sqlite", feature = "mvp")))]
 pub fn run_memory_context_benchmark_cli(
     output_path: &str,
@@ -132,18 +133,21 @@ mod cli_handoff;
 mod cli_json;
 mod command_kind;
 pub mod completions_cli;
+mod configured_account_keys;
 mod control_plane_server;
 mod copilot_onboarding;
 pub mod debug_cli;
 mod delegate_child_cli;
 pub mod doctor_cli;
 mod doctor_presentation;
+mod doctor_compaction_hygiene;
 pub mod doctor_security_cli;
 mod env_compat;
 mod external_skills_policy_probe;
 pub mod feishu_cli;
 mod feishu_onboarding;
 pub mod feishu_support;
+mod first_run_action_presentation;
 pub mod gateway;
 pub mod import_cli;
 mod managed_plugin_bridge_runtime;
@@ -165,10 +169,11 @@ mod onboarding_model_policy;
 mod operator_inventory_cli;
 pub mod operator_prompt;
 pub mod personalize_cli;
+mod personalize_presentation;
 mod plugin_bridge_account_summary;
 pub mod plugins_cli;
-mod provider_credential_policy;
 mod provider_credentials_guidance;
+mod provider_credential_policy;
 mod provider_model_probe_policy;
 pub mod provider_presentation;
 mod provider_route_diagnostics;
@@ -179,6 +184,10 @@ pub mod runtime_capability_cli;
 pub mod runtime_cli;
 pub mod runtime_experiment_cli;
 pub mod runtime_restore_cli;
+mod runtime_snapshot_compaction_assessment;
+mod runtime_snapshot_compaction_hygiene;
+mod runtime_snapshot_compaction_presentation;
+mod runtime_snapshot_compaction_sequence;
 mod runtime_snapshot_render;
 mod runtime_snapshot_types;
 pub mod runtime_trajectory_cli;
@@ -198,6 +207,9 @@ mod tool_calling_readiness;
 pub mod trajectory_cli;
 mod turn_cli;
 pub mod update_cli;
+pub mod weixin_cli;
+mod weixin_onboarding;
+mod whatsapp_personal_cli;
 pub mod work_unit_cli;
 pub use self::acp_cli::{
     acp_backend_metadata_json, acp_binding_scope_json, acp_control_plane_json,
@@ -219,11 +231,16 @@ use channel_bridge_render::{
 pub(crate) use channel_bridge_render::{
     render_line_safe_optional_text_value, render_line_safe_text_value, render_line_safe_text_values,
 };
+use first_run_action_presentation::{
+    build_first_run_action_sections, first_run_group_for_setup_action_kind,
+};
 pub use gateway::read_models::{ChannelsCliJsonPayload, ChannelsCliJsonSchema};
 pub use loong_spec::programmatic::{
     acquire_programmatic_circuit_slot, record_programmatic_circuit_outcome,
 };
 pub use observability::{debug_variant_name, init_tracing, summarize_error};
+use personalize_presentation::{PERSONALIZE_COMMAND_ABOUT, PERSONALIZE_COMMAND_LONG_ABOUT};
+use runtime_snapshot_compaction_hygiene::collect_runtime_snapshot_compaction_hygiene_state;
 pub use runtime_snapshot_render::render_runtime_snapshot_text;
 pub(crate) use runtime_snapshot_render::{
     runtime_snapshot_acp_json, runtime_snapshot_context_engine_json,
@@ -319,7 +336,7 @@ pub(crate) fn render_operator_shell_surface_from_body(
 
 fn render_welcome_long_about(command_name: &str) -> String {
     format!(
-        "Show the configured welcome banner and quick commands.\n\nquick commands:\n- {command_name} ask --config <path> --message \"...\"\n- {command_name} chat --config <path>\n- {command_name} personalize --config <path>\n- {command_name} doctor --config <path>\n- {command_name} --help\n\nReplace <path> with your current config path, or set LOONG_CONFIG_PATH first."
+        "Show the configured welcome banner and quick commands.\n\nquick commands:\n- {command_name}\n- {command_name} ask --config <path> --message \"...\"\n- {command_name} personalize --config <path>\n- {command_name} doctor --config <path>\n- {command_name} --help\n\nRunning `{command_name}` with no subcommand opens the main TUI. If config is missing, first-run setup stays inside that shell; if your config lives elsewhere, set LOONG_CONFIG_PATH first."
     )
 }
 
@@ -484,7 +501,7 @@ pub enum InitSpecPreset {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     #[command(
-        long_about = "Show the configured welcome banner and quick commands.\n\nquick commands:\n- loong ask --config <path> --message \"...\"\n- loong chat --config <path>\n- loong personalize --config <path>\n- loong doctor --config <path>\n- loong --help\n\nReplace <path> with your current config path, or set LOONG_CONFIG_PATH first."
+        long_about = "Show the configured welcome banner and quick commands.\n\nquick commands:\n- loong\n- loong ask --config <path> --message \"...\"\n- loong personalize --config <path>\n- loong doctor --config <path>\n- loong --help\n\nRunning `loong` with no subcommand opens the main TUI. If config is missing, first-run setup stays inside that shell; if your config lives elsewhere, set LOONG_CONFIG_PATH first."
     )]
     /// Show a welcome banner for an already configured install
     Welcome,
@@ -504,7 +521,10 @@ pub enum Commands {
         #[arg(long, default_value = "{}")]
         payload: String,
     },
-    #[command(hide = true)]
+    #[command(
+        about = "Run agent turns through the unified runtime entry surface",
+        long_about = "Run agent turns through the unified runtime entry surface.\n\nUse this namespace for direct runtime E2E checks, scripted provider/tool-call debugging, and other workflows that should exercise the same agent turn path as normal CLI conversations."
+    )]
     /// Run agent turns through the unified runtime entry surface
     Turn {
         #[command(subcommand)]
@@ -699,8 +719,8 @@ pub enum Commands {
         skip_model_probe: bool,
     },
     #[command(
-        about = "Capture optional operator preferences for future sessions",
-        long_about = "Capture optional operator preferences for future sessions.\n\nThis command stores advisory working preferences such as preferred name, response density, initiative level, and standing boundaries. Rerun it any time to update or clear saved preferences. It does not replace runtime identity files, and it does not change the primary setup path. If you do not have a config yet, run `loong onboard` first."
+        about = PERSONALIZE_COMMAND_ABOUT,
+        long_about = PERSONALIZE_COMMAND_LONG_ABOUT
     )]
     Personalize {
         /// Config file path to update (defaults to auto-discovery)
@@ -801,10 +821,13 @@ pub enum Commands {
     },
     /// Build one developer-facing debug bundle over runtime, provider, ACP, session, and audit signals
     Debug {
+        /// Path to the Loong config file, or omit to use normal config discovery
         #[arg(long, global = true)]
         config: Option<String>,
+        /// Emit machine-readable JSON instead of the operator text view
         #[arg(long, global = true, default_value_t = false)]
         json: bool,
+        /// Current session selector used when a subcommand does not provide `--session-id`
         #[arg(long, global = true, default_value = "default")]
         session: String,
         #[command(subcommand)]
@@ -895,33 +918,46 @@ pub enum Commands {
         long_about = "Run one non-interactive one-shot assistant turn.\n\nUse this when you want a fast answer without entering the interactive `loong chat` REPL. The command reuses the normal CLI conversation runtime, session memory, provider selection, and ACP options."
     )]
     Ask {
+        /// Path to the Loong config file, or omit to use normal config discovery
         #[arg(long)]
         config: Option<String>,
+        /// Session id or selector such as `latest`; defaults to the normal CLI session
         #[arg(long)]
         session: Option<String>,
+        /// User message to send through the real one-shot turn runtime
         #[arg(long)]
         message: String,
+        /// Enable ACP bridge behavior for this turn
         #[arg(long, default_value_t = false)]
         acp: bool,
+        /// Stream ACP turn events while the assistant turn runs
         #[arg(long, default_value_t = false)]
         acp_event_stream: bool,
+        /// Bootstrap an MCP server before the ACP turn starts; repeat to add more servers
         #[arg(long = "acp-bootstrap-mcp-server")]
         acp_bootstrap_mcp_server: Vec<String>,
+        /// Working directory used for ACP and bootstrapped MCP server context
         #[arg(long = "acp-cwd")]
         acp_cwd: Option<String>,
     },
     /// Start interactive CLI chat channel with sliding-window memory
     Chat {
+        /// Path to the Loong config file, or omit to use normal config discovery
         #[arg(long)]
         config: Option<String>,
+        /// Session id or selector such as `latest`; defaults to the normal CLI session
         #[arg(long)]
         session: Option<String>,
+        /// Enable ACP bridge behavior for this chat session
         #[arg(long, default_value_t = false)]
         acp: bool,
+        /// Stream ACP turn events while chat turns run
         #[arg(long, default_value_t = false)]
         acp_event_stream: bool,
+        /// Bootstrap an MCP server before the ACP session starts; repeat to add more servers
         #[arg(long = "acp-bootstrap-mcp-server")]
         acp_bootstrap_mcp_server: Vec<String>,
+        /// Working directory used for ACP and bootstrapped MCP server context
         #[arg(long = "acp-cwd")]
         acp_cwd: Option<String>,
     },
@@ -934,6 +970,17 @@ pub enum Commands {
     Feishu {
         #[command(subcommand)]
         command: feishu_cli::FeishuCommand,
+    },
+    /// Run the Weixin bridge onboarding namespace
+    Weixin {
+        #[command(subcommand)]
+        command: weixin_cli::WeixinCommand,
+    },
+    /// Operate the personal WhatsApp QR bridge namespace
+    #[command(name = "whatsapp-personal")]
+    WhatsappPersonal {
+        #[command(subcommand)]
+        command: whatsapp_personal_cli::WhatsappPersonalCommand,
     },
     /// Print a shell completion script to stdout
     Completions {
@@ -1016,7 +1063,7 @@ fn default_entry_config_path_override() -> Option<PathBuf> {
         .filter(|path| !path.as_os_str().is_empty())
 }
 
-fn resolved_default_entry_config_path() -> PathBuf {
+pub(crate) fn resolved_default_entry_config_path() -> PathBuf {
     default_entry_config_path_override().unwrap_or_else(mvp::config::default_config_path)
 }
 
@@ -1038,12 +1085,45 @@ fn default_onboard_command() -> Commands {
     }
 }
 
+fn default_chat_command() -> Commands {
+    Commands::Chat {
+        config: None,
+        session: None,
+        acp: false,
+        acp_event_stream: false,
+        acp_bootstrap_mcp_server: Vec::new(),
+        acp_cwd: None,
+    }
+}
+
+const fn should_resolve_default_entry_to_chat(
+    config_exists: bool,
+    config_path_is_directory: bool,
+    interactive_terminal: bool,
+) -> bool {
+    config_exists || (!config_path_is_directory && interactive_terminal)
+}
+
 pub fn resolve_default_entry_command() -> Commands {
-    if resolved_default_entry_config_path().is_file() {
-        Commands::Welcome
+    let config_path = resolved_default_entry_config_path();
+    let config_exists = config_path.is_file();
+    let config_path_is_directory = config_path.is_dir();
+    let interactive_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if should_resolve_default_entry_to_chat(
+        config_exists,
+        config_path_is_directory,
+        interactive_terminal,
+    ) {
+        default_chat_command()
     } else {
         default_onboard_command()
     }
+}
+
+pub fn resolve_default_entry_post_onboard_command() -> Option<Commands> {
+    resolved_default_entry_config_path()
+        .is_file()
+        .then(default_chat_command)
 }
 
 pub fn redacted_command_name(command: &Commands) -> &'static str {
@@ -1066,35 +1146,15 @@ fn resolve_welcome_config_path() -> CliResult<PathBuf> {
 fn render_welcome_banner(config_path: &Path, config: &mvp::config::LoongConfig) -> String {
     let config_path_display = config_path.display().to_string();
     let next_actions = next_actions::collect_setup_next_actions(config, &config_path_display);
-    let primary_action = next_actions.first().cloned();
-    let secondary_actions = next_actions.iter().skip(1).cloned().collect::<Vec<_>>();
     let render_width = mvp::presentation::detect_render_width();
-    let mut sections = Vec::new();
-
-    if let Some(primary_action) = primary_action {
-        sections.push(mvp::tui_surface::TuiSectionSpec::ActionGroup {
-            title: Some("start here".to_owned()),
-            inline_title_when_wide: false,
-            items: vec![mvp::tui_surface::TuiActionSpec {
-                label: primary_action.label,
-                command: primary_action.command,
-            }],
-        });
-    }
-
-    if !secondary_actions.is_empty() {
-        sections.push(mvp::tui_surface::TuiSectionSpec::ActionGroup {
-            title: Some("also available".to_owned()),
-            inline_title_when_wide: false,
-            items: secondary_actions
-                .into_iter()
-                .map(|action| mvp::tui_surface::TuiActionSpec {
-                    label: action.label,
-                    command: action.command,
-                })
-                .collect(),
-        });
-    }
+    let mut sections = build_first_run_action_sections(
+        &next_actions,
+        |action| first_run_group_for_setup_action_kind(action.kind),
+        |action| mvp::tui_surface::TuiActionSpec {
+            label: action.label.clone(),
+            command: action.command.clone(),
+        },
+    );
 
     sections.push(mvp::tui_surface::TuiSectionSpec::KeyValues {
         title: Some("saved setup".to_owned()),
@@ -1655,13 +1715,15 @@ pub async fn run_list_models_cli(config_path: Option<&str>, as_json: bool) -> Cl
     Ok(())
 }
 
-pub const RUNTIME_SNAPSHOT_CLI_JSON_SCHEMA_VERSION: u32 = 2;
-pub const RUNTIME_SNAPSHOT_ARTIFACT_JSON_SCHEMA_VERSION: u32 = 2;
+pub const RUNTIME_SNAPSHOT_CLI_JSON_SCHEMA_VERSION: u32 = 3;
+pub const RUNTIME_SNAPSHOT_ARTIFACT_JSON_SCHEMA_VERSION: u32 = 3;
+
 #[derive(Debug, Clone)]
 pub struct RuntimeSnapshotCliState {
     pub config: String,
     pub provider: RuntimeSnapshotProviderState,
     pub context_engine: mvp::conversation::ContextEngineRuntimeSnapshot,
+    pub compaction_hygiene: RuntimeSnapshotCompactionHygieneState,
     pub memory_system: mvp::memory::MemorySystemRuntimeSnapshot,
     pub acp: mvp::acp::AcpRuntimeSnapshot,
     pub enabled_channel_ids: Vec<String>,
@@ -1748,6 +1810,42 @@ pub struct RuntimeSnapshotRuntimePluginState {
     pub reason: String,
     pub missing_required_env_vars: Vec<String>,
     pub missing_required_config_keys: Vec<String>,
+}
+
+pub(crate) use runtime_access::{
+    RUNTIME_TOOL_ACCESS_SEPARATION_NOTE, RuntimeToolAccessSummary, runtime_tool_access_summary,
+};
+
+fn web_search_provider_credential_ready(
+    policy: &mvp::tools::runtime_config::WebSearchRuntimePolicy,
+) -> bool {
+    let provider = policy.default_provider.trim();
+    match provider {
+        mvp::config::WEB_SEARCH_PROVIDER_DUCKDUCKGO => true,
+        mvp::config::WEB_SEARCH_PROVIDER_BRAVE => {
+            option_has_non_empty_runtime_text(policy.brave_api_key.as_deref())
+        }
+        mvp::config::WEB_SEARCH_PROVIDER_TAVILY => {
+            option_has_non_empty_runtime_text(policy.tavily_api_key.as_deref())
+        }
+        mvp::config::WEB_SEARCH_PROVIDER_PERPLEXITY => {
+            option_has_non_empty_runtime_text(policy.perplexity_api_key.as_deref())
+        }
+        mvp::config::WEB_SEARCH_PROVIDER_EXA => {
+            option_has_non_empty_runtime_text(policy.exa_api_key.as_deref())
+        }
+        mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL => {
+            option_has_non_empty_runtime_text(policy.firecrawl_api_key.as_deref())
+        }
+        mvp::config::WEB_SEARCH_PROVIDER_JINA => {
+            option_has_non_empty_runtime_text(policy.jina_api_key.as_deref())
+        }
+        _ => false,
+    }
+}
+
+fn option_has_non_empty_runtime_text(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1882,6 +1980,8 @@ fn collect_runtime_snapshot_cli_state_from_parts(
     let config_display = resolved_path.display().to_string();
     let provider = collect_runtime_snapshot_provider_state(config);
     let context_engine = mvp::conversation::collect_context_engine_runtime_snapshot(config)?;
+    let compaction_hygiene =
+        collect_runtime_snapshot_compaction_hygiene_state(config, &context_engine);
     let memory_system = mvp::memory::collect_memory_system_runtime_snapshot(config)?;
     let acp = mvp::acp::collect_acp_runtime_snapshot(config)?;
     let enabled_channel_ids = config.enabled_channel_ids();
@@ -1917,6 +2017,7 @@ fn collect_runtime_snapshot_cli_state_from_parts(
         config: config_display,
         provider,
         context_engine,
+        compaction_hygiene,
         memory_system,
         acp,
         enabled_channel_ids,
@@ -2087,7 +2188,13 @@ fn collect_runtime_snapshot_external_skills_state(
         );
     }
 
-    match mvp::tools::external_skills_operator_list_with_config(&effective_tool_runtime) {
+    match mvp::tools::execute_tool_core_with_config(
+        ToolCoreRequest {
+            tool_name: "external_skills.list".to_owned(),
+            payload: json!({}),
+        },
+        &effective_tool_runtime,
+    ) {
         Ok(outcome) => (
             RuntimeSnapshotExternalSkillsState {
                 policy: effective_policy,
@@ -2441,8 +2548,16 @@ fn runtime_snapshot_effective_external_skills_policy(
     ),
     String,
 > {
-    let outcome = mvp::tools::external_skills_operator_policy_get_with_config(tool_runtime)
-        .map_err(|error| format!("resolve effective external skills policy failed: {error}"))?;
+    let outcome = mvp::tools::execute_tool_core_with_config(
+        ToolCoreRequest {
+            tool_name: "external_skills.policy".to_owned(),
+            payload: json!({
+                "action": "get",
+            }),
+        },
+        tool_runtime,
+    )
+    .map_err(|error| format!("resolve effective external skills policy failed: {error}"))?;
 
     let policy = runtime_snapshot_external_skills_policy_from_payload(&outcome.payload)?;
     let override_active = outcome
@@ -4542,4 +4657,40 @@ pub fn write_json_file<T: Serialize>(path: &str, value: &T) -> CliResult<()> {
     fs::write(path, serialized)
         .map_err(|error| format!("write JSON output file failed: {error}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_cli_command;
+
+    #[test]
+    fn build_cli_command_personalize_subcommand_uses_guidance_copy() {
+        let command = build_cli_command("loong");
+        let personalize = command
+            .get_subcommands()
+            .find(|subcommand| subcommand.get_name() == "personalize")
+            .expect("personalize subcommand");
+
+        let about = personalize
+            .get_about()
+            .map(ToString::to_string)
+            .expect("personalize about");
+        let long_about = personalize
+            .get_long_about()
+            .map(ToString::to_string)
+            .expect("personalize long_about");
+
+        assert!(
+            about.contains("Teach Loong your working style"),
+            "personalize about should match the operator-facing guidance copy: {about}"
+        );
+        assert!(
+            long_about.contains("Teach Loong your working style"),
+            "personalize help should lead with the same guidance copy: {long_about}"
+        );
+        assert!(
+            !long_about.contains("working preferences"),
+            "personalize help should not fall back to the older field-oriented wording: {long_about}"
+        );
+    }
 }

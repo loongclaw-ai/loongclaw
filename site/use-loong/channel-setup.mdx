@@ -56,10 +56,10 @@ Before any channel is really ready:
 | one Feishu or Lark app should own inbound automation | configure `feishu` and run `loong feishu serve` | the Feishu family is the shipped runtime lane for both Feishu and Lark |
 | one Telegram bot should own a reply loop | configure `telegram` and run `loong channels serve telegram` | this is the simplest runtime-backed bot lane |
 | one Matrix bot should own a room sync loop | configure `matrix` and run `loong channels serve matrix` | the homeserver, room ids, and sync boundary stay explicit |
-| one WhatsApp business account should own a Cloud API reply loop | configure `whatsapp` and run `loong channels serve whatsapp` | send and serve are both shipped on the verified webhook path |
+| one WhatsApp Cloud API business account should own a reply loop | configure `whatsapp` and run `loong channels serve whatsapp` | send and serve are both shipped on the verified webhook path |
 | one WeCom bot should own the official long connection | configure `wecom` and run `loong channels serve wecom` | this matches the shipped AIBot contract |
 | one LINE or generic webhook lane should use a real built-in serve loop without gateway supervision yet | configure the standalone native-serve block and run `loong channels serve <surface> --bind ...` | the runtime is real, but the owner is still the direct grouped serve command |
-| one WeChat / QQ / OneBot bridge should stay external but visible | configure the plugin-backed channel block and run `loong doctor` plus `loong channels` | bridge-owned surfaces are real but should not pretend the gateway already owns the upstream login stack |
+| one WeChat / QQ / OneBot / personal WhatsApp bridge should stay external but visible | configure the plugin-backed channel block and run `loong doctor` plus `loong channels` | bridge-owned surfaces are real but should not pretend the gateway already owns the upstream login stack |
 | you need several accounts in one channel family | add `default_account` plus `accounts.<id>` before adding gateway selectors | stable account ids make later supervision and routing legible |
 | you only need governed direct sends | configure one outbound-only surface and use `loong channels send <surface>` | this avoids pretending a reply loop already ships |
 
@@ -73,7 +73,7 @@ These are the shipped reply-loop surfaces that can join `gateway run` or
 | Feishu / Lark | app credentials, trusted chats, and the selected inbound transport | `loong feishu serve` |
 | Telegram | bot token and trusted chat ids | `loong channels serve telegram` |
 | Matrix | homeserver base URL, access token, and trusted room ids | `loong channels serve matrix` |
-| WhatsApp | Cloud API credentials plus verified webhook material | `loong channels serve whatsapp` |
+| WhatsApp Cloud API | Cloud API credentials plus verified webhook material | `loong channels serve whatsapp` |
 | WeCom | bot id, secret, and trusted conversation ids | `loong channels serve wecom` |
 
 ## Standalone Native-Serve Surfaces
@@ -93,9 +93,10 @@ and upstream session lifecycle stay in an external bridge or managed plugin.
 
 | Surface | What you configure first | Current operator path |
 | --- | --- | --- |
-| Weixin | `weixin.enabled`, `bridge_url`, `bridge_access_token`, `allowed_contact_ids` | `loong doctor`, `loong channels`, `loong channels send weixin`, `loong channels serve weixin`, managed bridge discovery |
+| Weixin | `weixin.enabled`, `bridge_url`, `bridge_access_token`, `allowed_contact_ids` | `loong weixin onboard`, `loong doctor`, `loong channels`, `loong channels send weixin`, `loong channels serve weixin`, managed bridge discovery |
 | QQ Bot | `qqbot.enabled`, `app_id`, `client_secret`, `allowed_peer_ids` | `loong doctor`, `loong channels`, `loong channels send qqbot`, `loong channels serve qqbot`, managed bridge discovery |
 | OneBot | `onebot.enabled`, `websocket_url`, `access_token`, `allowed_group_ids` | `loong doctor`, `loong channels`, `loong channels send onebot`, `loong channels serve onebot`, managed bridge discovery |
+| WhatsApp Personal | `whatsapp_personal.enabled`, `bridge_url`, `auth_dir`, `allowed_chat_ids` | `loong whatsapp-personal bridge run`, `loong doctor`, `loong channels`, `loong channels send whatsapp-personal`, `loong channels serve whatsapp-personal`, managed bridge discovery |
 
 Operational rule:
 
@@ -148,15 +149,16 @@ Matrix is a sync-loop surface:
 - use `loong channels send matrix` for direct room delivery
 - use `loong channels serve matrix` for the reply loop
 
-### WhatsApp
+### WhatsApp Cloud API
 
-WhatsApp is a Cloud API plus verified webhook runtime surface:
+The current WhatsApp business lane is a Cloud API plus verified webhook runtime surface:
 
 - configure `access_token` and `phone_number_id` for direct sends
 - configure `verify_token` and `app_secret` for the webhook-backed serve path
 - use `loong channels send whatsapp` for proactive sends
 - use `loong channels serve whatsapp` for the reply loop
 - keep `webhook_bind` and `webhook_path` explicit so the callback owner is legible
+- keep this Cloud API credential flow separate from the QR-linked [WhatsApp Personal](/use-loong/channel-guides/whatsapp-personal) path so operators can tell whether they need Meta business credentials or a scan-to-link setup
 
 ### WeCom
 
@@ -174,6 +176,7 @@ same shipped contract.
 
 Weixin is a bridge-first surface:
 
+- start with `loong weixin onboard` when you want Loong to request the iLink QR code and save the resulting `bridge_url` plus `bridge_access_token` for you
 - configure `bridge_url` plus `bridge_access_token`
 - keep `allowed_contact_ids` explicit because the bridge contract should stay narrow
 - optional `managed_bridge_plugin_id` is the tie-breaker when several compatible managed bridges are installed

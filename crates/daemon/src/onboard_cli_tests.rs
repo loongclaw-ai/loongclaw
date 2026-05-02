@@ -2221,6 +2221,7 @@ fn preinstalled_skills_screen_only_surfaces_the_onboarding_subset() {
         "systematic-debugging",
         "plan",
         "github-issues",
+        "Byted Web Search",
         "Anthropic Office pack",
         "Minimax Office pack",
     ] {
@@ -2252,6 +2253,12 @@ fn onboarding_preinstall_targets_are_derived_from_app_registry() {
         .find(|target| target.install_id == "anthropic-office")
         .expect("anthropic office pack should be exposed by app registry");
     assert_eq!(anthropic.skill_ids, &["docx", "pdf", "pptx", "xlsx"]);
+
+    let byted = mvp::tools::bundled_preinstall_targets()
+        .iter()
+        .find(|target| target.install_id == "byted-web-search")
+        .expect("byted web search should be exposed by app registry");
+    assert_eq!(byted.skill_ids, &["byted-web-search"]);
 }
 
 #[test]
@@ -2728,11 +2735,11 @@ fn prompt_onboard_shortcut_choice_uses_select_widget() {
 #[test]
 fn resolve_write_plan_uses_select_widget_for_existing_config() {
     let temp_dir = std::env::temp_dir().join(format!(
-        "loongclaw-onboard-write-plan-{}",
+        "loong-onboard-write-plan-{}",
         OffsetDateTime::now_utc().unix_timestamp_nanos()
     ));
     fs::create_dir_all(&temp_dir).expect("create temp dir");
-    let output_path = temp_dir.join("loongclaw.toml");
+    let output_path = temp_dir.join("loong.toml");
     fs::write(&output_path, "provider = 'openai'\n").expect("seed existing config");
     let mut ui = SelectOnlyTestUi::with_inputs(["2"]);
     let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
@@ -3133,11 +3140,8 @@ fn interactive_starting_point_screen_omits_static_options_when_selection_widget_
 #[test]
 fn interactive_existing_config_write_screen_omits_static_options_when_selection_widget_handles_choices()
  {
-    let lines = render_existing_config_write_header_lines_with_style(
-        "/tmp/loongclaw-config.toml",
-        80,
-        false,
-    );
+    let lines =
+        render_existing_config_write_header_lines_with_style("/tmp/loong-config.toml", 80, false);
 
     assert!(
         lines.iter().any(|line| line == "existing config found"),
@@ -3570,7 +3574,7 @@ fn format_backup_timestamp_at_matches_existing_filename_shape() {
 
 #[test]
 fn resolve_backup_path_at_uses_formatted_timestamp() {
-    let original = Path::new("/tmp/loongclaw.toml");
+    let original = Path::new("/tmp/loong.toml");
     let timestamp = time::macros::datetime!(2026-03-14 01:23:45 +08:00);
 
     let path = match resolve_backup_path_at(original, timestamp) {
@@ -3578,16 +3582,13 @@ fn resolve_backup_path_at_uses_formatted_timestamp() {
         Err(error) => panic!("backup path should resolve: {error}"),
     };
 
-    assert_eq!(
-        path,
-        PathBuf::from("/tmp/loongclaw.toml.bak-20260314-012345")
-    );
+    assert_eq!(path, PathBuf::from("/tmp/loong.toml.bak-20260314-012345"));
 }
 
 #[test]
 fn rollback_removes_partial_first_write_config() {
     let output_path = std::env::temp_dir().join(format!(
-        "loongclaw-first-write-rollback-{}.toml",
+        "loong-first-write-rollback-{}.toml",
         std::process::id()
     ));
     fs::write(&output_path, "partial = true\n").expect("write partial config");

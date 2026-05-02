@@ -4,6 +4,7 @@ pub mod agent_runtime;
 pub mod channel;
 pub mod chat;
 pub mod config;
+pub mod constants;
 pub mod context;
 pub mod control_plane;
 pub mod conversation;
@@ -28,6 +29,7 @@ pub(crate) mod task_progress;
 pub mod tools;
 pub(crate) mod trust;
 pub mod tui_surface;
+pub mod turn_gateway;
 pub mod work;
 pub mod workspace_guidance;
 

@@ -655,7 +655,6 @@ pub(crate) fn hidden_tool_is_covered_by_visible_direct_tool(
     direct_tool_visible_in_view(direct_tool_name, view)
 }
 
-#[cfg(test)]
 pub(crate) fn tool_surface_visible_in_view(surface_id: &str, view: &ToolView) -> bool {
     let Some(surface) = tool_surface_descriptor_for_id(surface_id) else {
         return false;

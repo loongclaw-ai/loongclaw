@@ -86,6 +86,7 @@ fn supported_memory_core_operations_for_sqlite_are_stable() {
         vec![
             "append_turn",
             "window",
+            "transcript",
             "clear_session",
             "replace_turns",
             "read_context",
@@ -255,6 +256,55 @@ fn memory_window_limit_semantics_cover_explicit_fallback_and_bounds() {
 
 #[cfg(feature = "memory-sqlite")]
 #[test]
+fn memory_transcript_operation_returns_full_session_history() {
+    use std::fs;
+
+    let tmp = std::env::temp_dir().join(format!(
+        "loong-test-memory-transcript-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&tmp);
+    let db_path = tmp.join("transcript.sqlite3");
+    let _ = fs::remove_file(&db_path);
+
+    let config = sqlite_memory_config_with_window(db_path.clone(), 4);
+
+    for idx in 0..7 {
+        let role = if idx % 2 == 0 { "user" } else { "assistant" };
+        append_turn_direct("transcript-session", role, &format!("turn-{idx}"), &config)
+            .expect("append_turn_direct should succeed");
+    }
+
+    let transcript =
+        execute_memory_core_with_config(build_transcript_request("transcript-session", 2), &config)
+            .expect("transcript load should succeed");
+    let transcript_turns: Vec<ConversationTurn> = serde_json::from_value(
+        transcript
+            .payload
+            .get("turns")
+            .cloned()
+            .expect("turns payload should be present"),
+    )
+    .expect("turns payload should decode");
+
+    assert_eq!(transcript.payload["page_size"], json!(2));
+    assert_eq!(transcript.payload["turn_count"], json!(7));
+    assert_eq!(transcript_turns.len(), 7);
+    assert_eq!(
+        transcript_turns.first().map(|turn| turn.content.as_str()),
+        Some("turn-0")
+    );
+    assert_eq!(
+        transcript_turns.last().map(|turn| turn.content.as_str()),
+        Some("turn-6")
+    );
+
+    let _ = fs::remove_file(&db_path);
+    let _ = fs::remove_dir(&tmp);
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[test]
 fn load_prompt_context_with_diagnostics_omits_legacy_identity_from_profile_projection() {
     use crate::config::MemoryProfile;
     use std::fs;
@@ -351,7 +401,7 @@ fn load_prompt_context_with_diagnostics_projects_typed_personalization_without_p
     assert!(profile_content.contains("## Session Profile"));
     assert!(profile_content.contains("Preferred name: Chum"));
     assert!(profile_content.contains("Response density: balanced"));
-    assert!(profile_content.contains("Initiative level: ask_before_acting"));
+    assert!(profile_content.contains("Initiative level: ask before acting"));
     assert!(profile_content.contains("Ask before destructive actions."));
     assert!(profile_content.contains("Timezone: Asia/Shanghai"));
     assert!(!profile_content.contains("## Resolved Runtime Identity"));

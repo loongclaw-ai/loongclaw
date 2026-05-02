@@ -27,6 +27,7 @@ mod http_client_runtime;
 mod mock_transport;
 mod model_candidate_cooldown_runtime;
 mod model_candidate_resolver_runtime;
+mod model_catalog_runtime;
 mod native_tool_surface;
 mod policy;
 mod profile_health_policy;
@@ -56,6 +57,11 @@ pub use copilot_auth::device_code_login as copilot_device_code_login;
 pub use failover::parse_provider_failover_snapshot_payload;
 pub use failover_telemetry_runtime::ProviderFailoverMetricsSnapshot;
 pub use http_client_runtime::ProviderHttpClientRuntimeMetricsSnapshot;
+pub use model_catalog_runtime::{
+    ProviderModelCatalogEntry, default_reasoning_effort_for_model,
+    effective_default_reasoning_effort_for_entry, effective_supported_reasoning_efforts_for_entry,
+    reasoning_effort_description_for_entry, supported_reasoning_efforts_for_model,
+};
 pub use provider_runtime_status::{
     ProviderToolSchemaReadiness, fetch_available_models, is_auth_style_failure_message,
     provider_auth_ready, provider_failover_metrics_snapshot,
@@ -76,6 +82,7 @@ pub use shape::{
 
 #[cfg(test)]
 use auth_profile_runtime::{ProviderAuthProfile, resolve_provider_auth_profiles};
+use catalog_query_runtime::{fetch_available_models_with_profiles, fetch_model_catalog_with_profiles};
 #[cfg(test)]
 use catalog_runtime::{
     ModelCatalogCache, clear_model_catalog_singleflight_slot,
@@ -87,7 +94,6 @@ use catalog_runtime::{ModelCatalogCacheLookup, fetch_model_catalog_singleflight}
 use contracts::ProviderApiError;
 #[cfg(test)]
 use contracts::ProviderFeatureFamily;
-#[cfg(test)]
 use contracts::provider_runtime_contract;
 #[cfg(test)]
 use contracts::should_disable_tool_schema_for_error;
@@ -393,6 +399,12 @@ pub async fn request_turn_streaming_in_view(
         config, session_id, turn_id, messages, tool_view, binding, on_token, None,
     )
     .await
+}
+
+pub async fn fetch_model_catalog(
+    config: &LoongConfig,
+) -> CliResult<Vec<ProviderModelCatalogEntry>> {
+    fetch_model_catalog_with_profiles(config).await
 }
 
 #[cfg(test)]

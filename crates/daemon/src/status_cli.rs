@@ -1182,6 +1182,8 @@ mod tests {
                 capability_snapshot_sha256: "abc123".to_owned(),
                 active_provider_profile_id: Some("demo".to_owned()),
                 active_provider_label: Some("Demo".to_owned()),
+                compaction_hygiene:
+                    crate::RuntimeSnapshotCompactionHygieneState::unknown_unavailable(),
                 tool_calling: crate::gateway::read_models::GatewayToolCallingReadModel {
                     availability: "ready".to_owned(),
                     structured_tool_schema_enabled: true,
@@ -1401,6 +1403,8 @@ mod tests {
                 capability_snapshot_sha256: "abc123".to_owned(),
                 active_provider_profile_id: Some("demo".to_owned()),
                 active_provider_label: Some("Demo".to_owned()),
+                compaction_hygiene:
+                    crate::RuntimeSnapshotCompactionHygieneState::unknown_unavailable(),
                 tool_calling: crate::gateway::read_models::GatewayToolCallingReadModel {
                     availability: "ready".to_owned(),
                     structured_tool_schema_enabled: true,
@@ -1556,6 +1560,8 @@ mod tests {
                 capability_snapshot_sha256: "abc123".to_owned(),
                 active_provider_profile_id: Some("demo".to_owned()),
                 active_provider_label: Some("Demo".to_owned()),
+                compaction_hygiene:
+                    crate::RuntimeSnapshotCompactionHygieneState::unknown_unavailable(),
                 tool_calling: crate::gateway::read_models::GatewayToolCallingReadModel {
                     availability: "ready".to_owned(),
                     structured_tool_schema_enabled: true,
@@ -1699,6 +1705,8 @@ mod tests {
                 capability_snapshot_sha256: "abc123".to_owned(),
                 active_provider_profile_id: Some("demo".to_owned()),
                 active_provider_label: Some("Demo".to_owned()),
+                compaction_hygiene:
+                    crate::RuntimeSnapshotCompactionHygieneState::unknown_unavailable(),
                 tool_calling: crate::gateway::read_models::GatewayToolCallingReadModel {
                     availability: "ready".to_owned(),
                     structured_tool_schema_enabled: true,
