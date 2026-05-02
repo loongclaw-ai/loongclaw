@@ -1,9 +1,8 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use kernel::ToolCoreRequest;
 use loong_app as mvp;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EffectiveExternalSkillsPolicyProbe {
@@ -14,13 +13,7 @@ pub(crate) struct EffectiveExternalSkillsPolicyProbe {
 pub(crate) fn resolve_effective_external_skills_policy(
     tool_runtime: &mvp::tools::runtime_config::ToolRuntimeConfig,
 ) -> Result<EffectiveExternalSkillsPolicyProbe, String> {
-    let request = ToolCoreRequest {
-        tool_name: "external_skills.policy".to_owned(),
-        payload: json!({
-            "action": "get",
-        }),
-    };
-    let outcome = mvp::tools::execute_tool_core_with_config(request, tool_runtime)
+    let outcome = mvp::tools::external_skills_operator_policy_get_with_config(tool_runtime)
         .map_err(|error| format!("resolve effective external skills policy failed: {error}"))?;
     let payload = outcome.payload;
     let policy = external_skills_policy_from_payload(&payload)?;

@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(dead_code))]
+
 use serde_json::{Value, json};
 
 use super::ToolDescriptor;
@@ -98,6 +100,7 @@ pub(super) fn provider_switch_definition(descriptor: &ToolDescriptor) -> Value {
     })
 }
 
+#[cfg(test)]
 pub(super) fn external_skills_policy_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -142,6 +145,7 @@ pub(super) fn external_skills_policy_definition(descriptor: &ToolDescriptor) -> 
     })
 }
 
+#[cfg(test)]
 pub(super) fn external_skills_fetch_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -180,6 +184,7 @@ pub(super) fn external_skills_fetch_definition(descriptor: &ToolDescriptor) -> V
     })
 }
 
+#[cfg(test)]
 pub(super) fn external_skills_resolve_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -201,6 +206,7 @@ pub(super) fn external_skills_resolve_definition(descriptor: &ToolDescriptor) ->
     })
 }
 
+#[cfg(test)]
 pub(super) fn external_skills_search_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -228,6 +234,7 @@ pub(super) fn external_skills_search_definition(descriptor: &ToolDescriptor) -> 
     })
 }
 
+#[cfg(test)]
 pub(super) fn external_skills_recommend_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -255,6 +262,7 @@ pub(super) fn external_skills_recommend_definition(descriptor: &ToolDescriptor) 
     })
 }
 
+#[cfg(test)]
 pub(super) fn external_skills_source_search_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -287,6 +295,7 @@ pub(super) fn external_skills_source_search_definition(descriptor: &ToolDescript
     })
 }
 
+#[cfg(test)]
 pub(super) fn external_skills_inspect_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -308,6 +317,7 @@ pub(super) fn external_skills_inspect_definition(descriptor: &ToolDescriptor) ->
     })
 }
 
+#[cfg(test)]
 pub(super) fn external_skills_install_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -349,6 +359,7 @@ pub(super) fn external_skills_install_definition(descriptor: &ToolDescriptor) ->
     })
 }
 
+#[cfg(test)]
 pub(super) fn external_skills_invoke_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -370,6 +381,7 @@ pub(super) fn external_skills_invoke_definition(descriptor: &ToolDescriptor) -> 
     })
 }
 
+#[cfg(test)]
 pub(super) fn external_skills_list_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -386,6 +398,7 @@ pub(super) fn external_skills_list_definition(descriptor: &ToolDescriptor) -> Va
     })
 }
 
+#[cfg(test)]
 pub(super) fn external_skills_remove_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",

@@ -200,7 +200,7 @@ fn append_tool_driven_followup_messages_promotes_external_skill_invoke_into_syst
     let user_prompt = messages[2]["content"]
         .as_str()
         .expect("user prompt should exist");
-    assert!(user_prompt.contains("external skill"));
+    assert!(user_prompt.contains("Loaded skill"));
     assert!(user_prompt.contains("Original request:\nsummarize note.md"));
 }
 

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use loong_contracts::{ToolCoreOutcome, ToolCoreRequest};
@@ -17,10 +18,7 @@ use tool_search::SearchableToolEntry;
 #[cfg(test)]
 use tool_search::searchable_entry_from_provider_definition;
 #[cfg(test)]
-use tool_search::{
-    runtime_discoverable_tool_entries, runtime_tool_search_entries,
-    searchable_entry_from_descriptor,
-};
+use tool_search::{runtime_discoverable_tool_entries, runtime_tool_search_entries};
 
 use crate::KernelContext;
 use provider_schema::provider_definition_for_view;
@@ -144,6 +142,7 @@ pub use tool_runtime_view::runtime_tool_view_from_loong_config;
 pub(crate) use tool_runtime_view::{
     effective_runtime_visible_tool_view, full_runtime_tool_view_for_runtime_config,
     model_visible_external_skill_context_payload_for_path,
+    model_visible_external_skill_context_payload_for_skill_id,
     model_visible_external_skill_roots_for_runtime_config, runtime_tool_view_with_runtime_config,
 };
 pub(crate) use tool_snapshot::capability_snapshot_for_direct_states_with_config;
@@ -220,6 +219,99 @@ pub fn external_skills_operator_inspect_with_config(
     config: &runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
     external_skills::execute_external_skills_operator_inspect_tool_with_config(skill_id, config)
+}
+
+pub fn external_skills_operator_search_with_config(
+    query: &str,
+    limit: usize,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    external_skills::execute_external_skills_operator_search_with_config(query, limit, config)
+}
+
+pub fn external_skills_operator_recommend_with_config(
+    query: &str,
+    limit: usize,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    external_skills::execute_external_skills_operator_recommend_with_config(query, limit, config)
+}
+
+pub fn external_skills_operator_fetch_with_config(
+    reference: &str,
+    save_as: Option<&str>,
+    max_bytes: Option<usize>,
+    approval_granted: bool,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    external_skills::execute_external_skills_operator_fetch_tool_with_config(
+        reference,
+        save_as,
+        max_bytes,
+        approval_granted,
+        config,
+    )
+}
+
+pub fn external_skills_operator_install_with_config(
+    path: Option<&str>,
+    bundled_skill_id: Option<&str>,
+    skill_id: Option<&str>,
+    source_skill_id: Option<&str>,
+    approve_security_once: bool,
+    replace: bool,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    external_skills::execute_external_skills_operator_install_tool_with_config(
+        path,
+        bundled_skill_id,
+        skill_id,
+        source_skill_id,
+        approve_security_once,
+        replace,
+        config,
+    )
+}
+
+pub fn external_skills_operator_remove_with_config(
+    skill_id: &str,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    external_skills::execute_external_skills_operator_remove_tool_with_config(skill_id, config)
+}
+
+pub fn external_skills_operator_policy_get_with_config(
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    external_skills::execute_external_skills_operator_policy_get_with_config(config)
+}
+
+pub fn external_skills_operator_policy_set_with_config(
+    enabled: Option<bool>,
+    require_download_approval: Option<bool>,
+    allowed_domains: Option<BTreeSet<String>>,
+    blocked_domains: Option<BTreeSet<String>>,
+    policy_update_approved: bool,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    external_skills::execute_external_skills_operator_policy_set_with_config(
+        enabled,
+        require_download_approval,
+        allowed_domains,
+        blocked_domains,
+        policy_update_approved,
+        config,
+    )
+}
+
+pub fn external_skills_operator_policy_reset_with_config(
+    policy_update_approved: bool,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    external_skills::execute_external_skills_operator_policy_reset_with_config(
+        policy_update_approved,
+        config,
+    )
 }
 
 pub(crate) fn discover_installable_external_skill_roots(

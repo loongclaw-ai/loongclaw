@@ -45,7 +45,7 @@ pub(crate) fn execute_runtime_capability_activate_managed_skill(
     if !options.apply {
         let notes = vec![
             "activation is dry-run by default".to_owned(),
-            "managed skill activation reuses external_skills.install under a governed runtime config"
+            "managed skill activation reuses skills.install under a governed runtime config"
                 .to_owned(),
         ];
         return Ok(RuntimeCapabilityActivateReport {
@@ -55,7 +55,7 @@ pub(crate) fn execute_runtime_capability_activate_managed_skill(
             artifact_id,
             target,
             delivery_surface,
-            activation_surface: "external_skills.install".to_owned(),
+            activation_surface: "skills.install".to_owned(),
             target_path: dry_run_target_path,
             apply_requested: false,
             replace_requested: options.replace,
@@ -79,7 +79,7 @@ pub(crate) fn execute_runtime_capability_activate_managed_skill(
             artifact_id,
             target,
             delivery_surface,
-            activation_surface: "external_skills.install".to_owned(),
+            activation_surface: "skills.install".to_owned(),
             target_path: verified_target_path,
             apply_requested: true,
             replace_requested: options.replace,
@@ -95,16 +95,15 @@ pub(crate) fn execute_runtime_capability_activate_managed_skill(
     let staging_root =
         write_runtime_capability_draft_files_to_staging(&payload, staging_base_root.as_path())?;
     let staging_path = staging_root.display().to_string();
-    let install_payload = json!({
-        "path": staging_path,
-        "skill_id": artifact_id,
-        "replace": options.replace,
-    });
-    let install_request = ToolCoreRequest {
-        tool_name: "external_skills.install".to_owned(),
-        payload: install_payload,
-    };
-    let install_result = mvp::tools::execute_tool_core_with_config(install_request, &tool_runtime);
+    let install_result = mvp::tools::external_skills_operator_install_with_config(
+        Some(staging_path.as_str()),
+        None,
+        Some(artifact_id.as_str()),
+        None,
+        false,
+        options.replace,
+        &tool_runtime,
+    );
     let cleanup_result = fs::remove_dir_all(&staging_root);
     if let Err(error) = cleanup_result {
         let cleanup_error = format!(
@@ -124,7 +123,7 @@ pub(crate) fn execute_runtime_capability_activate_managed_skill(
         artifact_id.as_str(),
         target,
         delivery_surface.as_str(),
-        "external_skills.install",
+        "skills.install",
         activated_target_path.as_str(),
         &verification,
         &rollback_hints,
@@ -168,7 +167,7 @@ pub(crate) fn execute_runtime_capability_activate_managed_skill(
         artifact_id,
         target,
         delivery_surface,
-        activation_surface: "external_skills.install".to_owned(),
+        activation_surface: "skills.install".to_owned(),
         target_path: activated_target_path,
         apply_requested: true,
         replace_requested: options.replace,

@@ -23,6 +23,7 @@ impl ExternalSkillSourceKind {
     }
 }
 
+#[cfg(test)]
 pub(crate) const DEFAULT_EXTERNAL_SKILL_SEARCH_SOURCE_ORDER: [ExternalSkillSourceKind; 4] = [
     ExternalSkillSourceKind::SkillsSh,
     ExternalSkillSourceKind::Clawhub,
@@ -103,6 +104,7 @@ pub(crate) fn resolve_external_skill_candidate(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn parse_external_skill_source_kind(raw: &str) -> Option<ExternalSkillSourceKind> {
     let normalized = raw.trim().to_ascii_lowercase();
     match normalized.as_str() {
@@ -115,10 +117,12 @@ pub(crate) fn parse_external_skill_source_kind(raw: &str) -> Option<ExternalSkil
     }
 }
 
+#[cfg(test)]
 pub(crate) fn default_external_skill_search_sources() -> Vec<ExternalSkillSourceKind> {
     DEFAULT_EXTERNAL_SKILL_SEARCH_SOURCE_ORDER.to_vec()
 }
 
+#[cfg(test)]
 pub(crate) fn search_query_for_external_skill_source(
     source_kind: ExternalSkillSourceKind,
     query: &str,

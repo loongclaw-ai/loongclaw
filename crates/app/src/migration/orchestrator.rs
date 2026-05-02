@@ -6,9 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use loong_contracts::ToolCoreRequest;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::CliResult;
 
@@ -541,13 +539,14 @@ fn bridge_installable_external_skills(
     let tool_runtime = build_external_skills_bridge_runtime(config, output_path, input_path);
     let mut installed = Vec::new();
     for skill_root in installable_roots {
-        let install_outcome = crate::tools::execute_tool_core_with_config(
-            ToolCoreRequest {
-                tool_name: "skills.install".to_owned(),
-                payload: json!({
-                    "path": skill_root.display().to_string(),
-                }),
-            },
+        let skill_root_string = skill_root.display().to_string();
+        let install_outcome = crate::tools::external_skills_operator_install_with_config(
+            Some(skill_root_string.as_str()),
+            None,
+            None,
+            None,
+            false,
+            false,
             &tool_runtime,
         )
         .map_err(|error| {
@@ -861,18 +860,13 @@ fn rollback_bridged_external_skill_ids(
         input_path.unwrap_or(output_path),
     );
     for skill_id in skill_ids.iter().rev() {
-        crate::tools::execute_tool_core_with_config(
-            ToolCoreRequest {
-                tool_name: "skills.remove".to_owned(),
-                payload: json!({
-                    "skill_id": skill_id,
-                }),
+        crate::tools::external_skills_operator_remove_with_config(skill_id, &runtime).map_err(
+            |error| {
+                format!(
+                    "remove bridged external skill `{skill_id}` failed during rollback: {error}"
+                )
             },
-            &runtime,
-        )
-        .map_err(|error| {
-            format!("remove bridged external skill `{skill_id}` failed during rollback: {error}")
-        })?;
+        )?;
     }
     Ok(())
 }

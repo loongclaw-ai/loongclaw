@@ -8,11 +8,9 @@ use std::time::Duration;
 
 use dialoguer::console::{Term, user_attended};
 use dialoguer::theme::ColorfulTheme;
-use kernel::ToolCoreRequest;
 use loong_app as mvp;
 use loong_contracts::SecretRef;
 use loong_spec::CliResult;
-use serde_json::json;
 
 use crate::copilot_onboarding::finalize_github_copilot_onboard_credentials;
 use crate::onboard_finalize::{
@@ -754,29 +752,24 @@ fn install_selected_preinstalled_skills(
     let install_root = install_root_for_onboarded_skills(config, config_path);
     let tool_runtime_config =
         mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, Some(config_path));
-    let mut installed_now = Vec::new();
+    let mut installed_now: Vec<String> = Vec::new();
 
     for skill_id in selected_skill_ids {
         if install_root.join(skill_id).join("SKILL.md").is_file() {
             continue;
         }
-        let request = ToolCoreRequest {
-            tool_name: "external_skills.install".to_owned(),
-            payload: json!({
-                "bundled_skill_id": skill_id,
-                "replace": false,
-            }),
-        };
-        if let Err(error) = mvp::tools::execute_tool_core_with_config(request, &tool_runtime_config)
-        {
+        if let Err(error) = mvp::tools::external_skills_operator_install_with_config(
+            None,
+            Some(skill_id.as_str()),
+            None,
+            None,
+            false,
+            false,
+            &tool_runtime_config,
+        ) {
             for installed_skill_id in installed_now.iter().rev() {
-                let _ = mvp::tools::execute_tool_core_with_config(
-                    ToolCoreRequest {
-                        tool_name: "external_skills.remove".to_owned(),
-                        payload: json!({
-                            "skill_id": installed_skill_id,
-                        }),
-                    },
+                let _ = mvp::tools::external_skills_operator_remove_with_config(
+                    installed_skill_id,
                     &tool_runtime_config,
                 );
             }

@@ -16,7 +16,7 @@ pub fn build_external_skill_system_message(
     skill_context: &super::ExternalSkillInvokeContext,
 ) -> String {
     format!(
-        "External skill `{}` ({}) is now active for this task. Treat the following `SKILL.md` content as trusted runtime guidance until superseded.\n\n{}",
+        "Skill `{}` ({}) is now active for this task. Treat the following `SKILL.md` content as trusted runtime guidance until superseded.\n\n{}",
         skill_context.skill_id, skill_context.display_name, skill_context.instructions
     )
 }
@@ -29,7 +29,7 @@ pub fn build_external_skill_followup_user_prompt(
     let mut sections = vec![
         EXTERNAL_SKILL_FOLLOWUP_PROMPT.to_owned(),
         format!(
-            "Loaded external skill:\n- id: {}\n- name: {}",
+            "Loaded skill:\n- id: {}\n- name: {}",
             skill_context.skill_id, skill_context.display_name
         ),
     ];

@@ -17,6 +17,13 @@ pub(crate) fn model_visible_external_skill_context_payload_for_path(
     external_skills::model_visible_skill_context_payload_for_path(config, raw_path)
 }
 
+pub(crate) fn model_visible_external_skill_context_payload_for_skill_id(
+    config: &runtime_config::ToolRuntimeConfig,
+    skill_id: &str,
+) -> Result<Option<Value>, String> {
+    external_skills::model_visible_skill_context_payload_for_skill_id(config, skill_id)
+}
+
 pub fn runtime_tool_view_from_loong_config(config: &crate::config::LoongConfig) -> ToolView {
     let runtime_config = runtime_config::ToolRuntimeConfig::from_loong_config(config, None);
     runtime_tool_view_with_runtime_config(&config.tools, &runtime_config)

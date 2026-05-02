@@ -84,14 +84,8 @@ impl RuntimeSnapshotPolicyResetGuard {
 
 impl Drop for RuntimeSnapshotPolicyResetGuard {
     fn drop(&mut self) {
-        let _ = mvp::tools::execute_tool_core_with_config(
-            kernel::ToolCoreRequest {
-                tool_name: "external_skills.policy".to_owned(),
-                payload: serde_json::json!({
-                    "action": "reset",
-                    "policy_update_approved": true,
-                }),
-            },
+        let _ = mvp::tools::external_skills_operator_policy_reset_with_config(
+            true,
             &self.runtime_config,
         );
     }
@@ -184,13 +178,15 @@ fn install_demo_skill(root: &Path, config: &mvp::config::LoongConfig, config_pat
 
     let runtime_config =
         mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, Some(config_path));
-    mvp::tools::execute_tool_core_with_config(
-        kernel::ToolCoreRequest {
-            tool_name: "external_skills.install".to_owned(),
-            payload: serde_json::json!({
-                "path": "source/demo-skill"
-            }),
-        },
+    mvp::tools::external_skills_operator_policy_reset_with_config(true, &runtime_config)
+        .expect("reset runtime skills policy");
+    mvp::tools::external_skills_operator_install_with_config(
+        Some("source/demo-skill"),
+        None,
+        None,
+        None,
+        false,
+        false,
         &runtime_config,
     )
     .expect("install demo skill");
@@ -314,9 +310,13 @@ fn runtime_snapshot_json_payload_includes_provider_tool_and_external_skill_inven
     assert!(payload["provider"]["transport_runtime"]["failover_by_reason"].is_object());
     assert!(payload["provider"]["transport_runtime"]["failover_by_stage"].is_object());
     assert!(payload["provider"]["transport_runtime"]["failover_by_provider"].is_object());
-    assert!(array_contains_string(
+    assert!(!array_contains_string(
         &payload["tools"]["visible_tool_names"],
         "external_skills.list"
+    ));
+    assert!(!array_contains_string(
+        &payload["tools"]["visible_tool_names"],
+        "skills.list"
     ));
     assert_eq!(payload["tool_runtime"]["approval"]["mode"], "disabled");
     assert_eq!(payload["tool_runtime"]["consent"]["default_mode"], "full");
@@ -499,9 +499,13 @@ fn runtime_snapshot_json_payload_reflects_effective_external_skills_policy_overr
     let enabled_payload = build_runtime_snapshot_cli_json_payload(&enabled_snapshot)
         .expect("build enabled runtime snapshot payload");
     let enabled_digest = enabled_payload["tools"]["capability_snapshot_sha256"].clone();
-    assert!(array_contains_string(
+    assert!(!array_contains_string(
         &enabled_payload["tools"]["visible_tool_names"],
         "external_skills.list"
+    ));
+    assert!(!array_contains_string(
+        &enabled_payload["tools"]["visible_tool_names"],
+        "skills.list"
     ));
 
     let runtime_config = mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(
@@ -509,18 +513,16 @@ fn runtime_snapshot_json_payload_reflects_effective_external_skills_policy_overr
         Some(config_path.as_path()),
     );
     let _policy_reset = RuntimeSnapshotPolicyResetGuard::new(&runtime_config);
-    mvp::tools::execute_tool_core_with_config(
-        kernel::ToolCoreRequest {
-            tool_name: "external_skills.policy".to_owned(),
-            payload: serde_json::json!({
-                "action": "set",
-                "policy_update_approved": true,
-                "enabled": false,
-                "require_download_approval": true,
-                "allowed_domains": ["override.example"],
-                "blocked_domains": ["blocked.example"],
-            }),
-        },
+    mvp::tools::external_skills_operator_policy_set_with_config(
+        Some(false),
+        Some(true),
+        Some(std::collections::BTreeSet::from([
+            "override.example".to_owned()
+        ])),
+        Some(std::collections::BTreeSet::from([
+            "blocked.example".to_owned()
+        ])),
+        true,
         &runtime_config,
     )
     .expect("override runtime external skills policy");
@@ -573,9 +575,13 @@ fn runtime_snapshot_json_payload_reflects_effective_external_skills_policy_overr
         &payload["tools"]["visible_tool_names"],
         "external_skills.list"
     ));
-    assert!(array_contains_string(
+    assert!(!array_contains_string(
         &payload["tools"]["visible_tool_names"],
         "external_skills.policy"
+    ));
+    assert!(!array_contains_string(
+        &payload["tools"]["visible_tool_names"],
+        "skills.policy"
     ));
     assert_ne!(
         payload["tools"]["capability_snapshot_sha256"],

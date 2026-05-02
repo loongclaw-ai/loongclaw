@@ -408,13 +408,13 @@ async fn handle_turn_with_runtime_explicit_skill_activation_prefix_injects_skill
             message
                 .get("content")
                 .and_then(Value::as_str)
-                .is_some_and(|content| content.contains("External skill `demo-skill`"))
+                .is_some_and(|content| content.contains("Skill `demo-skill`"))
         })
         .and_then(|message| message.get("content"))
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("skill system message should exist: {messages:?}"));
     assert!(
-        injected_skill.contains("External skill `demo-skill`"),
+        injected_skill.contains("Skill `demo-skill`"),
         "explicit activation should inject skill context: {injected_skill}"
     );
     assert!(

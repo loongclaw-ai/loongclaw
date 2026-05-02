@@ -32,7 +32,7 @@ pub(super) fn parse_explicit_skill_activation_input(
     let remaining_request = trailing.trim();
     let followup_request = if remaining_request.is_empty() {
         format!(
-            "The user explicitly activated external skill `{skill_id}` without an additional task. Confirm activation briefly and ask what to do next."
+            "The user explicitly activated skill `{skill_id}` without an additional task. Confirm activation briefly and ask what to do next."
         )
     } else {
         remaining_request.to_owned()

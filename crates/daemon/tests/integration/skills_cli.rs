@@ -1577,10 +1577,7 @@ fn execute_skills_command_search_surfaces_active_shadowed_and_blocked_matches() 
     )
     .expect("skills search should succeed");
 
-    assert_eq!(
-        search.outcome.payload["tool_name"],
-        "external_skills.search"
-    );
+    assert_eq!(search.outcome.payload["tool_name"], "skills.search");
     assert_eq!(
         search.outcome.payload["results"][0]["skill_id"],
         "release-guard"
@@ -2333,7 +2330,7 @@ fn render_skills_cli_text_surfaces_skill_contract_details() {
             outcome: kernel::ToolCoreOutcome {
                 status: "ok".to_owned(),
                 payload: serde_json::json!({
-                    "tool_name": "external_skills.inspect",
+                    "tool_name": "skills.inspect",
                     "skill": {
                         "skill_id": "release-guard",
                         "display_name": "Release Guard",
@@ -2416,7 +2413,7 @@ fn render_skills_cli_text_surfaces_operator_install_summary() {
             outcome: kernel::ToolCoreOutcome {
                 status: "ok".to_owned(),
                 payload: serde_json::json!({
-                    "tool_name": "external_skills.install",
+                    "tool_name": "skills.install",
                     "skill_id": "demo-skill",
                     "display_name": "Demo Skill",
                     "source_path": "/tmp/source/demo-skill",

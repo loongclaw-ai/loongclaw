@@ -1147,26 +1147,19 @@ async fn autonomy_policy_preapproved_call_executes_without_persisting_request() 
         )
         .await;
 
-    let reply = match result {
-        TurnResult::FinalText(reply) => reply,
-        other @ TurnResult::NeedsApproval(_)
-        | other @ TurnResult::ToolDenied(_)
+    let failure = match result {
+        TurnResult::ToolDenied(failure) => failure,
+        other @ TurnResult::FinalText(_)
+        | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_)
         | other @ TurnResult::StreamingText(_)
         | other @ TurnResult::StreamingDone(_) => {
-            panic!("expected FinalText, got {other:?}")
+            panic!("expected ToolDenied, got {other:?}")
         }
     };
-
-    assert!(
-        reply.contains("\"tool\":\"skills.policy\""),
-        "reply should include executed skills.policy output: {reply}"
-    );
-    assert!(
-        reply.contains("\"status\":\"ok\""),
-        "reply should surface a successful skills.policy outcome: {reply}"
-    );
+    assert_eq!(failure.code, "tool_not_found");
+    assert!(failure.reason.contains("skills.policy"));
 
     let requests = repo
         .list_approval_requests_for_session("root-session", None)
@@ -1223,11 +1216,8 @@ async fn autonomy_policy_predenied_call_returns_policy_denial_without_persisting
         }
     };
 
-    assert_eq!(failure.code, "app_tool_denied");
-    assert!(
-        failure.reason.contains("tool:skills.policy"),
-        "denial should reference the statically denied approval key: {failure:?}"
-    );
+    assert_eq!(failure.code, "tool_not_found");
+    assert!(failure.reason.contains("skills.policy"));
 
     let requests = repo
         .list_approval_requests_for_session("root-session", None)
@@ -1429,21 +1419,16 @@ async fn autonomy_policy_allowlist_does_not_bypass_prompt_session_consent() {
         )
         .await;
 
-    let TurnResult::NeedsApproval(requirement) = result else {
-        panic!("expected NeedsApproval, got {result:?}");
+    let TurnResult::ToolDenied(failure) = result else {
+        panic!("expected ToolDenied, got {result:?}");
     };
-    assert_eq!(requirement.tool_name.as_deref(), Some("skills.policy"));
-    assert_eq!(
-        requirement.rule_id.as_str(),
-        "session_tool_consent_prompt_mode"
-    );
+    assert_eq!(failure.code, "tool_not_found");
+    assert!(failure.reason.contains("skills.policy"));
 
     let requests = repo
         .list_approval_requests_for_session("root-session", None)
         .expect("list approval requests");
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].tool_name, "skills.policy");
-    assert_eq!(requests[0].approval_key, "tool:skills.policy");
+    assert!(requests.is_empty());
 }
 
 #[tokio::test]
@@ -1491,21 +1476,16 @@ async fn autonomy_policy_grant_does_not_bypass_prompt_session_consent() {
         )
         .await;
 
-    let TurnResult::NeedsApproval(requirement) = result else {
-        panic!("expected NeedsApproval, got {result:?}");
+    let TurnResult::ToolDenied(failure) = result else {
+        panic!("expected ToolDenied, got {result:?}");
     };
-    assert_eq!(requirement.tool_name.as_deref(), Some("skills.policy"));
-    assert_eq!(
-        requirement.rule_id.as_str(),
-        "session_tool_consent_prompt_mode"
-    );
+    assert_eq!(failure.code, "tool_not_found");
+    assert!(failure.reason.contains("skills.policy"));
 
     let requests = repo
         .list_approval_requests_for_session("root-session", None)
         .expect("list approval requests");
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].tool_name, "skills.policy");
-    assert_eq!(requests[0].approval_key, "tool:skills.policy");
+    assert!(requests.is_empty());
 }
 
 #[tokio::test]

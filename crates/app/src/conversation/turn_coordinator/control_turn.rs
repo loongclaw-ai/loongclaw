@@ -157,17 +157,38 @@ impl ConversationTurnCoordinator {
         );
         let tool_runtime_config =
             crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None);
-        let activation_outcome = crate::tools::execute_tool_core_with_config(
-            loong_contracts::ToolCoreRequest {
-                tool_name: "skills.invoke".to_owned(),
-                payload: json!({
-                    "skill_id": explicit_activation.skill_id,
-                }),
-            },
-            &tool_runtime_config,
-        );
-        let activation_outcome = match activation_outcome {
-            Ok(outcome) => outcome,
+        let activation_payload =
+            crate::tools::model_visible_external_skill_context_payload_for_skill_id(
+                &tool_runtime_config,
+                explicit_activation.skill_id.as_str(),
+            );
+        let activation_payload = match activation_payload {
+            Ok(Some(payload)) => payload,
+            Ok(None) => {
+                let error = format!(
+                    "external skill `{}` is not currently model-visible and eligible",
+                    explicit_activation.skill_id
+                );
+                return match error_mode {
+                    ProviderErrorMode::Propagate => Err(error),
+                    ProviderErrorMode::InlineMessage => {
+                        let synthetic = format_provider_error_reply(&error);
+                        persist_reply_turns_raw_with_mode(
+                            runtime,
+                            session_id,
+                            followup_request,
+                            &synthetic,
+                            ReplyPersistenceMode::InlineProviderError,
+                            binding,
+                        )
+                        .await?;
+                        Ok(Some(ConversationTurnOutcome {
+                            reply: synthetic,
+                            usage: None,
+                        }))
+                    }
+                };
+            }
             Err(error) => {
                 return match error_mode {
                     ProviderErrorMode::Propagate => Err(error),
@@ -191,13 +212,13 @@ impl ConversationTurnCoordinator {
             }
         };
         let payload_summary =
-            serde_json::to_string(&activation_outcome.payload).unwrap_or_else(|_| "{}".to_owned());
+            serde_json::to_string(&activation_payload).unwrap_or_else(|_| "{}".to_owned());
         let payload_chars = payload_summary.chars().count();
         let tool_result_text = format!(
             "[ok] {}",
             json!({
-                "status": activation_outcome.status,
-                "tool": "skills.invoke",
+                "status": "ok",
+                "tool": "skill.activate",
                 "tool_call_id": explicit_skill_activation_tool_call_id(
                     explicit_activation.skill_id.as_str(),
                 ),

@@ -3,11 +3,10 @@ use crate::{
     collect_runtime_snapshot_cli_state,
 };
 use clap::Parser;
-use kernel::ToolCoreRequest;
 use loong_app as mvp;
 use loong_spec::CliResult;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     fs,
@@ -313,14 +312,8 @@ fn collect_managed_skill_inventory(
         &inventory_config,
         Some(resolved_path),
     );
-    let outcome = mvp::tools::execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "external_skills.list".to_owned(),
-            payload: json!({}),
-        },
-        &tool_runtime,
-    )
-    .map_err(|error| format!("list current managed external skills failed: {error}"))?;
+    let outcome = mvp::tools::external_skills_operator_list_with_config(&tool_runtime)
+        .map_err(|error| format!("list current managed external skills failed: {error}"))?;
     let skills = outcome
         .payload
         .get("skills")
@@ -637,22 +630,18 @@ fn apply_single_managed_skill_action(
         build_action_tool_runtime(resolved_path, current_config, target_config, action);
     match action.action.as_str() {
         "install" | "replace" => {
-            let payload = if action.source_kind == "bundled" {
-                json!({
-                    "bundled_skill_id": bundled_skill_id_for_action(action)?,
-                    "replace": action.action == "replace",
-                })
+            let bundled_skill_id = if action.source_kind == "bundled" {
+                Some(bundled_skill_id_for_action(action)?)
             } else {
-                json!({
-                    "path": action.source_path,
-                    "replace": action.action == "replace",
-                })
+                None
             };
-            mvp::tools::execute_tool_core_with_config(
-                ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
-                    payload,
-                },
+            mvp::tools::external_skills_operator_install_with_config(
+                (action.source_kind != "bundled").then_some(action.source_path.as_str()),
+                bundled_skill_id.as_deref(),
+                None,
+                None,
+                false,
+                action.action == "replace",
                 &tool_runtime,
             )
             .map_err(|error| {
@@ -664,13 +653,8 @@ fn apply_single_managed_skill_action(
             Ok(())
         }
         "remove" => {
-            mvp::tools::execute_tool_core_with_config(
-                ToolCoreRequest {
-                    tool_name: "external_skills.remove".to_owned(),
-                    payload: json!({
-                        "skill_id": action.skill_id,
-                    }),
-                },
+            mvp::tools::external_skills_operator_remove_with_config(
+                action.skill_id.as_str(),
                 &tool_runtime,
             )
             .map_err(|error| {

@@ -372,6 +372,8 @@ mod tests {
     use crate::test_support::ScopedEnv;
 
     fn clear_web_search_credential_envs(env: &mut ScopedEnv) {
+        env.remove("LOONG_WEB_SEARCH_PROVIDER");
+        env.remove("LOONGCLAW_WEB_SEARCH_PROVIDER");
         for descriptor in mvp::config::web_search_provider_descriptors() {
             for env_name in descriptor.api_key_env_names {
                 env.remove(*env_name);

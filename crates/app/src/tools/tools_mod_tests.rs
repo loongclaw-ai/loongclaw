@@ -316,7 +316,7 @@ fn capability_snapshot_stays_compact_when_external_skills_are_installed() {
 
     let snapshot = capability_snapshot_with_config(&config);
     assert!(snapshot.starts_with("[tool_discovery_runtime]"));
-    assert!(snapshot.contains("[available_external_skills]"));
+    assert!(snapshot.contains("[available_skills]"));
     assert!(snapshot.contains("demo-skill"));
     assert!(snapshot.contains("Use the read tool to load a listed skill's SKILL.md file"));
     assert!(snapshot.contains("<available_skills>"));
@@ -584,9 +584,9 @@ fn runtime_tool_view_respects_explicit_external_skills_toggle() {
     assert!(!disabled_view.contains("skills.list"));
 
     let enabled_view = runtime_tool_view_for_config_with_external_skills(&config, true);
-    assert!(enabled_view.contains("skills.fetch"));
-    assert!(enabled_view.contains("skills.invoke"));
-    assert!(enabled_view.contains("skills.list"));
+    assert!(!enabled_view.contains("skills.fetch"));
+    assert!(!enabled_view.contains("skills.invoke"));
+    assert!(!enabled_view.contains("skills.list"));
 }
 
 #[test]
@@ -601,9 +601,9 @@ fn runtime_tool_view_with_runtime_config_uses_runtime_external_skills_policy() {
 
     let view = runtime_tool_view_with_runtime_config(&ToolConfig::default(), &runtime_config);
 
-    assert!(view.contains("skills.fetch"));
-    assert!(view.contains("skills.invoke"));
-    assert!(view.contains("skills.list"));
+    assert!(!view.contains("skills.fetch"));
+    assert!(!view.contains("skills.invoke"));
+    assert!(!view.contains("skills.list"));
 }
 
 #[test]
@@ -1104,8 +1104,6 @@ fn canonical_tool_name_maps_known_aliases() {
     assert_eq!(canonical_tool_name("claw.migrate"), "config.import");
     assert_eq!(canonical_tool_name("claw_migrate"), "config.import");
     assert_eq!(canonical_tool_name("config_import"), "config.import");
-    assert_eq!(canonical_tool_name("skills_policy"), "skills.policy");
-    assert_eq!(canonical_tool_name("skills_fetch"), "skills.fetch");
     assert_eq!(canonical_tool_name("file_read"), "file.read");
     assert_eq!(canonical_tool_name("file_write"), "file.write");
     assert_eq!(canonical_tool_name("provider_switch"), "provider.switch");
@@ -2429,20 +2427,12 @@ fn browser_companion_visible_app_tool_click_skips_env_recheck_when_runtime_ready
 #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn tool_search_reports_no_required_field_groups_for_bundled_skill_install() {
-    let descriptor = catalog::tool_catalog()
-        .descriptor("skills.install")
-        .expect("skills.install should exist in the catalog");
-    let searchable = searchable_entry_from_descriptor(descriptor);
-
     assert!(
-        descriptor.required_fields().is_empty(),
-        "schema-derived search should keep grouped requirements separate"
+        catalog::tool_catalog()
+            .descriptor("skills.install")
+            .is_none(),
+        "skills.install should stay out of the runtime tool catalog"
     );
-    assert!(
-        searchable.required_fields.is_empty(),
-        "search should not flatten grouped alternatives into required_fields"
-    );
-    assert_eq!(searchable.required_field_groups, Vec::<Vec<String>>::new());
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -3277,10 +3267,6 @@ fn is_known_tool_name_accepts_canonical_and_alias_forms() {
     assert!(is_known_tool_name("config_import"));
     assert!(is_known_tool_name("claw.migrate"));
     assert!(is_known_tool_name("claw_migrate"));
-    assert!(is_known_tool_name("skills.policy"));
-    assert!(is_known_tool_name("skills_policy"));
-    assert!(is_known_tool_name("skills.fetch"));
-    assert!(is_known_tool_name("skills_fetch"));
     assert!(is_known_tool_name("file.read"));
     assert!(is_known_tool_name("file_read"));
     assert!(is_known_tool_name("file.write"));

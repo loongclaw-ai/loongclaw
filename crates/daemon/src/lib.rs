@@ -2087,13 +2087,7 @@ fn collect_runtime_snapshot_external_skills_state(
         );
     }
 
-    match mvp::tools::execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "external_skills.list".to_owned(),
-            payload: json!({}),
-        },
-        &effective_tool_runtime,
-    ) {
+    match mvp::tools::external_skills_operator_list_with_config(&effective_tool_runtime) {
         Ok(outcome) => (
             RuntimeSnapshotExternalSkillsState {
                 policy: effective_policy,
@@ -2447,16 +2441,8 @@ fn runtime_snapshot_effective_external_skills_policy(
     ),
     String,
 > {
-    let outcome = mvp::tools::execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "external_skills.policy".to_owned(),
-            payload: json!({
-                "action": "get",
-            }),
-        },
-        tool_runtime,
-    )
-    .map_err(|error| format!("resolve effective external skills policy failed: {error}"))?;
+    let outcome = mvp::tools::external_skills_operator_policy_get_with_config(tool_runtime)
+        .map_err(|error| format!("resolve effective external skills policy failed: {error}"))?;
 
     let policy = runtime_snapshot_external_skills_policy_from_payload(&outcome.payload)?;
     let override_active = outcome

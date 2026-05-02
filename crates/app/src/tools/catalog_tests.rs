@@ -743,9 +743,6 @@ fn autonomy_capability_action_classifies_representative_tool_families() {
         ("file.edit", CapabilityActionClass::ExecuteExisting),
         ("shell.exec", CapabilityActionClass::ExecuteExisting),
         ("config.import", CapabilityActionClass::ExecuteExisting),
-        ("skills.fetch", CapabilityActionClass::CapabilityFetch),
-        ("skills.install", CapabilityActionClass::CapabilityInstall),
-        ("skills.invoke", CapabilityActionClass::CapabilityLoad),
         ("provider.switch", CapabilityActionClass::RuntimeSwitch),
         ("delegate", CapabilityActionClass::TopologyExpand),
         ("delegate_async", CapabilityActionClass::TopologyExpand),
@@ -753,7 +750,6 @@ fn autonomy_capability_action_classifies_representative_tool_families() {
             "approval_request_resolve",
             CapabilityActionClass::ExecuteExisting,
         ),
-        ("skills.policy", CapabilityActionClass::PolicyMutation),
         ("session_archive", CapabilityActionClass::SessionMutation),
         ("session_cancel", CapabilityActionClass::SessionMutation),
         ("session_continue", CapabilityActionClass::SessionMutation),
@@ -894,17 +890,11 @@ fn delegate_definitions_surface_shared_and_worktree_isolation_modes() {
 }
 
 #[test]
-fn external_skills_policy_definition_surfaces_update_controls() {
-    let descriptor = tool_catalog()
-        .descriptor("skills.policy")
-        .expect("skills.policy descriptor");
-    let definition = descriptor.provider_definition();
-    let properties = &definition["function"]["parameters"]["properties"];
-
-    assert_eq!(properties["action"]["enum"], json!(["get", "set", "reset"]));
-    assert!(properties["policy_update_approved"].is_object());
-    assert!(properties["allowed_domains"].is_object());
-    assert!(properties["blocked_domains"].is_object());
+fn skills_policy_is_not_exposed_in_tool_catalog() {
+    assert!(
+        tool_catalog().descriptor("skills.policy").is_none(),
+        "skills policy should stay off the model/runtime tool catalog"
+    );
 }
 
 #[cfg(feature = "tool-websearch")]

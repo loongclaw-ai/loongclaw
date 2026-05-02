@@ -7464,8 +7464,8 @@ async fn default_runtime_build_context_uses_configured_runtime_tool_view_for_too
     );
 
     assert!(
-        runtime_tool_view.contains("skills.inspect"),
-        "configured runtime tool view should expose external skills when enabled"
+        !runtime_tool_view.contains("skills.inspect"),
+        "configured runtime tool view should no longer expose skills as runtime tools"
     );
     assert!(
         !runtime_tool_view.contains("web.search"),
@@ -7542,8 +7542,8 @@ async fn default_runtime_kernel_build_context_uses_configured_runtime_tool_view_
     );
 
     assert!(
-        runtime_tool_view.contains("skills.inspect"),
-        "configured runtime tool view should expose external skills when enabled"
+        !runtime_tool_view.contains("skills.inspect"),
+        "configured runtime tool view should no longer expose skills as runtime tools"
     );
     assert!(
         !runtime_tool_view.contains("web.search"),
@@ -14003,16 +14003,8 @@ async fn autonomy_policy_turn_engine_discovery_only_denies_capability_install() 
 
     match result {
         TurnResult::ToolDenied(failure) => {
-            assert_eq!(
-                failure.code,
-                "autonomy_policy_capability_acquisition_disallowed"
-            );
-            assert!(
-                failure
-                    .reason
-                    .contains("capability acquisition is disabled"),
-                "unexpected denial reason: {failure:?}"
-            );
+            assert_eq!(failure.code, "tool_not_found");
+            assert!(failure.reason.contains("skills.install"));
         }
         other @ TurnResult::FinalText(_)
         | other @ TurnResult::StreamingText(_)
@@ -14085,64 +14077,25 @@ async fn autonomy_policy_turn_engine_guided_acquisition_requires_approval_for_ca
         .execute_turn_in_context(&turn, &session_context, &dispatcher, binding, None)
         .await;
 
-    let approval_request_id = match result {
-        TurnResult::NeedsApproval(requirement) => {
-            assert_eq!(requirement.tool_name.as_deref(), Some("skills.install"));
-            assert_eq!(
-                requirement.approval_key.as_deref(),
-                Some("tool:skills.install")
-            );
-            requirement
-                .approval_request_id
-                .expect("approval request id should be persisted")
+    match result {
+        TurnResult::ToolDenied(failure) => {
+            assert_eq!(failure.code, "tool_not_found");
+            assert!(failure.reason.contains("skills.install"));
         }
         other @ TurnResult::FinalText(_)
         | other @ TurnResult::StreamingText(_)
         | other @ TurnResult::StreamingDone(_)
-        | other @ TurnResult::ToolDenied(_)
+        | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
-            panic!("expected NeedsApproval, got {other:?}");
+            panic!("expected ToolDenied, got {other:?}")
         }
-    };
+    }
 
-    let stored_request = repo
-        .load_approval_request(&approval_request_id)
-        .expect("load approval request")
-        .expect("approval request should exist");
-    let governance_snapshot = stored_request.governance_snapshot_json;
-    let trust_event = &stored_request.request_payload_json["trust_event"];
-    assert_eq!(stored_request.tool_name, "skills.install");
-    assert_eq!(stored_request.approval_key, "tool:skills.install");
-    assert_eq!(governance_snapshot["policy_source"], "autonomy_policy");
-    assert_eq!(
-        governance_snapshot["autonomy_profile"],
-        "guided_acquisition"
-    );
-    assert_eq!(
-        governance_snapshot["capability_action_class"],
-        "capability_install"
-    );
-    assert_eq!(
-        governance_snapshot["rule_id"],
-        "autonomy_policy_capability_acquisition_requires_approval"
-    );
-    assert_eq!(
-        governance_snapshot["reason_code"],
-        "autonomy_policy_capability_acquisition_requires_approval"
-    );
-    assert_eq!(trust_event["event_kind"], "approval_required");
-    assert_eq!(trust_event["actor_kind"], "conversation_runtime");
-    assert_eq!(trust_event["trust_state_hint"], "unknown");
-    assert_eq!(trust_event["provenance_ref"], "kernel");
-    assert_eq!(
-        trust_event["reason_code"],
-        "autonomy_policy_capability_acquisition_requires_approval"
-    );
-    assert_eq!(
-        trust_event["evidence_ref"],
-        format!("approval_request:{approval_request_id}")
-    );
+    let requests = repo
+        .list_approval_requests_for_session(session_id, None)
+        .expect("list approval requests");
+    assert!(requests.is_empty());
 
     let installed_skill_path = workspace_root
         .join("external-skills-installed")
@@ -14206,22 +14159,17 @@ async fn autonomy_policy_turn_engine_bounded_autonomous_allows_capability_instal
         .await;
 
     match result {
-        TurnResult::FinalText(text)
-        | TurnResult::StreamingText(text)
-        | TurnResult::StreamingDone(text) => {
-            let line = text.lines().next().expect("tool result line should exist");
-            let payload = line
-                .strip_prefix("[ok] ")
-                .expect("tool result line should keep [ok] prefix");
-            let envelope: Value =
-                serde_json::from_str(payload).expect("tool result envelope should be json");
-            assert_eq!(envelope["tool"], "skills.install");
+        TurnResult::ToolDenied(failure) => {
+            assert_eq!(failure.code, "tool_not_found");
+            assert!(failure.reason.contains("skills.install"));
         }
-        other @ TurnResult::NeedsApproval(_)
-        | other @ TurnResult::ToolDenied(_)
+        other @ TurnResult::FinalText(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_)
+        | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
-            panic!("expected successful tool execution, got {other:?}");
+            panic!("expected ToolDenied, got {other:?}")
         }
     }
 
@@ -14230,8 +14178,8 @@ async fn autonomy_policy_turn_engine_bounded_autonomous_allows_capability_instal
         .join("demo-skill")
         .join("SKILL.md");
     assert!(
-        installed_skill_path.exists(),
-        "bounded_autonomous should allow installation to complete"
+        !installed_skill_path.exists(),
+        "bounded_autonomous should no longer route installation through runtime tools"
     );
 
     let approval_requests = repo
@@ -14321,16 +14269,8 @@ async fn autonomy_policy_turn_engine_bounded_autonomous_enforces_capability_budg
 
     match result {
         TurnResult::ToolDenied(failure) => {
-            assert_eq!(
-                failure.code,
-                "autonomy_policy_capability_acquisition_budget_exceeded"
-            );
-            assert!(
-                failure
-                    .reason
-                    .contains("capability acquisition budget exceeded"),
-                "unexpected denial reason: {failure:?}"
-            );
+            assert_eq!(failure.code, "tool_not_found");
+            assert!(failure.reason.contains("skills.install"));
         }
         other @ TurnResult::FinalText(_)
         | other @ TurnResult::StreamingText(_)
@@ -14600,48 +14540,26 @@ async fn autonomy_policy_turn_engine_guided_acquisition_requires_approval_for_po
         .execute_turn_in_context(&turn, &session_context, &dispatcher, binding, None)
         .await;
 
-    let approval_request_id = match result {
-        TurnResult::NeedsApproval(requirement) => {
-            assert_eq!(requirement.tool_name.as_deref(), Some("skills.policy"));
-            assert_eq!(
-                requirement.approval_key.as_deref(),
-                Some("tool:skills.policy")
-            );
-            requirement
-                .approval_request_id
-                .expect("approval request id should be persisted")
+    match result {
+        TurnResult::ToolDenied(failure) => {
+            assert_eq!(failure.code, "tool_not_found");
+            assert!(failure.reason.contains("skills.policy"));
         }
         other @ TurnResult::FinalText(_)
         | other @ TurnResult::StreamingText(_)
         | other @ TurnResult::StreamingDone(_)
-        | other @ TurnResult::ToolDenied(_)
+        | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => {
-            panic!("expected NeedsApproval, got {other:?}");
+            panic!("expected ToolDenied, got {other:?}")
         }
-    };
+    }
 
     let repo = SessionRepository::new(&memory_config).expect("session repository");
-    let stored_request = repo
-        .load_approval_request(&approval_request_id)
-        .expect("load approval request")
-        .expect("approval request should exist");
-    let governance_snapshot = stored_request.governance_snapshot_json;
-    assert_eq!(stored_request.tool_name, "skills.policy");
-    assert_eq!(stored_request.approval_key, "tool:skills.policy");
-    assert_eq!(governance_snapshot["policy_source"], "autonomy_policy");
-    assert_eq!(
-        governance_snapshot["capability_action_class"],
-        "policy_mutation"
-    );
-    assert_eq!(
-        governance_snapshot["rule_id"],
-        "autonomy_policy_policy_mutation_requires_approval"
-    );
-    assert_eq!(
-        governance_snapshot["reason_code"],
-        "autonomy_policy_policy_mutation_requires_approval"
-    );
+    let requests = repo
+        .list_approval_requests_for_session(session_id, None)
+        .expect("list approval requests");
+    assert!(requests.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -14854,34 +14772,8 @@ async fn autonomy_policy_telemetry_handle_turn_persists_approval_required_tool_d
     let decisions = persisted_internal_records_by_type(&persisted, "tool_decision");
     let outcomes = persisted_internal_records_by_type(&persisted, "tool_outcome");
 
-    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions.len(), 0);
     assert_eq!(outcomes.len(), 0);
-
-    let decision = &decisions[0]["decision"];
-    assert!(
-        decisions[0]["turn_id"]
-            .as_str()
-            .is_some_and(|value| !value.is_empty())
-    );
-    assert_eq!(
-        decisions[0]["tool_call_id"],
-        "call-autonomy-telemetry-guided"
-    );
-    assert_eq!(decision["tool_name"], "skills.install");
-    assert_eq!(decision["decision_kind"], "approval_required");
-    assert_eq!(decision["allow"], false);
-    assert_eq!(decision["deny"], false);
-    assert_eq!(decision["policy_source"], "autonomy_policy");
-    assert_eq!(decision["autonomy_profile"], "guided_acquisition");
-    assert_eq!(decision["capability_action_class"], "capability_install");
-    assert_eq!(
-        decision["rule_id"],
-        "autonomy_policy_capability_acquisition_requires_approval"
-    );
-    assert_eq!(
-        decision["reason_code"],
-        "autonomy_policy_capability_acquisition_requires_approval"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -14943,34 +14835,8 @@ async fn autonomy_policy_telemetry_handle_turn_persists_denied_tool_decision() {
     let decisions = persisted_internal_records_by_type(&persisted, "tool_decision");
     let outcomes = persisted_internal_records_by_type(&persisted, "tool_outcome");
 
-    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions.len(), 0);
     assert_eq!(outcomes.len(), 0);
-
-    let decision = &decisions[0]["decision"];
-    assert!(
-        decisions[0]["turn_id"]
-            .as_str()
-            .is_some_and(|value| !value.is_empty())
-    );
-    assert_eq!(
-        decisions[0]["tool_call_id"],
-        "call-autonomy-telemetry-discovery"
-    );
-    assert_eq!(decision["tool_name"], "skills.install");
-    assert_eq!(decision["decision_kind"], "deny");
-    assert_eq!(decision["allow"], false);
-    assert_eq!(decision["deny"], true);
-    assert_eq!(decision["policy_source"], "autonomy_policy");
-    assert_eq!(decision["autonomy_profile"], "discovery_only");
-    assert_eq!(decision["capability_action_class"], "capability_install");
-    assert_eq!(
-        decision["rule_id"],
-        "autonomy_policy_capability_acquisition_disallowed"
-    );
-    assert_eq!(
-        decision["reason_code"],
-        "autonomy_policy_capability_acquisition_disallowed"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -15030,43 +14896,12 @@ async fn autonomy_policy_telemetry_handle_turn_persists_allow_decision_and_tool_
     let decisions = persisted_internal_records_by_type(&persisted, "tool_decision");
     let outcomes = persisted_internal_records_by_type(&persisted, "tool_outcome");
 
-    assert_eq!(decisions.len(), 1);
-    assert_eq!(outcomes.len(), 1);
-
-    let decision = &decisions[0]["decision"];
-    assert!(
-        decisions[0]["turn_id"]
-            .as_str()
-            .is_some_and(|value| !value.is_empty())
-    );
-    assert_eq!(
-        decisions[0]["tool_call_id"],
-        "call-autonomy-telemetry-bounded"
-    );
-    assert_eq!(decision["tool_name"], "skills.install");
-    assert_eq!(decision["decision_kind"], "allow");
-    assert_eq!(decision["allow"], true);
-    assert_eq!(decision["deny"], false);
-    assert_eq!(decision["policy_source"], "autonomy_policy");
-    assert_eq!(decision["autonomy_profile"], "bounded_autonomous");
-    assert_eq!(decision["capability_action_class"], "capability_install");
-
-    let outcome = &outcomes[0]["outcome"];
-    assert!(
-        outcomes[0]["turn_id"]
-            .as_str()
-            .is_some_and(|value| !value.is_empty())
-    );
-    assert_eq!(
-        outcomes[0]["tool_call_id"],
-        "call-autonomy-telemetry-bounded"
-    );
-    assert_eq!(outcome["tool_name"], "skills.install");
-    assert_eq!(outcome["status"], "ok");
+    assert_eq!(decisions.len(), 0);
+    assert_eq!(outcomes.len(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn turn_engine_keeps_external_skill_invoke_payloads_intact() {
+async fn turn_engine_rejects_legacy_external_skill_invoke_runtime_tool() {
     use crate::conversation::turn_engine::{ProviderTurn, TurnEngine, TurnResult};
     use loong_contracts::{ToolCoreOutcome, ToolCoreRequest, ToolPlaneError};
     use loong_kernel::CoreToolAdapter;
@@ -15165,37 +15000,16 @@ async fn turn_engine_keeps_external_skill_invoke_payloads_intact() {
         )
         .await;
     match result {
-        TurnResult::FinalText(text)
-        | TurnResult::StreamingText(text)
-        | TurnResult::StreamingDone(text) => {
-            let line = text.lines().next().expect("tool result line should exist");
-            let payload = line
-                .strip_prefix("[ok] ")
-                .expect("tool result line should keep [ok] prefix");
-            let envelope: Value =
-                serde_json::from_str(payload).expect("tool result envelope should be valid json");
-            assert_eq!(envelope["tool"], "skills.invoke");
-            assert_eq!(
-                envelope["payload_semantics"],
-                json!("external_skill_context")
-            );
-            assert_eq!(envelope["payload_truncated"], json!(false));
+        TurnResult::ToolDenied(failure) => {
+            assert_eq!(failure.code, "tool_not_found");
             assert!(
-                envelope["payload_chars"]
-                    .as_u64()
-                    .expect("payload chars should be present")
-                    > 64_000
+                failure.reason.contains("tool_not_found"),
+                "legacy skills.invoke should stay unavailable: {failure:?}"
             );
-            let payload_summary = envelope["payload_summary"]
-                .as_str()
-                .expect("payload summary should be text");
-            assert!(
-                payload_summary.contains("Follow the managed skill instruction."),
-                "payload summary should keep invoke instructions intact: {envelope:?}"
-            );
-            assert!(payload_summary.chars().count() > 64_000);
         }
-        other @ TurnResult::ToolDenied(_)
+        other @ TurnResult::FinalText(_)
+        | other @ TurnResult::StreamingText(_)
+        | other @ TurnResult::StreamingDone(_)
         | other @ TurnResult::NeedsApproval(_)
         | other @ TurnResult::ToolError(_)
         | other @ TurnResult::ProviderError(_) => panic!("unexpected result: {other:?}"),

@@ -509,8 +509,8 @@ async fn default_runtime_build_context_rehydrates_active_external_skills() {
         .expect("system prompt should be text");
 
     assert!(
-        system_content.contains("[active_external_skills]"),
-        "expected active external skills marker, got: {system_content}"
+        system_content.contains("[active_skills]"),
+        "expected active skills marker, got: {system_content}"
     );
     assert!(
         system_content.contains("release-guard"),

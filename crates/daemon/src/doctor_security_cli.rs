@@ -686,8 +686,7 @@ fn assess_external_skills_probe_failure(
     let cli = mvp::config::active_cli_command_name();
     let next_steps = vec![
         format!("Run `{cli} skills policy show --json` to confirm the effective runtime policy."),
-        "Repair the external_skills.policy tool path before relying on this audit result."
-            .to_owned(),
+        "Repair the skills.policy tool path before relying on this audit result.".to_owned(),
     ];
     build_finding(
         "external_skills",
@@ -1717,14 +1716,10 @@ mod tests {
 
     impl Drop for ExternalSkillsPolicyResetGuard {
         fn drop(&mut self) {
-            let request = kernel::ToolCoreRequest {
-                tool_name: "external_skills.policy".to_owned(),
-                payload: serde_json::json!({
-                    "action": "reset",
-                    "policy_update_approved": true,
-                }),
-            };
-            let _ = mvp::tools::execute_tool_core_with_config(request, &self.runtime_config);
+            let _ = mvp::tools::external_skills_operator_policy_reset_with_config(
+                true,
+                &self.runtime_config,
+            );
         }
     }
 
@@ -1874,19 +1869,19 @@ mod tests {
             mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(&config, Some(&path));
         let _reset_guard = ExternalSkillsPolicyResetGuard::new(&runtime_config);
 
-        let request = kernel::ToolCoreRequest {
-            tool_name: "external_skills.policy".to_owned(),
-            payload: serde_json::json!({
-                "action": "set",
-                "policy_update_approved": true,
-                "enabled": true,
-                "require_download_approval": false,
-                "allowed_domains": ["override.example"],
-                "blocked_domains": ["blocked.example"],
-            }),
-        };
-        mvp::tools::execute_tool_core_with_config(request, &runtime_config)
-            .expect("override external skills policy");
+        mvp::tools::external_skills_operator_policy_set_with_config(
+            Some(true),
+            Some(false),
+            Some(std::collections::BTreeSet::from([
+                "override.example".to_owned()
+            ])),
+            Some(std::collections::BTreeSet::from([
+                "blocked.example".to_owned()
+            ])),
+            true,
+            &runtime_config,
+        )
+        .expect("override external skills policy");
 
         let execution = build_doctor_security_execution(&path, &config)
             .await

@@ -255,16 +255,15 @@ pub(crate) fn rollback_managed_skill_activation_state(
                 staging_base_root.as_path(),
             )?;
             let staging_path = staging_root.display().to_string();
-            let install_request = ToolCoreRequest {
-                tool_name: "external_skills.install".to_owned(),
-                payload: json!({
-                    "path": staging_path,
-                    "skill_id": artifact_id,
-                    "replace": true,
-                }),
-            };
-            let install_result =
-                mvp::tools::execute_tool_core_with_config(install_request, &tool_runtime);
+            let install_result = mvp::tools::external_skills_operator_install_with_config(
+                Some(staging_path.as_str()),
+                None,
+                Some(artifact_id),
+                None,
+                false,
+                true,
+                &tool_runtime,
+            );
             let cleanup_result = fs::remove_dir_all(&staging_root);
             if let Err(error) = cleanup_result {
                 return Err(format!(
@@ -279,17 +278,10 @@ pub(crate) fn rollback_managed_skill_activation_state(
             })?;
         }
         None => {
-            let remove_request = ToolCoreRequest {
-                tool_name: "external_skills.remove".to_owned(),
-                payload: json!({
-                    "skill_id": artifact_id,
-                }),
-            };
-            mvp::tools::execute_tool_core_with_config(remove_request, &tool_runtime).map_err(
-                |error| {
+            mvp::tools::external_skills_operator_remove_with_config(artifact_id, &tool_runtime)
+                .map_err(|error| {
                     format!("remove managed skill `{artifact_id}` during rollback failed: {error}")
-                },
-            )?;
+                })?;
         }
     }
     Ok(())

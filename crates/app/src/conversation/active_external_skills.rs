@@ -7,7 +7,7 @@ use super::turn_shared::{
 use crate::tools::runtime_config::ToolRuntimeConfig;
 
 pub(crate) const ACTIVE_EXTERNAL_SKILLS_EVENT_KIND: &str = "active_external_skills_refreshed";
-const ACTIVE_EXTERNAL_SKILLS_MARKER: &str = "[active_external_skills]";
+const ACTIVE_EXTERNAL_SKILLS_MARKER: &str = "[active_skills]";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ActiveExternalSkill {
@@ -139,13 +139,13 @@ pub(crate) fn render_active_external_skills_section(
 
     let mut sections = vec![
         ACTIVE_EXTERNAL_SKILLS_MARKER.to_owned(),
-        "The following external skills are already active for this session. Continue following them until superseded or the session ends.".to_owned(),
+        "The following skills are already active for this session. Continue following them until superseded or the session ends.".to_owned(),
         "Do not re-activate a listed skill unless you need refreshed instructions.".to_owned(),
     ];
 
     for skill in &active_skills.skills {
         sections.push(format!(
-            "Loaded external skill:\n- id: {}\n- name: {}",
+            "Loaded skill:\n- id: {}\n- name: {}",
             skill.skill_id, skill.display_name
         ));
         if let Some(skill_root) = skill.skill_root.as_deref() {

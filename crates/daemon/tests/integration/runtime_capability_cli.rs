@@ -2816,10 +2816,7 @@ fn runtime_capability_activate_managed_skill_apply_installs_skill_and_is_idempot
         activate_report.outcome,
         loong_daemon::runtime_capability_cli::RuntimeCapabilityActivateOutcome::Activated
     );
-    assert_eq!(
-        activate_report.activation_surface,
-        "external_skills.install"
-    );
+    assert_eq!(activate_report.activation_surface, "skills.install");
     assert!(
         !activate_report.rollback_hints.is_empty(),
         "activation should surface rollback guidance"
@@ -3189,10 +3186,7 @@ fn runtime_capability_activate_managed_skill_dry_run_reports_install_target() {
         activate_report.outcome,
         loong_daemon::runtime_capability_cli::RuntimeCapabilityActivateOutcome::DryRun
     );
-    assert_eq!(
-        activate_report.activation_surface,
-        "external_skills.install"
-    );
+    assert_eq!(activate_report.activation_surface, "skills.install");
     assert!(
         activate_report
             .target_path

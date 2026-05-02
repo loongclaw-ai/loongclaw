@@ -238,8 +238,6 @@ pub(super) fn tool_search_entry_is_runtime_usable(
                 )
         }
         "bash.exec" => config.bash_exec.is_discoverable(),
-        "skills.fetch" | "skills.install" | "skills.inspect" | "skills.invoke" | "skills.list"
-        | "skills.remove" => config.external_skills.enabled,
         #[cfg(feature = "tool-file")]
         "memory_search" => memory_tools::memory_corpus_available(config),
         #[cfg(feature = "tool-file")]

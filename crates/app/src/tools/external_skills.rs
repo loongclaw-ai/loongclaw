@@ -22,8 +22,11 @@ use super::external_skills_scan::{
     ExternalSkillSecurityDecision, parse_external_skill_security_decision, scan_external_skill_tree,
 };
 use super::external_skills_sources::{
-    ExternalSkillSourceKind, ResolvedExternalSkillCandidate, default_external_skill_search_sources,
-    parse_external_skill_source_kind, resolve_external_skill_candidate,
+    ExternalSkillSourceKind, ResolvedExternalSkillCandidate, resolve_external_skill_candidate,
+};
+#[cfg(test)]
+use super::external_skills_sources::{
+    default_external_skill_search_sources, parse_external_skill_source_kind,
     search_query_for_external_skill_source,
 };
 use super::tool_search::{rank_searchable_entries, searchable_entry_from_manual_definition};
@@ -573,6 +576,7 @@ pub(super) fn execute_external_skills_fetch_tool_with_config(
     })
 }
 
+#[cfg(test)]
 pub(super) fn execute_external_skills_resolve_tool_with_config(
     request: ToolCoreRequest,
     config: &super::runtime_config::ToolRuntimeConfig,
@@ -597,6 +601,7 @@ pub(super) fn execute_external_skills_resolve_tool_with_config(
     })
 }
 
+#[cfg(test)]
 pub(super) fn execute_external_skills_source_search_tool_with_config(
     request: ToolCoreRequest,
     config: &super::runtime_config::ToolRuntimeConfig,
@@ -1045,6 +1050,7 @@ pub(super) fn execute_external_skills_install_tool_with_config(
     })
 }
 
+#[cfg(test)]
 pub(super) fn execute_external_skills_list_tool_with_config(
     request: ToolCoreRequest,
     config: &super::runtime_config::ToolRuntimeConfig,
@@ -1053,6 +1059,7 @@ pub(super) fn execute_external_skills_list_tool_with_config(
     execute_external_skills_list_for_audience(request.tool_name, config, SkillAudience::Model)
 }
 
+#[cfg(test)]
 pub(super) fn execute_external_skills_inspect_tool_with_config(
     request: ToolCoreRequest,
     config: &super::runtime_config::ToolRuntimeConfig,
@@ -1077,6 +1084,7 @@ pub(super) fn execute_external_skills_inspect_tool_with_config(
     )
 }
 
+#[cfg(test)]
 pub(super) fn execute_external_skills_invoke_tool_with_config(
     request: ToolCoreRequest,
     config: &super::runtime_config::ToolRuntimeConfig,
@@ -1144,6 +1152,40 @@ pub(crate) fn execute_external_skills_operator_list_tool_with_config(
     )
 }
 
+pub(crate) fn execute_external_skills_operator_search_with_config(
+    query: &str,
+    limit: usize,
+    config: &super::runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    execute_external_skills_search_tool_with_config(
+        ToolCoreRequest {
+            tool_name: "skills.search".to_owned(),
+            payload: json!({
+                "query": query,
+                "limit": limit,
+            }),
+        },
+        config,
+    )
+}
+
+pub(crate) fn execute_external_skills_operator_recommend_with_config(
+    query: &str,
+    limit: usize,
+    config: &super::runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    execute_external_skills_recommend_tool_with_config(
+        ToolCoreRequest {
+            tool_name: "skills.recommend".to_owned(),
+            payload: json!({
+                "query": query,
+                "limit": limit,
+            }),
+        },
+        config,
+    )
+}
+
 pub(crate) fn execute_external_skills_operator_inspect_tool_with_config(
     skill_id: &str,
     config: &super::runtime_config::ToolRuntimeConfig,
@@ -1153,6 +1195,154 @@ pub(crate) fn execute_external_skills_operator_inspect_tool_with_config(
         config,
         skill_id,
         SkillAudience::Operator,
+    )
+}
+
+pub(crate) fn execute_external_skills_operator_fetch_tool_with_config(
+    reference: &str,
+    save_as: Option<&str>,
+    max_bytes: Option<usize>,
+    approval_granted: bool,
+    config: &super::runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    let mut payload = Map::new();
+    payload.insert("url".to_owned(), json!(reference));
+    if let Some(save_as) = save_as {
+        payload.insert("save_as".to_owned(), json!(save_as));
+    }
+    if let Some(max_bytes) = max_bytes {
+        payload.insert("max_bytes".to_owned(), json!(max_bytes));
+    }
+    if approval_granted {
+        payload.insert("approval_granted".to_owned(), json!(true));
+    }
+
+    execute_external_skills_fetch_tool_with_config(
+        ToolCoreRequest {
+            tool_name: "skills.fetch".to_owned(),
+            payload: Value::Object(payload),
+        },
+        config,
+    )
+}
+
+pub(crate) fn execute_external_skills_operator_install_tool_with_config(
+    path: Option<&str>,
+    bundled_skill_id: Option<&str>,
+    skill_id: Option<&str>,
+    source_skill_id: Option<&str>,
+    approve_security_once: bool,
+    replace: bool,
+    config: &super::runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    let mut payload = Map::new();
+    if let Some(path) = path {
+        payload.insert("path".to_owned(), json!(path));
+    }
+    if let Some(bundled_skill_id) = bundled_skill_id {
+        payload.insert("bundled_skill_id".to_owned(), json!(bundled_skill_id));
+    }
+    if let Some(skill_id) = skill_id {
+        payload.insert("skill_id".to_owned(), json!(skill_id));
+    }
+    if let Some(source_skill_id) = source_skill_id {
+        payload.insert("source_skill_id".to_owned(), json!(source_skill_id));
+    }
+    if approve_security_once {
+        payload.insert("security_decision".to_owned(), json!("approve_once"));
+    }
+    payload.insert("replace".to_owned(), json!(replace));
+
+    execute_external_skills_install_tool_with_config(
+        ToolCoreRequest {
+            tool_name: "skills.install".to_owned(),
+            payload: Value::Object(payload),
+        },
+        config,
+    )
+}
+
+pub(crate) fn execute_external_skills_operator_remove_tool_with_config(
+    skill_id: &str,
+    config: &super::runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    execute_external_skills_remove_tool_with_config(
+        ToolCoreRequest {
+            tool_name: "skills.remove".to_owned(),
+            payload: json!({
+                "skill_id": skill_id,
+            }),
+        },
+        config,
+    )
+}
+
+pub(crate) fn execute_external_skills_operator_policy_get_with_config(
+    config: &super::runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    execute_external_skills_policy_tool_with_config(
+        ToolCoreRequest {
+            tool_name: "skills.policy".to_owned(),
+            payload: json!({
+                "action": "get",
+            }),
+        },
+        config,
+    )
+}
+
+pub(crate) fn execute_external_skills_operator_policy_set_with_config(
+    enabled: Option<bool>,
+    require_download_approval: Option<bool>,
+    allowed_domains: Option<BTreeSet<String>>,
+    blocked_domains: Option<BTreeSet<String>>,
+    policy_update_approved: bool,
+    config: &super::runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    let mut payload = Map::new();
+    payload.insert("action".to_owned(), json!("set"));
+    payload.insert(
+        "policy_update_approved".to_owned(),
+        json!(policy_update_approved),
+    );
+    if let Some(enabled) = enabled {
+        payload.insert("enabled".to_owned(), json!(enabled));
+    }
+    if let Some(require_download_approval) = require_download_approval {
+        payload.insert(
+            "require_download_approval".to_owned(),
+            json!(require_download_approval),
+        );
+    }
+    if let Some(allowed_domains) = allowed_domains {
+        payload.insert("allowed_domains".to_owned(), json!(allowed_domains));
+    }
+    if let Some(blocked_domains) = blocked_domains {
+        payload.insert("blocked_domains".to_owned(), json!(blocked_domains));
+    }
+
+    execute_external_skills_policy_tool_with_config(
+        ToolCoreRequest {
+            tool_name: "skills.policy".to_owned(),
+            payload: Value::Object(payload),
+        },
+        config,
+    )
+}
+
+pub(crate) fn execute_external_skills_operator_policy_reset_with_config(
+    policy_update_approved: bool,
+    config: &super::runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    execute_external_skills_policy_tool_with_config(
+        ToolCoreRequest {
+            tool_name: "skills.policy".to_owned(),
+            payload: json!({
+                "action": "reset",
+                "policy_update_approved": policy_update_approved,
+            }),
+        },
+        config,
     )
 }
 
@@ -1836,6 +2026,7 @@ fn parse_optional_string(
     Ok(Some(parsed.to_owned()))
 }
 
+#[cfg(test)]
 fn parse_required_query(payload: &Map<String, Value>, tool_name: &str) -> Result<String, String> {
     let query = payload
         .get("query")
@@ -1860,6 +2051,7 @@ fn parse_required_external_skill_reference(
     Ok(reference.to_owned())
 }
 
+#[cfg(test)]
 fn parse_optional_source_search_limit(
     payload: &Map<String, Value>,
     tool_name: &str,
@@ -1875,6 +2067,7 @@ fn parse_optional_source_search_limit(
     Ok(Some(parsed_value))
 }
 
+#[cfg(test)]
 fn parse_external_skill_search_sources(
     payload: &Map<String, Value>,
     tool_name: &str,
@@ -1914,6 +2107,7 @@ fn serialize_external_skill_candidate(
         .map_err(|error| format!("serialize external skill candidate failed: {error}"))
 }
 
+#[cfg(test)]
 fn normalize_external_skill_search_results(
     expected_source_kind: ExternalSkillSourceKind,
     source_priority: usize,
@@ -1968,6 +2162,7 @@ fn normalize_external_skill_search_results(
     Ok(normalized_results)
 }
 
+#[cfg(test)]
 fn search_result_ordering(left: &Value, right: &Value) -> Ordering {
     let left_source_priority = left
         .get("source_priority")
@@ -4096,7 +4291,10 @@ fn runtime_config_selector_enabled(
     }
 
     match normalized_selector.as_str() {
-        "skills.enabled" | "tools.skills.enabled" => Some(config.external_skills.enabled),
+        "skills.enabled"
+        | "tools.skills.enabled"
+        | "external_skills.enabled"
+        | "tools.external_skills.enabled" => Some(config.external_skills.enabled),
         "browser.enabled" | "tools.browser.enabled" => Some(config.browser.enabled),
         "browser_companion.enabled" | "tools.browser_companion.enabled" => {
             Some(config.browser_companion.enabled)
@@ -4166,6 +4364,7 @@ fn invocation_policy_id(policy: SkillInvocationPolicy) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn render_tool_restrictions_suffix(allowed_tools: &[String], blocked_tools: &[String]) -> String {
     let mut fragments = Vec::new();
     if !allowed_tools.is_empty() {
@@ -4215,8 +4414,8 @@ pub(super) fn model_skill_catalog_section_with_config(
     }
 
     let mut lines = vec![
-        "[available_external_skills]".to_owned(),
-        "The following external skills provide specialized instructions for specific tasks.".to_owned(),
+        "[available_skills]".to_owned(),
+        "The following skills provide specialized instructions for specific tasks.".to_owned(),
         "Only skills listed here are currently model-visible and runtime-eligible; manual-only or ineligible skills stay off this list.".to_owned(),
         "Use the read tool to load a listed skill's SKILL.md file when the task matches its description.".to_owned(),
         "Do not use tool.search or tool.invoke for routine model-driven skill loading; skills are read-first, not tool-discovery-first.".to_owned(),
@@ -4351,6 +4550,25 @@ pub(crate) fn model_visible_skill_context_payload_for_path(
         if normalized_skill_md_path == normalized_requested_path {
             return build_external_skill_context_payload(config, &skill).map(Some);
         }
+    }
+
+    Ok(None)
+}
+
+pub(crate) fn model_visible_skill_context_payload_for_skill_id(
+    config: &super::runtime_config::ToolRuntimeConfig,
+    skill_id: &str,
+) -> Result<Option<Value>, String> {
+    let normalized_skill_id = skill_id.trim();
+    if normalized_skill_id.is_empty() {
+        return Ok(None);
+    }
+
+    for skill in model_visible_skill_entries_with_config(config) {
+        if skill.skill_id != normalized_skill_id {
+            continue;
+        }
+        return build_external_skill_context_payload(config, &skill).map(Some);
     }
 
     Ok(None)

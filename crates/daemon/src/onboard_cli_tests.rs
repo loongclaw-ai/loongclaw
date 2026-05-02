@@ -1283,6 +1283,8 @@ fn resolve_web_search_credential_selection_skips_prompt_when_openai_native_searc
     config.provider.kind = mvp::config::ProviderKind::Openai;
     config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
     config.tools.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_TAVILY.to_owned();
+    let mut env = ScopedEnv::new();
+    clear_web_search_credential_envs(&mut env);
     let mut ui = TestOnboardUi::with_inputs(std::iter::empty::<&str>());
     let context = OnboardRuntimeContext::new_for_tests(80, None, std::iter::empty::<PathBuf>());
     let options = interactive_onboard_options();
@@ -1347,6 +1349,8 @@ fn apply_selected_web_search_credential_rejects_unknown_provider() {
 }
 
 fn clear_web_search_credential_envs(env: &mut ScopedEnv) {
+    env.remove("LOONG_WEB_SEARCH_PROVIDER");
+    env.remove("LOONGCLAW_WEB_SEARCH_PROVIDER");
     for descriptor in mvp::config::web_search_provider_descriptors() {
         if let Some(default_env) = descriptor.default_api_key_env {
             env.remove(default_env);
@@ -1419,7 +1423,8 @@ fn explicit_web_search_provider_override_prefers_cli_option_over_env() {
         skip_model_probe: false,
     };
     let mut env = ScopedEnv::new();
-    env.set("LOONGCLAW_WEB_SEARCH_PROVIDER", "tavily");
+    clear_web_search_credential_envs(&mut env);
+    env.set("LOONG_WEB_SEARCH_PROVIDER", "tavily");
 
     let recommendation = explicit_web_search_provider_override(&options)
         .expect("cli override should parse")
@@ -1473,6 +1478,8 @@ async fn resolve_web_search_provider_selection_skips_prompt_when_openai_native_s
     config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
     config.tools.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_TAVILY.to_owned();
 
+    let mut env = ScopedEnv::new();
+    clear_web_search_credential_envs(&mut env);
     let mut ui = TestOnboardUi::with_inputs(std::iter::empty::<&str>());
     let context = onboard_test_context();
     let selected = resolve_web_search_provider_selection(

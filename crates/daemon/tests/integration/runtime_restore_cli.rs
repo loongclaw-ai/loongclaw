@@ -161,13 +161,13 @@ fn install_demo_skill(root: &Path, config: &mvp::config::LoongConfig, config_pat
 
     let runtime_config =
         mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, Some(config_path));
-    mvp::tools::execute_tool_core_with_config(
-        kernel::ToolCoreRequest {
-            tool_name: "external_skills.install".to_owned(),
-            payload: serde_json::json!({
-                "path": "source/demo-skill"
-            }),
-        },
+    mvp::tools::external_skills_operator_install_with_config(
+        Some("source/demo-skill"),
+        None,
+        None,
+        None,
+        false,
+        false,
         &runtime_config,
     )
     .expect("install demo skill");

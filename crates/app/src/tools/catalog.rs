@@ -38,14 +38,7 @@ use browser_definition_support::{
 };
 #[path = "catalog_external_skills_definition_support.rs"]
 mod external_skills_definition_support;
-use external_skills_definition_support::{
-    config_import_definition, external_skills_fetch_definition, external_skills_inspect_definition,
-    external_skills_install_definition, external_skills_invoke_definition,
-    external_skills_list_definition, external_skills_policy_definition,
-    external_skills_recommend_definition, external_skills_remove_definition,
-    external_skills_resolve_definition, external_skills_search_definition,
-    external_skills_source_search_definition, provider_switch_definition,
-};
+use external_skills_definition_support::{config_import_definition, provider_switch_definition};
 #[path = "catalog_io_definition_support.rs"]
 mod io_definition_support;
 #[cfg(feature = "tool-websearch")]
@@ -620,12 +613,6 @@ fn declared_concurrency_class(tool_name: &str) -> ToolConcurrencyClass {
         "read"
         | "web"
         | "memory"
-        | "skills.resolve"
-        | "skills.search"
-        | "skills.recommend"
-        | "skills.source_search"
-        | "skills.inspect"
-        | "skills.list"
         | "approval_request_status"
         | "approval_requests_list"
         | "session_artifacts"
@@ -660,11 +647,6 @@ fn declared_concurrency_class(tool_name: &str) -> ToolConcurrencyClass {
         | "bash"
         | "browser"
         | "config.import"
-        | "skills.fetch"
-        | "skills.install"
-        | "skills.invoke"
-        | "skills.policy"
-        | "skills.remove"
         | "provider.switch"
         | "approval_request_resolve"
         | "delegate"
@@ -826,160 +808,6 @@ fn build_tool_catalog() -> ToolCatalog {
             policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
             concurrency_class: ToolConcurrencyClass::Unknown,
             provider_definition_builder: config_import_definition,
-        },
-        ToolDescriptor {
-            name: "skills.fetch",
-            provider_name: "skills_fetch",
-            aliases: &["skills.fetch"],
-            description: "Download external skills artifacts with domain policy and approval guards",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::CapabilityFetch,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_fetch_definition,
-        },
-        ToolDescriptor {
-            name: "skills.resolve",
-            provider_name: "skills_resolve",
-            aliases: &["skills.resolve"],
-            description: "Normalize an external skill reference into a source-aware candidate",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_resolve_definition,
-        },
-        ToolDescriptor {
-            name: "skills.search",
-            provider_name: "skills_search",
-            aliases: &["skills.search"],
-            description: "Search the resolved external-skills inventory for active and shadowed matches",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_search_definition,
-        },
-        ToolDescriptor {
-            name: "skills.recommend",
-            provider_name: "skills_recommend",
-            aliases: &["skills.recommend"],
-            description: "Recommend the best-fit resolved external skills for an operator goal",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_recommend_definition,
-        },
-        ToolDescriptor {
-            name: "skills.source_search",
-            provider_name: "skills_source_search",
-            aliases: &["skills.source_search"],
-            description: "Search preferred external skill ecosystems and return normalized source-aware candidates",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_source_search_definition,
-        },
-        ToolDescriptor {
-            name: "skills.inspect",
-            provider_name: "skills_inspect",
-            aliases: &["skills.inspect"],
-            description: "Read metadata for a resolved external skill across managed, user, and project scopes",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_inspect_definition,
-        },
-        ToolDescriptor {
-            name: "skills.install",
-            provider_name: "skills_install",
-            aliases: &["skills.install"],
-            description: "Install a managed external skill from a local directory or archive",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::CapabilityInstall,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_install_definition,
-        },
-        ToolDescriptor {
-            name: "skills.invoke",
-            provider_name: "skills_invoke",
-            aliases: &["skills.invoke"],
-            description: "Load a resolved external skill into the conversation loop",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::CapabilityLoad,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_invoke_definition,
-        },
-        ToolDescriptor {
-            name: "skills.list",
-            provider_name: "skills_list",
-            aliases: &["skills.list"],
-            description: "List resolved external skills across managed, user, and project scopes",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_list_definition,
-        },
-        ToolDescriptor {
-            name: "skills.policy",
-            provider_name: "skills_policy",
-            aliases: &["skills.policy"],
-            description: "Read/update external skills domain allow/block policy at runtime",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::Always,
-            capability_action_class: CapabilityActionClass::PolicyMutation,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_policy_definition,
-        },
-        ToolDescriptor {
-            name: "skills.remove",
-            provider_name: "skills_remove",
-            aliases: &["skills.remove"],
-            description: "Remove an installed external skill from the managed runtime",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: ELEVATED_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_remove_definition,
         },
         ToolDescriptor {
             name: "provider.switch",
