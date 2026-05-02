@@ -2414,6 +2414,54 @@ fn sync_runtime_extension_command_palette(_app: &mut App, _runtime: &CliTurnRunt
 fn build_runtime_extension_command_palette_entries(
     runtime: &CliTurnRuntime,
 ) -> Vec<DynamicCommandEntry> {
+    collect_ready_trusted_tui_surface_extensions(runtime, "command_palette")
+        .into_iter()
+        .map(|entry| DynamicCommandEntry {
+            command: format!("/extensions {}", entry.plugin_id),
+            description: format!(
+                "inspect trusted command palette extension · {} · {}",
+                entry.source_language, entry.bridge_kind
+            ),
+        })
+        .collect()
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn build_runtime_extension_settings_entries(runtime: &CliTurnRuntime) -> Vec<SettingsEntry> {
+    collect_ready_trusted_tui_surface_extensions(runtime, "settings_flow")
+        .into_iter()
+        .map(|entry| SettingsEntry {
+            label: entry.plugin_id.clone(),
+            category_tag: "[Extension]".to_owned(),
+            status_tag: Some("settings".to_owned()),
+            description: format!(
+                "inspect trusted settings extension · {} · {}",
+                entry.source_language, entry.bridge_kind
+            ),
+            action: CommandAction::RunCommandOwned(format!("/extensions {}", entry.plugin_id)),
+            selectable: true,
+        })
+        .collect()
+}
+
+#[cfg(not(feature = "channel-plugin-bridge"))]
+fn build_runtime_extension_settings_entries(_runtime: &CliTurnRuntime) -> Vec<SettingsEntry> {
+    Vec::new()
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+#[derive(Debug, Clone)]
+struct TrustedTuiSurfaceExtensionEntry {
+    plugin_id: String,
+    source_language: String,
+    bridge_kind: String,
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn collect_ready_trusted_tui_surface_extensions(
+    runtime: &CliTurnRuntime,
+    requested_surface: &str,
+) -> Vec<TrustedTuiSurfaceExtensionEntry> {
     if !runtime.config.runtime_plugins.enabled {
         return Vec::new();
     }
@@ -2455,21 +2503,19 @@ fn build_runtime_extension_command_palette_entries(
             || extension_trust_lane != "trusted_host"
             || !declared_tui_surfaces
                 .iter()
-                .any(|surface| surface == "command_palette")
+                .any(|surface| surface == requested_surface)
         {
             continue;
         }
 
-        entries.push(DynamicCommandEntry {
-            command: format!("/extensions {}", plugin.plugin_id),
-            description: format!(
-                "inspect trusted command palette extension · {} · {}",
-                plugin.runtime.source_language,
-                plugin.runtime.bridge_kind.as_str()
-            ),
+        entries.push(TrustedTuiSurfaceExtensionEntry {
+            plugin_id: plugin.plugin_id.clone(),
+            source_language: plugin.runtime.source_language.clone(),
+            bridge_kind: plugin.runtime.bridge_kind.as_str().to_owned(),
         });
     }
-    entries.sort_by(|left, right| left.command.cmp(&right.command));
+
+    entries.sort_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
     entries
 }
 
@@ -3523,6 +3569,7 @@ fn build_settings_palette_entries(
             action: CommandAction::OpenSettings(SettingsSurfaceFocus::Overview),
             selectable: true,
         });
+        entries.extend(build_runtime_extension_settings_entries(runtime));
         let mut targets = bundled_preinstall_targets().to_vec();
         targets.sort_by_key(|target| (usize::from(!target.recommended), target.display_name));
         for target in targets {
@@ -11073,6 +11120,83 @@ description: "actual description"
 
         assert!(!entries.iter().any(|entry| entry.label == "MCP overview"));
         assert!(!entries.iter().any(|entry| entry.label == "Skills overview"));
+    }
+
+    #[test]
+    fn workspace_settings_surface_runtime_settings_flow_extensions() {
+        let root = std::env::temp_dir().join(format!(
+            "loong-settings-extension-surface-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("mkdir extension root");
+        let mut manifest = sample_runtime_plugin_manifest("weather-extension");
+        manifest.metadata.insert(
+            "loong_extension_tui_surfaces_json".to_owned(),
+            "[\"settings_flow\"]".to_owned(),
+        );
+        write_runtime_plugin_manifest(root.as_path(), "weather-extension", &manifest);
+
+        let mut config = LoongConfig::default();
+        config.runtime_plugins.enabled = true;
+        config.runtime_plugins.roots = vec![root.display().to_string()];
+        let runtime = test_runtime_with_config(root.join("loong.toml"), config);
+
+        let entries =
+            super::build_settings_palette_entries(&runtime, SettingsSurfaceFocus::Workspace, 140);
+        let extension_entry = entries
+            .iter()
+            .find(|entry| entry.label == "weather-extension")
+            .expect("settings extension entry");
+
+        assert_eq!(extension_entry.category_tag, "[Extension]");
+        assert_eq!(extension_entry.status_tag.as_deref(), Some("settings"));
+        assert!(
+            extension_entry
+                .description
+                .contains("trusted settings extension")
+        );
+        assert!(matches!(
+            &extension_entry.action,
+            CommandAction::RunCommandOwned(command)
+                if command == "/extensions weather-extension"
+        ));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_settings_surface_ignores_non_settings_extensions() {
+        let root = std::env::temp_dir().join(format!(
+            "loong-settings-extension-ignore-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("mkdir extension root");
+        write_runtime_plugin_manifest(
+            root.as_path(),
+            "weather-extension",
+            &sample_runtime_plugin_manifest("weather-extension"),
+        );
+
+        let mut config = LoongConfig::default();
+        config.runtime_plugins.enabled = true;
+        config.runtime_plugins.roots = vec![root.display().to_string()];
+        let runtime = test_runtime_with_config(root.join("loong.toml"), config);
+
+        let entries =
+            super::build_settings_palette_entries(&runtime, SettingsSurfaceFocus::Workspace, 140);
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.label == "weather-extension")
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
