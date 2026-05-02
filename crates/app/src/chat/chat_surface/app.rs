@@ -5655,11 +5655,51 @@ fn render_extension_detail_lines_with_width(
     let declared_host_hooks = translation
         .map(|entry| metadata_string_list(&entry.metadata, "loong_extension_host_hooks_json"))
         .unwrap_or_default();
+    let allow_command_hint = runtime_probe_allow_command_hint(&entry.source_language);
 
     let activation_status = entry
         .activation_status
         .map(|status| status.as_str().to_owned())
         .unwrap_or_else(|| "unknown".to_owned());
+
+    let mut footer_lines = vec![
+        format!(
+            "Inspect full package truth with `loong plugins inventory --root \"{}\"`.",
+            entry.package_root
+        ),
+        format!(
+            "Validate authoring readiness with `loong plugins doctor --root \"{}\" --profile sdk-release`.",
+            entry.package_root
+        ),
+    ];
+    footer_lines.extend(declared_host_hooks.iter().map(|hook| {
+        format!(
+            "Probe host hook `{hook}` with `loong plugins invoke-host-hook --root \"{}\" --plugin-id \"{}\" --hook \"{}\" --payload '{}' --allow-command {}`.",
+            entry.package_root,
+            entry.plugin_id,
+            hook,
+            sample_host_hook_payload(hook),
+            allow_command_hint,
+        )
+    }));
+    footer_lines.extend(declared_tui_surfaces.iter().map(|surface| {
+        format!(
+            "Probe TUI surface `{surface}` with `loong plugins invoke-tui-surface --root \"{}\" --plugin-id \"{}\" --tui-surface \"{}\" --payload '{}' --allow-command {}`.",
+            entry.package_root,
+            entry.plugin_id,
+            surface,
+            sample_tui_surface_payload(surface),
+            allow_command_hint,
+        )
+    }));
+    if declared_host_hooks.is_empty() && declared_tui_surfaces.is_empty() {
+        footer_lines.push(format!(
+            "No trusted host probes declared. Use `loong plugins invoke-extension --root \"{}\" --plugin-id \"{}\" --method extension/event --payload '{{}}' --allow-command {}` to smoke-test the runtime bridge directly.",
+            entry.package_root,
+            entry.plugin_id,
+            allow_command_hint,
+        ));
+    }
 
     let message_spec = TuiMessageSpec {
         role: "extensions".to_owned(),
@@ -5708,16 +5748,7 @@ fn render_extension_detail_lines_with_width(
                 ],
             },
         ],
-        footer_lines: vec![
-            format!(
-                "Inspect full package truth with `loong plugins inventory --root \"{}\"`.",
-                entry.package_root
-            ),
-            format!(
-                "Validate authoring readiness with `loong plugins doctor --root \"{}\" --profile sdk-release`.",
-                entry.package_root
-            ),
-        ],
+        footer_lines,
     };
 
     super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
@@ -5737,6 +5768,40 @@ fn metadata_string_list(
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .collect()
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn runtime_probe_allow_command_hint(source_language: &str) -> &'static str {
+    match source_language.trim().to_ascii_lowercase().as_str() {
+        "javascript" | "typescript" => "node",
+        "python" => "python3",
+        "go" => "go",
+        "rust" => "cargo",
+        _ => "<allow-command>",
+    }
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn sample_host_hook_payload(hook: &str) -> &'static str {
+    match hook.trim() {
+        "session_start" => "{\"session_id\":\"demo-session\"}",
+        "session_shutdown" => "{\"session_id\":\"demo-session\",\"reason\":\"explicit_close\"}",
+        "turn_start" => "{\"turn_id\":\"demo-turn\"}",
+        "turn_end" => "{\"turn_id\":\"demo-turn\",\"status\":\"ok\"}",
+        "message_start" => "{\"message_id\":\"demo-message\"}",
+        "message_end" => "{\"message_id\":\"demo-message\"}",
+        _ => "{}",
+    }
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn sample_tui_surface_payload(surface: &str) -> &'static str {
+    match surface.trim() {
+        "command_palette" => "{\"query\":\":ext\"}",
+        "settings_flow" => "{\"section\":\"general\"}",
+        "startup_onboarding" => "{\"step\":\"welcome\"}",
+        _ => "{}",
+    }
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -8188,6 +8253,12 @@ mod tests {
         assert!(rendered.contains("command_palette"));
         assert!(rendered.contains("turn_start"));
         assert!(rendered.contains("package root"));
+        assert!(rendered.contains("invoke-host-hook"));
+        assert!(rendered.contains("--hook \"turn_start\""));
+        assert!(rendered.contains("{\"turn_id\":\"demo-turn\"}"));
+        assert!(rendered.contains("invoke-tui-surface"));
+        assert!(rendered.contains("--tui-surface \"command_palette\""));
+        assert!(rendered.contains("{\"query\":\":ext\"}"));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -8216,6 +8287,43 @@ mod tests {
         assert!(rendered.contains("No runtime extension named"));
         assert!(rendered.contains("missing-extension"));
         assert!(rendered.contains("Use `/extensions` to browse"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extensions_command_detail_falls_back_to_runtime_bridge_when_no_probes_declared() {
+        let root = std::env::temp_dir().join(format!(
+            "loong-chat-extension-no-probes-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("mkdir extension root");
+        let mut manifest = sample_runtime_plugin_manifest("bridge-only-extension");
+        manifest.metadata.remove("loong_extension_host_hooks_json");
+        manifest
+            .metadata
+            .remove("loong_extension_tui_surfaces_json");
+        write_runtime_plugin_manifest(root.as_path(), "bridge-only-extension", &manifest);
+
+        let mut config = LoongConfig::default();
+        config.runtime_plugins.enabled = true;
+        config.runtime_plugins.roots = vec![root.display().to_string()];
+
+        let runtime = test_runtime_with_config(root.join("loong.toml"), config);
+        let rendered = super::render_extensions_command_lines_with_width(
+            &runtime,
+            100,
+            "bridge-only-extension",
+        )
+        .expect("render extension detail without probes")
+        .join("\n");
+
+        assert!(rendered.contains("No trusted host probes declared"));
+        assert!(rendered.contains("invoke-extension"));
+        assert!(rendered.contains("--method extension/event"));
 
         let _ = fs::remove_dir_all(root);
     }
