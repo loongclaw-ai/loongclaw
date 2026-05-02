@@ -152,6 +152,7 @@ pub(crate) fn initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx(
 
     Ok(CliTurnRuntime {
         resolved_path,
+        config_present: true,
         config,
         session_id,
         session_address,

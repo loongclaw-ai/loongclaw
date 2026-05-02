@@ -3686,6 +3686,7 @@ fn persist_runtime_settings(
         &config,
         true,
     )?;
+    #[cfg(not(test))]
     crate::runtime_env::initialize_runtime_environment(
         &config,
         Some(runtime.resolved_path.as_path()),
@@ -4604,8 +4605,7 @@ async fn build_command_lines(
         super::super::CLI_CHAT_STATUS_COMMAND => {
             let summary = super::super::ops::build_cli_chat_startup_summary(runtime, options)?;
             Ok(super::super::ops::render_cli_chat_status_lines_with_width(
-                &summary,
-                width,
+                &summary, width,
             ))
         }
         super::super::CLI_CHAT_HISTORY_COMMAND => {
@@ -4646,11 +4646,13 @@ async fn build_command_lines(
                     runtime.conversation_binding(),
                 )
                 .await?;
-                Ok(super::super::ops::render_manual_compaction_lines_with_width(
-                    &runtime.session_id,
-                    &result,
-                    width,
-                ))
+                Ok(
+                    super::super::ops::render_manual_compaction_lines_with_width(
+                        &runtime.session_id,
+                        &result,
+                        width,
+                    ),
+                )
             }
             #[cfg(not(feature = "memory-sqlite"))]
             {

@@ -15,15 +15,13 @@ use crate::acp::{
     AcpConversationTurnOptions, AcpTurnEventSink, AcpTurnProvenance, JsonlAcpTurnEventSink,
 };
 
-mod boot;
+mod chat_surface;
 mod checkpoint;
 mod checkpoint_labels;
 #[cfg(test)]
 mod checkpoint_text;
-mod chat_surface;
 mod cli_input;
 mod cli_render;
-mod commands;
 mod control_plane;
 mod deck;
 mod fast;
@@ -38,19 +36,16 @@ mod render;
 mod report;
 mod safe;
 mod safe_text;
-mod session;
 mod startup_state;
 mod startup_view;
 mod status_view;
 
-use self::boot::*;
 use self::checkpoint::*;
 use self::checkpoint_labels::*;
 #[cfg(test)]
 use self::checkpoint_text::*;
 use self::cli_input::ConcurrentCliInputReader;
 use self::cli_render::*;
-use self::commands::*;
 use self::fast::*;
 use self::live_runtime::*;
 #[cfg(test)]
@@ -104,11 +99,6 @@ use self::safe_text::*;
 #[cfg(test)]
 use crate::conversation::DefaultConversationRuntime;
 
-pub(crate) use self::boot::{
-    initialize_cli_turn_runtime, initialize_cli_turn_runtime_with_loaded_config,
-    initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx,
-};
-
 use super::config::{self, ConversationConfig, LoongConfig};
 #[cfg(test)]
 use super::conversation::ContextCompactionReport;
@@ -156,6 +146,7 @@ const CLI_CHAT_STATUS_COMMAND: &str = "/status";
 const CLI_CHAT_HISTORY_COMMAND: &str = "/history";
 const CLI_CHAT_MISSION_COMMAND: &str = "/mission";
 const CLI_CHAT_REVIEW_COMMAND: &str = "/review";
+const CLI_CHAT_WORKERS_COMMAND: &str = "/workers";
 const CLI_CHAT_SESSIONS_COMMAND: &str = "/sessions";
 const CLI_CHAT_TURN_CHECKPOINT_REPAIR_COMMAND: &str = "/turn_checkpoint_repair";
 const CLI_CHAT_TURN_CHECKPOINT_REPAIR_COMMAND_ALIAS: &str = "/turn-checkpoint-repair";
@@ -1250,5 +1241,4 @@ fn render_turn_checkpoint_startup_health_lines_with_width(
 }
 
 #[cfg(test)]
-<<<<<<< HEAD
 mod tests;

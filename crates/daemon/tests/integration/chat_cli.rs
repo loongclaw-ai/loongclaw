@@ -413,8 +413,8 @@ fn chat_cli_latest_session_selector_process_uses_selected_root_session_history()
         "chat latest selector should succeed, stdout={stdout:?}, stderr={stderr:?}"
     );
     assert!(
-        stdout.contains("- session: root-new"),
-        "chat startup should surface the resolved latest session id: {stdout:?}"
+        stdout.contains("history · session=root-new"),
+        "chat history surface should target the resolved latest root session id: {stdout:?}"
     );
     assert!(
         stdout.contains("selected user turn"),

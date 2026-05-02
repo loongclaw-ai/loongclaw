@@ -54,6 +54,7 @@ pub(super) fn build_cli_chat_startup_screen_spec(summary: &CliChatStartupSummary
     if let Some(workspace_root) = summary.workspace_root.as_deref() {
         snapshot_lines.push(format!("- workspace: {workspace_root}"));
     }
+    snapshot_lines.push(format!("- session: {}", summary.session_id));
     snapshot_lines.push(format!("- provider: {}", summary.provider_label));
     snapshot_lines.push(format!("- config: {}", summary.config_path));
     snapshot_lines.push(format!("- memory: {}", summary.memory_label));
@@ -117,7 +118,7 @@ pub(super) fn build_cli_chat_startup_screen_spec(summary: &CliChatStartupSummary
             "Enter send · ? help · : or / command menu".to_owned(),
         ],
     };
-    let sections = vec![
+    let mut sections = vec![
         snapshot_section,
         fast_lane_section,
         start_here_section,
@@ -125,6 +126,29 @@ pub(super) fn build_cli_chat_startup_screen_spec(summary: &CliChatStartupSummary
         narrative_section,
         compose_section,
     ];
+
+    let show_acp_overrides = summary.explicit_acp_request
+        || summary.event_stream_enabled
+        || !summary.bootstrap_mcp_servers.is_empty()
+        || summary.working_directory.is_some();
+    if show_acp_overrides {
+        let bootstrap_label = if summary.bootstrap_mcp_servers.is_empty() {
+            "-".to_owned()
+        } else {
+            summary.bootstrap_mcp_servers.join(",")
+        };
+        let working_directory = summary.working_directory.as_deref().unwrap_or("-");
+        sections.push(TuiSectionSpec::Callout {
+            tone: TuiCalloutTone::Info,
+            title: Some("acp overrides".to_owned()),
+            lines: vec![
+                format!("explicit request: {}", summary.explicit_acp_request),
+                format!("event stream: {}", summary.event_stream_enabled),
+                format!("bootstrap MCP servers: {bootstrap_label}"),
+                format!("working directory: {working_directory}"),
+            ],
+        });
+    }
 
     TuiScreenSpec {
         header_style: TuiHeaderStyle::Brand,

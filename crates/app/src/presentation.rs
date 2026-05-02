@@ -742,7 +742,9 @@ mod tests {
         let lines = render_compact_brand_header(22, &build, Some("choose credential env"));
 
         assert!(
-            lines.iter().all(|line| line.text.len() <= 22),
+            lines
+                .iter()
+                .all(|line| display_width(line.text.as_str()) <= 22),
             "compact brand header should respect narrow widths instead of forcing the brand and version onto one overflowing line: {lines:#?}"
         );
         assert_eq!(lines[0].text, "LOONG");

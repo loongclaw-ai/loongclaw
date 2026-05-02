@@ -3520,7 +3520,7 @@ fn format_backup_timestamp_at_matches_existing_filename_shape() {
 
 #[test]
 fn resolve_backup_path_at_uses_formatted_timestamp() {
-    let original = Path::new("/tmp/loongclaw.toml");
+    let original = Path::new("/tmp/loong.toml");
     let timestamp = time::macros::datetime!(2026-03-14 01:23:45 +08:00);
 
     let path = match resolve_backup_path_at(original, timestamp) {

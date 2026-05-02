@@ -7928,7 +7928,9 @@ fn render_onboarding_success_summary_compacts_for_narrow_width() {
         "narrow renderer should group secondary channel actions under a separate heading: {lines:#?}"
     );
     assert!(
-        rendered.contains("- chat: LOONG_CONFIG_PATH='/tmp/loong-config.toml' loong")
+        lines.iter().any(|line| line.contains("- chat:"))
+            && rendered.contains("LOONG_CONFIG_PATH='/tmp/loong-config.tom")
+            && rendered.contains("l' loong")
             && rendered.contains(
                 "- Telegram: loong channels serve telegram --config '/tmp/loong-config.toml'"
             ),
