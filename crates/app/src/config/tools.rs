@@ -539,6 +539,12 @@ pub struct RuntimePluginsConfig {
     pub allowed_process_commands: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimePluginRootSelection {
+    pub roots: Vec<PathBuf>,
+    pub source: &'static str,
+}
+
 impl Default for ToolConfig {
     fn default() -> Self {
         Self {
@@ -1059,6 +1065,10 @@ impl ExternalSkillsConfig {
 
 impl RuntimePluginsConfig {
     pub fn resolved_roots(&self) -> Vec<PathBuf> {
+        self.resolved_root_selection().roots
+    }
+
+    pub fn resolved_root_selection(&self) -> RuntimePluginRootSelection {
         let explicit_roots = self
             .roots
             .iter()
@@ -1068,10 +1078,24 @@ impl RuntimePluginsConfig {
             .map(expand_path)
             .collect::<Vec<_>>();
         if !explicit_roots.is_empty() {
-            return explicit_roots;
+            return RuntimePluginRootSelection {
+                roots: explicit_roots,
+                source: "configured",
+            };
         }
 
-        default_runtime_plugin_discovery_roots()
+        let auto_discovered_roots = default_runtime_plugin_discovery_roots();
+        if !auto_discovered_roots.is_empty() {
+            return RuntimePluginRootSelection {
+                roots: auto_discovered_roots,
+                source: "auto_discovered",
+            };
+        }
+
+        RuntimePluginRootSelection {
+            roots: Vec::new(),
+            source: "none",
+        }
     }
 
     pub fn resolved_supported_bridges(&self) -> Result<Vec<PluginBridgeKind>, String> {
@@ -2260,6 +2284,7 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
         let expected_root = home.path().join("runtime-plugins");
 
         assert_eq!(roots, vec![expected_root]);
+        assert_eq!(config.resolved_root_selection().source, "configured");
     }
 
     #[test]
@@ -2279,6 +2304,7 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
         let roots = config.resolved_roots();
 
         assert_eq!(roots, vec![PathBuf::from("runtime-plugins")]);
+        assert_eq!(config.resolved_root_selection().source, "configured");
     }
 
     #[test]
@@ -2313,6 +2339,7 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
         ];
 
         assert_eq!(roots, expected_roots);
+        assert_eq!(config.resolved_root_selection().source, "auto_discovered");
     }
 
     #[test]

@@ -428,9 +428,10 @@ fn render_tool_surface_summary(surfaces: &[crate::mvp::tools::ToolSurfaceState])
 
 fn render_runtime_plugins_lines(snapshot: &RuntimeSnapshotRuntimePluginsState) -> Vec<String> {
     let mut lines = vec![format!(
-        "runtime_plugins inventory_status={} enabled={} readiness_evaluation={} supported_bridges={} supported_adapter_families={} roots={} scanned_roots={} scanned_files={} discovered={} translated={} ready={} setup_incomplete={} blocked={}",
+        "runtime_plugins inventory_status={} enabled={} roots_source={} readiness_evaluation={} supported_bridges={} supported_adapter_families={} roots={} scanned_roots={} scanned_files={} discovered={} translated={} ready={} setup_incomplete={} blocked={}",
         snapshot.inventory_status.as_str(),
         snapshot.enabled,
+        snapshot.roots_source,
         snapshot.readiness_evaluation,
         crate::render_line_safe_text_values(
             snapshot.supported_bridges.iter().map(String::as_str),
@@ -767,6 +768,7 @@ pub(crate) fn runtime_snapshot_runtime_plugins_json(
 ) -> Value {
     json!({
         "enabled": snapshot.enabled,
+        "roots_source": snapshot.roots_source,
         "roots": snapshot.roots,
         "supported_bridges": snapshot.supported_bridges,
         "supported_adapter_families": snapshot.supported_adapter_families,

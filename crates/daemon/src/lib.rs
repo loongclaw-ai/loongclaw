@@ -1767,6 +1767,7 @@ pub struct RuntimeSnapshotExternalSkillsState {
 #[derive(Debug, Clone)]
 pub struct RuntimeSnapshotRuntimePluginsState {
     pub enabled: bool,
+    pub roots_source: String,
     pub roots: Vec<String>,
     pub supported_bridges: Vec<String>,
     pub supported_adapter_families: Vec<String>,
@@ -2251,9 +2252,12 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
         .runtime_plugins
         .readiness_evaluation_label()
         .to_owned();
+    let root_selection = config.runtime_plugins.resolved_root_selection();
+    let roots_source = root_selection.source.to_owned();
     let roots = config
         .runtime_plugins
-        .resolved_roots()
+        .resolved_root_selection()
+        .roots
         .into_iter()
         .map(|root| root.display().to_string())
         .collect::<Vec<_>>();
@@ -2271,6 +2275,7 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
     if !config.runtime_plugins.enabled {
         return RuntimeSnapshotRuntimePluginsState {
             enabled: false,
+            roots_source,
             roots,
             supported_bridges,
             supported_adapter_families,
@@ -2288,10 +2293,11 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
         };
     }
 
-    let resolved_roots = config.runtime_plugins.resolved_roots();
+    let resolved_roots = root_selection.roots;
     if resolved_roots.is_empty() {
         return RuntimeSnapshotRuntimePluginsState {
             enabled: true,
+            roots_source,
             roots,
             supported_bridges,
             supported_adapter_families,
@@ -2320,6 +2326,7 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
             Err(error) => {
                 return RuntimeSnapshotRuntimePluginsState {
                     enabled: true,
+                    roots_source,
                     roots,
                     supported_bridges,
                     supported_adapter_families,
@@ -2348,6 +2355,7 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
         Err(error) => {
             return RuntimeSnapshotRuntimePluginsState {
                 enabled: true,
+                roots_source,
                 roots,
                 supported_bridges,
                 supported_adapter_families,
@@ -2479,6 +2487,7 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
 
     RuntimeSnapshotRuntimePluginsState {
         enabled: true,
+        roots_source,
         roots,
         supported_bridges,
         supported_adapter_families,

@@ -6483,6 +6483,10 @@ mod tests {
             serde_json::json!("ok")
         );
         assert_eq!(
+            inventory_check["runtime_plugins"]["roots_source"],
+            serde_json::json!("configured")
+        );
+        assert_eq!(
             inventory_check["runtime_plugins"]["plugins"][0]["plugin_id"],
             serde_json::json!("trusted-host-extension")
         );

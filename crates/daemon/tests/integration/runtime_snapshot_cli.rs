@@ -376,6 +376,7 @@ fn runtime_snapshot_json_payload_includes_provider_tool_and_external_skill_inven
         "capability snapshot digest should be populated"
     );
     assert_eq!(payload["runtime_plugins"]["enabled"], true);
+    assert_eq!(payload["runtime_plugins"]["roots_source"], "configured");
     assert_eq!(payload["runtime_plugins"]["discovered_plugin_count"], 1);
     assert_eq!(
         payload["runtime_plugins"]["setup_incomplete_plugin_count"],
@@ -509,6 +510,7 @@ fn runtime_snapshot_json_payload_projects_trusted_host_extension_declarations() 
         plugin["native_extension"]["metadata_issues"],
         serde_json::json!([])
     );
+    assert_eq!(payload["runtime_plugins"]["roots_source"], "configured");
     let validate_command = plugin["authoring_guidance"]["validate_command"]
         .as_str()
         .expect("authoring validate command");
@@ -778,6 +780,7 @@ fn runtime_snapshot_text_highlights_experiment_relevant_sections() {
     assert!(rendered.contains("query_search_credential_ready=true"));
     assert!(rendered.contains("tools visible_count="));
     assert!(rendered.contains("runtime_plugins inventory_status=ok enabled=true"));
+    assert!(rendered.contains("roots_source=configured"));
     assert!(rendered.contains("readiness_evaluation=default_bridge_support_matrix"));
     assert!(rendered.contains("demo-search-plugin"));
     assert!(rendered.contains("source_path="));

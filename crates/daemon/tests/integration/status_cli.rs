@@ -542,6 +542,10 @@ fn doctor_cli_json_projects_structured_runtime_plugin_truth() {
         serde_json::json!("ok")
     );
     assert_eq!(
+        runtime_plugins_check["runtime_plugins"]["roots_source"],
+        serde_json::json!("configured")
+    );
+    assert_eq!(
         runtime_plugins_check["runtime_plugins"]["plugins"][0]["plugin_id"],
         serde_json::json!("trusted-host-extension")
     );
