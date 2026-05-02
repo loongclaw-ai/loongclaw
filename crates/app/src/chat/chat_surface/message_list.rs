@@ -6677,8 +6677,7 @@ mod tests {
 
         assert!(text.iter().any(|line| line.contains("read ")));
         assert!(
-            text.join("").contains("sample.png")
-                || text.iter().any(|line| line.contains("read")),
+            text.join("").contains("sample.png") || text.iter().any(|line| line.contains("read")),
             "read preview should still surface a readable path/card header: {text:#?}"
         );
         assert!(
