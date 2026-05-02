@@ -263,7 +263,8 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
         "create tool file root",
     ));
     checks.extend(collect_browser_companion_doctor_checks(&config).await);
-    checks.extend(collect_runtime_plugins_doctor_checks(&config));
+    let runtime_plugins_surface = collect_runtime_plugins_doctor_surface(&config);
+    checks.extend(runtime_plugins_surface.checks.clone());
 
     checks.extend(check_feishu_integration(&config, options.fix, &mut fixes));
     let channel_inventory = mvp::channel::channel_inventory(&config);
@@ -303,7 +304,11 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
     let next_step_lines = doctor_next_step_lines(&next_steps);
     let next_step_actions = doctor_next_step_actions(&next_steps);
     if options.json {
-        let checks = doctor_checks_json_payload(&checks, &channel_inventory.channel_surfaces);
+        let checks = doctor_checks_json_payload(
+            &checks,
+            &channel_inventory.channel_surfaces,
+            Some(&runtime_plugins_surface.state),
+        );
         let payload = build_doctor_json_payload(
             &summary,
             &config_path.display().to_string(),
@@ -444,7 +449,14 @@ fn collect_channel_surface_checks(inventory: &mvp::channel::ChannelInventory) ->
     checks
 }
 
-fn collect_runtime_plugins_doctor_checks(config: &mvp::config::LoongConfig) -> Vec<DoctorCheck> {
+struct RuntimePluginsDoctorSurface {
+    state: crate::RuntimeSnapshotRuntimePluginsState,
+    checks: Vec<DoctorCheck>,
+}
+
+fn collect_runtime_plugins_doctor_surface(
+    config: &mvp::config::LoongConfig,
+) -> RuntimePluginsDoctorSurface {
     let state = crate::collect_runtime_snapshot_runtime_plugins_state(config);
     let runtime_level = if !state.enabled || state.scanned_root_count == 0 {
         DoctorCheckLevel::Warn
@@ -465,7 +477,7 @@ fn collect_runtime_plugins_doctor_checks(config: &mvp::config::LoongConfig) -> V
     }];
 
     if !state.enabled {
-        return checks;
+        return RuntimePluginsDoctorSurface { state, checks };
     }
 
     let inventory_level = match state.inventory_status {
@@ -531,7 +543,7 @@ fn collect_runtime_plugins_doctor_checks(config: &mvp::config::LoongConfig) -> V
         detail: inventory_detail,
     });
 
-    checks
+    RuntimePluginsDoctorSurface { state, checks }
 }
 
 fn audit_retention_doctor_check(audit: &mvp::config::AuditConfig) -> DoctorCheck {
@@ -2607,6 +2619,7 @@ fn doctor_runtime_attention_channel_id(check: &DoctorCheck) -> Option<String> {
 fn doctor_checks_json_payload(
     checks: &[DoctorCheck],
     channel_surfaces: &[mvp::channel::ChannelSurface],
+    runtime_plugins_state: Option<&crate::RuntimeSnapshotRuntimePluginsState>,
 ) -> Vec<serde_json::Value> {
     let account_summaries = doctor_plugin_bridge_account_summaries(channel_surfaces);
     let runtime_attention_surfaces = managed_bridge_runtime_attention_surfaces(channel_surfaces);
@@ -2631,6 +2644,15 @@ fn doctor_checks_json_payload(
             object.insert(
                 "plugin_bridge_account_summary".to_owned(),
                 serde_json::Value::String(account_summary.clone()),
+            );
+        }
+
+        if check.name == "runtime plugins inventory"
+            && let Some(state) = runtime_plugins_state
+        {
+            object.insert(
+                "runtime_plugins".to_owned(),
+                crate::runtime_snapshot_render::runtime_snapshot_runtime_plugins_json(state),
             );
         }
 
@@ -3741,6 +3763,44 @@ mod tests {
         config.runtime_plugins.enabled = enabled;
         config.runtime_plugins.roots = vec![root.join("runtime-plugins").display().to_string()];
         config
+    }
+
+    fn write_trusted_host_runtime_plugin_fixture(root: &Path) {
+        let plugin_root = root.join("runtime-plugins/trusted-host");
+        std::fs::create_dir_all(&plugin_root).expect("create trusted-host plugin root");
+        std::fs::write(
+            plugin_root.join("loong.plugin.json"),
+            r#"{
+  "api_version": "v1alpha1",
+  "version": "0.1.0",
+  "plugin_id": "trusted-host-extension",
+  "provider_id": "trusted-host-extension",
+  "connector_name": "trusted-host-extension",
+  "capabilities": ["InvokeConnector"],
+  "metadata": {
+    "bridge_kind": "process_stdio",
+    "adapter_family": "javascript-stdio-adapter",
+    "entrypoint": "stdin/stdout::invoke",
+    "source_language": "javascript",
+    "command": "node",
+    "args_json": "[\"index.js\"]",
+    "process_timeout_ms": "15000",
+    "loong_extension_contract": "process_stdio_json_line_v1",
+    "loong_extension_family": "trusted_host_extension",
+    "loong_extension_trust_lane": "trusted_host",
+    "loong_extension_methods_json": "[\"extension/event\"]",
+    "loong_extension_host_hooks_json": "[\"turn_start\",\"turn_end\"]",
+    "loong_extension_tui_surfaces_json": "[\"command_palette\"]"
+  },
+  "summary": "Trusted host doctor JSON fixture"
+}"#,
+        )
+        .expect("write trusted-host manifest fixture");
+        std::fs::write(
+            plugin_root.join("index.js"),
+            "#!/usr/bin/env node\nprocess.stdin.resume();\n",
+        )
+        .expect("write trusted-host runtime stub");
     }
 
     fn sample_audit_event(
@@ -6355,7 +6415,7 @@ mod tests {
 
         let inventory = mvp::channel::channel_inventory(&config);
         let checks = collect_channel_surface_checks(&inventory);
-        let payload = doctor_checks_json_payload(&checks, &inventory.channel_surfaces);
+        let payload = doctor_checks_json_payload(&checks, &inventory.channel_surfaces, None);
         let discovery_check = payload
             .iter()
             .find(|value| value["name"].as_str() == Some("weixin managed bridge discovery"))
@@ -6377,7 +6437,7 @@ mod tests {
             detail: "runtime is retrying after transient failures (account=default account_id=default pid=5151 busy=false active_runs=0 consecutive_failures=2 instance_count=1 running_instances=1 stale_instances=0 last_run_activity_at=1700000000000 last_heartbeat_at=1700000005000 last_failure_at=1700000006000 last_recovery_at=- last_error=temporary bridge timeout)".to_owned(),
         }];
         let (_config, channel_surfaces) = build_weixin_runtime_attention_surfaces(false, 1, 2);
-        let payload = doctor_checks_json_payload(&checks, &channel_surfaces);
+        let payload = doctor_checks_json_payload(&checks, &channel_surfaces, None);
         let runtime_check = payload.first().expect("runtime check payload");
 
         assert_eq!(
@@ -6404,6 +6464,42 @@ mod tests {
                 .expect("runtime attention incident kind"),
             "failure"
         );
+    }
+
+    #[test]
+    fn doctor_json_checks_include_structured_runtime_plugin_truth() {
+        let root = browser_companion_temp_dir("doctor-runtime-plugin-json");
+        write_trusted_host_runtime_plugin_fixture(&root);
+        let config = runtime_plugins_test_config(&root, true);
+        let surface = collect_runtime_plugins_doctor_surface(&config);
+        let payload = doctor_checks_json_payload(&surface.checks, &[], Some(&surface.state));
+        let inventory_check = payload
+            .iter()
+            .find(|value| value["name"].as_str() == Some("runtime plugins inventory"))
+            .expect("runtime plugin inventory payload");
+
+        assert_eq!(
+            inventory_check["runtime_plugins"]["inventory_status"],
+            serde_json::json!("ok")
+        );
+        assert_eq!(
+            inventory_check["runtime_plugins"]["plugins"][0]["plugin_id"],
+            serde_json::json!("trusted-host-extension")
+        );
+        assert_eq!(
+            inventory_check["runtime_plugins"]["plugins"][0]["native_extension"]["family"],
+            serde_json::json!("trusted_host_extension")
+        );
+        assert_eq!(
+            inventory_check["runtime_plugins"]["plugins"][0]["native_extension"]["host_hooks"],
+            serde_json::json!(["turn_start", "turn_end"])
+        );
+        assert_eq!(
+            inventory_check["runtime_plugins"]["plugins"][0]["native_extension"]["tui_surfaces"],
+            serde_json::json!(["command_palette"])
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -7336,7 +7432,8 @@ mod tests {
         let root = browser_companion_temp_dir("runtime-plugins-disabled");
         let config = runtime_plugins_test_config(&root, false);
 
-        let checks = collect_runtime_plugins_doctor_checks(&config);
+        let surface = collect_runtime_plugins_doctor_surface(&config);
+        let checks = surface.checks;
 
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].name, "runtime plugins runtime");
@@ -7355,7 +7452,8 @@ mod tests {
         config.runtime_plugins.roots = vec![escaped_root.display().to_string()];
         config.runtime_plugins.supported_adapter_families = vec!["web\nsearch".to_owned()];
 
-        let checks = collect_runtime_plugins_doctor_checks(&config);
+        let surface = collect_runtime_plugins_doctor_surface(&config);
+        let checks = surface.checks;
         let runtime_check = checks
             .iter()
             .find(|check| check.name == "runtime plugins runtime")
@@ -7392,7 +7490,8 @@ mod tests {
         let mut config = runtime_plugins_test_config(&root, true);
         config.runtime_plugins.roots = vec!["   ".to_owned()];
 
-        let checks = collect_runtime_plugins_doctor_checks(&config);
+        let surface = collect_runtime_plugins_doctor_surface(&config);
+        let checks = surface.checks;
 
         assert!(
             checks.iter().any(|check| {

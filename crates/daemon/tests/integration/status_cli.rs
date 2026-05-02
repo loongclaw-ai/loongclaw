@@ -84,6 +84,54 @@ fn write_status_config(
     config_path
 }
 
+fn install_trusted_host_runtime_plugin(root: &Path, config_path: &Path) {
+    let plugin_root = root.join("runtime-plugins/trusted-host");
+    fs::create_dir_all(&plugin_root).expect("create trusted-host plugin root");
+    fs::write(
+        plugin_root.join("loong.plugin.json"),
+        r#"{
+  "api_version": "v1alpha1",
+  "version": "0.1.0",
+  "plugin_id": "trusted-host-extension",
+  "provider_id": "trusted-host-extension",
+  "connector_name": "trusted-host-extension",
+  "capabilities": ["InvokeConnector"],
+  "metadata": {
+    "bridge_kind": "process_stdio",
+    "adapter_family": "javascript-stdio-adapter",
+    "entrypoint": "stdin/stdout::invoke",
+    "source_language": "javascript",
+    "command": "node",
+    "args_json": "[\"index.js\"]",
+    "process_timeout_ms": "15000",
+    "loong_extension_contract": "process_stdio_json_line_v1",
+    "loong_extension_family": "trusted_host_extension",
+    "loong_extension_trust_lane": "trusted_host",
+    "loong_extension_methods_json": "[\"extension/event\"]",
+    "loong_extension_host_hooks_json": "[\"turn_start\",\"turn_end\"]",
+    "loong_extension_tui_surfaces_json": "[\"command_palette\"]"
+  },
+  "summary": "Trusted host status-cli fixture"
+}"#,
+    )
+    .expect("write trusted-host manifest");
+    fs::write(
+        plugin_root.join("index.js"),
+        "#!/usr/bin/env node\nprocess.stdin.resume();\n",
+    )
+    .expect("write trusted-host stub");
+
+    let config_path_text = config_path
+        .to_str()
+        .expect("status config path should be valid utf-8");
+    let (resolved_path, mut config) =
+        mvp::config::load(Some(config_path_text)).expect("reload status config");
+    config.runtime_plugins.enabled = true;
+    config.runtime_plugins.roots = vec![root.join("runtime-plugins").display().to_string()];
+    mvp::config::write(Some(&resolved_path.display().to_string()), &config, true)
+        .expect("rewrite status config with runtime plugins");
+}
+
 fn render_output(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -446,6 +494,64 @@ fn doctor_cli_json_includes_schema_for_machine_readable_automation() {
     assert!(
         payload["next_step_actions"].is_array(),
         "doctor JSON should include typed next-step actions for direct operator handoff surfaces: {payload:#?}"
+    );
+
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn doctor_cli_json_projects_structured_runtime_plugin_truth() {
+    let root = unique_temp_dir("loong-doctor-cli-runtime-plugins-json");
+    let home_root = root.join("home");
+    fs::create_dir_all(&home_root).expect("create home root");
+    let config_path = write_status_config(
+        &root,
+        false,
+        mvp::config::ProviderToolSchemaModeConfig::EnabledWithDowngrade,
+    );
+    install_trusted_host_runtime_plugin(&root, &config_path);
+    let output = run_doctor_cli_process(
+        &config_path,
+        &home_root,
+        &["--json", "--skip-model-probe"],
+        "run doctor CLI json with runtime plugins",
+    );
+
+    if !output.status.success() {
+        let stdout = render_output(&output.stdout);
+        let stderr = render_output(&output.stderr);
+        panic!(
+            "doctor CLI json should succeed: status={:?}\nstdout={stdout}\nstderr={stderr}",
+            output.status.code()
+        );
+    }
+
+    let stdout = render_output(&output.stdout);
+    let payload: Value = serde_json::from_str(&stdout).expect("decode doctor json");
+    let runtime_plugins_check = payload["checks"]
+        .as_array()
+        .and_then(|checks| {
+            checks
+                .iter()
+                .find(|check| check["name"].as_str() == Some("runtime plugins inventory"))
+        })
+        .expect("doctor json should include runtime plugins inventory check");
+
+    assert_eq!(
+        runtime_plugins_check["runtime_plugins"]["inventory_status"],
+        serde_json::json!("ok")
+    );
+    assert_eq!(
+        runtime_plugins_check["runtime_plugins"]["plugins"][0]["plugin_id"],
+        serde_json::json!("trusted-host-extension")
+    );
+    assert_eq!(
+        runtime_plugins_check["runtime_plugins"]["plugins"][0]["native_extension"]["family"],
+        serde_json::json!("trusted_host_extension")
+    );
+    assert_eq!(
+        runtime_plugins_check["runtime_plugins"]["plugins"][0]["native_extension"]["host_hooks"],
+        serde_json::json!(["turn_start", "turn_end"])
     );
 
     fs::remove_dir_all(&root).ok();
