@@ -10500,8 +10500,9 @@ async fn handle_turn_with_runtime_file_read_repair_followup_includes_failed_requ
             let is_assistant = role == Some("assistant");
             let has_request_marker =
                 content.is_some_and(|value| value.starts_with("[tool_request]\n"));
-            let mentions_read = content.is_some_and(|value| value.contains("\"tool\":\"read\""));
-            let shows_empty_request = content.is_some_and(|value| value.contains("\"request\":{}"));
+            let mentions_read = content.is_some_and(|value| value.contains("\"name\":\"read\""));
+            let shows_empty_request =
+                content.is_some_and(|value| value.contains("\"arguments\":{}"));
             is_assistant && has_request_marker && mentions_read && shows_empty_request
         }),
         "completion followup should include the failed read request: {followup_messages:?}"
@@ -10598,7 +10599,7 @@ async fn handle_turn_with_runtime_repairable_shell_failure_followup_includes_fai
                     .and_then(Value::as_str)
                     .is_some_and(|content| {
                         content.starts_with("[tool_request]\n")
-                            && content.contains("\"tool\":\"bash\"")
+                            && content.contains("\"name\":\"bash\"")
                             && content.contains("\"command\":\"/bin/echo\"")
                     })
         }),
@@ -10691,7 +10692,7 @@ async fn handle_turn_with_runtime_multi_intent_shell_failure_followup_uses_faile
                     .and_then(Value::as_str)
                     .is_some_and(|content| {
                         content.starts_with("[tool_request]\n")
-                            && content.contains("\"tool\":\"bash\"")
+                            && content.contains("\"name\":\"bash\"")
                             && content.contains("\"command\":\"ls\"")
                             && !content.contains("\"command\":\"/bin/echo\"")
                     })

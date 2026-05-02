@@ -292,6 +292,7 @@ fn build_prompt_fragments_from_prompt_sources(
     let runtime_identity_section = resolved_runtime_identity
         .as_ref()
         .map(runtime_identity::render_runtime_identity_section);
+    let runtime_scope_section = Some(prompt_contract::render_runtime_scope_section(config));
 
     prompt_contract::build_prompt_fragments_from_prompt_sources(
         config,
@@ -299,6 +300,7 @@ fn build_prompt_fragments_from_prompt_sources(
         workspace_guidance_section,
         runtime_self_section,
         runtime_identity_section,
+        runtime_scope_section,
         extra_section,
         capability_snapshot,
         native_tool_sections,
@@ -1627,6 +1629,19 @@ mod tests {
         assert!(content.contains("<prerequisite_checks>"));
         assert!(content.contains("<verification>"));
         assert!(content.contains("<missing_context>"));
+    }
+
+    #[test]
+    fn build_system_message_includes_runtime_scope_section() {
+        let mut config = LoongConfig::default();
+        config.tools.file_root = Some("/tmp/loong-runtime-root".to_owned());
+
+        let system = build_system_message(&config, true).expect("system message");
+        let content = system["content"].as_str().expect("system content");
+
+        assert!(content.contains("## Runtime Scope"));
+        assert!(content.contains("file_root_source: explicit_file_root"));
+        assert!(content.contains("file_root: /tmp/loong-runtime-root"));
     }
 
     #[test]

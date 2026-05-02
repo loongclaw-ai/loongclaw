@@ -94,8 +94,8 @@ fn build_provider_turn_tool_terminal_events_attach_visible_shell_request_summary
     assert_eq!(
         request_summary_json,
         json!({
-            "tool": "bash",
-            "request": {"command": "ls", "args_redacted": 1}
+            "name": "bash",
+            "arguments": {"command": "ls", "args_redacted": 1}
         })
     );
 }
@@ -138,10 +138,10 @@ fn summarize_failed_provider_lane_tool_request_preserves_multi_intent_context_wi
         .expect("multi-intent request summary should be an array");
 
     assert_eq!(request_entries.len(), 2);
-    assert_eq!(request_entries[0]["tool"], "read");
-    assert_eq!(request_entries[1]["tool"], "bash");
-    assert_eq!(request_entries[1]["request"]["command"], "ls");
-    assert_eq!(request_entries[1]["request"]["args_redacted"], 1);
+    assert_eq!(request_entries[0]["name"], "read");
+    assert_eq!(request_entries[1]["name"], "bash");
+    assert_eq!(request_entries[1]["arguments"]["command"], "ls");
+    assert_eq!(request_entries[1]["arguments"]["args_redacted"], 1);
 }
 
 #[test]

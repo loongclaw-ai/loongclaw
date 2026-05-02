@@ -69,6 +69,23 @@ fn explicit_skill_activation_parser_ignores_non_prefix_mentions() {
     );
 }
 
+#[test]
+fn named_skill_activation_parser_accepts_explicit_skill_mentions_with_verbs() {
+    let visible_skills = vec!["agent-browser".to_owned(), "release-guard".to_owned()];
+
+    let parsed = parse_named_skill_activation_input(
+        "调用agent browser skill看一下 github.com/chumyin",
+        visible_skills.as_slice(),
+    )
+    .expect("named skill activation");
+
+    assert_eq!(parsed.skill_id, "agent-browser");
+    assert_eq!(
+        parsed.followup_request,
+        "调用agent browser skill看一下 github.com/chumyin"
+    );
+}
+
 #[cfg(feature = "memory-sqlite")]
 #[derive(Default)]
 pub(super) struct ApprovalControlRuntime {
@@ -284,6 +301,8 @@ pub(super) struct ExplicitSkillActivationRuntime {
     pub(super) completion_messages: StdMutex<Vec<Value>>,
     pub(super) persisted_turns: StdMutex<Vec<(String, String)>>,
     pub(super) bootstrap_calls: StdMutex<usize>,
+    pub(super) streaming_calls: StdMutex<usize>,
+    pub(super) streaming_messages: StdMutex<Vec<Value>>,
 }
 
 #[async_trait]
@@ -333,12 +352,34 @@ impl ConversationRuntime for ExplicitSkillActivationRuntime {
         _config: &LoongConfig,
         _session_id: &str,
         _turn_id: &str,
-        _messages: &[Value],
+        messages: &[Value],
         _tool_view: &crate::tools::ToolView,
         _binding: ConversationRuntimeBinding<'_>,
-        _on_token: crate::provider::StreamingTokenCallback,
+        on_token: crate::provider::StreamingTokenCallback,
     ) -> CliResult<ProviderTurn> {
-        panic!("request_turn_streaming should not run for explicit skill activation control turns")
+        let mut streaming_calls = self
+            .streaming_calls
+            .lock()
+            .expect("streaming call lock should not be poisoned");
+        *streaming_calls += 1;
+
+        let mut stored_messages = self
+            .streaming_messages
+            .lock()
+            .expect("streaming messages lock");
+        *stored_messages = messages.to_vec();
+
+        if let Some(on_token) = on_token {
+            on_token(crate::provider::StreamingCallbackData::Text {
+                text: "draft".to_owned(),
+            });
+        }
+
+        Ok(ProviderTurn {
+            assistant_text: "final reply".to_owned(),
+            tool_intents: Vec::new(),
+            raw_meta: Value::Null,
+        })
     }
 
     async fn persist_turn(
@@ -452,6 +493,104 @@ async fn handle_turn_with_runtime_explicit_skill_activation_prefix_injects_skill
             .any(|(role, content)| role == "user" && content == "summarize the changelog"),
         "persisted turns should store the forwarded request without the activation token: {persisted_turns:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_turn_with_runtime_explicit_skill_activation_preserves_observer_streaming_followup()
+{
+    let workspace_root =
+        crate::test_support::unique_temp_dir("turn-coordinator-explicit-skill-activation-observer");
+    std::fs::create_dir_all(workspace_root.join(".loong/skills/demo-skill"))
+        .expect("create skill root");
+    std::fs::write(
+        workspace_root.join(".loong/skills/demo-skill/SKILL.md"),
+        "---\nname: demo-skill\ndescription: Summarize notes with release discipline.\n---\n\n# Demo Skill\n\nFollow the managed skill instruction before answering.\n",
+    )
+    .expect("write skill");
+
+    let runtime = ExplicitSkillActivationRuntime::default();
+    let coordinator = ConversationTurnCoordinator::new();
+    let mut config = LoongConfig::default();
+    config.external_skills.enabled = true;
+    config.tools.file_root = Some(workspace_root.display().to_string());
+    config.provider.kind = crate::config::ProviderKind::Anthropic;
+
+    let observer = Arc::new(RecordingTurnObserver::default());
+    let observer_handle: ConversationTurnObserverHandle = observer.clone();
+    let address =
+        ConversationSessionAddress::from_session_id("session-explicit-skill-activation-observer");
+    let acp_options = AcpConversationTurnOptions::automatic();
+
+    let reply = coordinator
+        .handle_turn_with_runtime_and_address_and_acp_options_and_ingress_and_observer_with_manager(
+            &config,
+            &address,
+            "$demo-skill summarize the changelog",
+            ProviderErrorMode::Propagate,
+            &runtime,
+            &acp_options,
+            ConversationRuntimeBinding::direct(),
+            None,
+            Some(observer_handle),
+            None,
+            None,
+        )
+        .await
+        .expect("explicit activation observer turn should succeed");
+
+    assert_eq!(reply, "final reply");
+
+    let streaming_calls = runtime.streaming_calls.lock().expect("streaming call lock");
+    assert_eq!(
+        *streaming_calls, 1,
+        "explicit skill activation should preserve the observer streaming path"
+    );
+
+    let messages = runtime
+        .streaming_messages
+        .lock()
+        .expect("streaming messages lock")
+        .clone();
+    let injected_skill = messages
+        .iter()
+        .find(|message| {
+            message
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|content| content.contains("Skill `demo-skill`"))
+        })
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("skill system message should exist: {messages:?}"));
+    assert!(
+        injected_skill.contains("Follow the managed skill instruction before answering."),
+        "skill system message should keep loaded instructions: {injected_skill}"
+    );
+
+    let followup_prompt = messages
+        .iter()
+        .find(|message| {
+            message
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|content| content.contains("Original request:"))
+        })
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("followup prompt should exist: {messages:?}"));
+    assert!(
+        followup_prompt.contains("Original request:\nsummarize the changelog"),
+        "streaming followup should keep the stripped forwarded request: {followup_prompt}"
+    );
+    assert!(
+        !followup_prompt.contains("$demo-skill"),
+        "streaming followup should not leak the activation token: {followup_prompt}"
+    );
+
+    let token_events = observer.token_events.lock().expect("token events lock");
+    assert_eq!(token_events.len(), 1);
+    assert_eq!(token_events[0].event_type, "text_delta");
+    assert_eq!(token_events[0].delta.text.as_deref(), Some("draft"));
 }
 
 #[cfg(feature = "memory-sqlite")]

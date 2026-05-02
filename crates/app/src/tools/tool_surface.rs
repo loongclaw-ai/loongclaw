@@ -157,7 +157,7 @@ impl ToolSurfaceDescriptor {
 }
 
 const READ_GUIDELINES: &[&str] = &[
-    "Use read for repo inspection before shelling out.",
+    "Use read for filesystem inspection before shelling out.",
     "Use `offset` and `limit` to page through large files instead of reading everything at once.",
 ];
 const WRITE_GUIDELINES: &[&str] = &[
@@ -169,7 +169,7 @@ const EDIT_GUIDELINES: &[&str] = &[
     "Prefer one or more exact edit blocks over whole-file rewrite when the change is surgical.",
 ];
 const BASH_GUIDELINES: &[&str] = &[
-    "Use bash for guarded shell commands in the workspace.",
+    "Use bash for guarded shell commands from the current runtime file root.",
     "Keep the command in one string, even when it uses pipes, redirects, or chaining.",
     "If bash output is truncated, prefer `details.handoff.recommended_payload` with `read`; if needed, inspect `details.handoff.recipes.*` for alternate first-page / last-page / wider-byte windows.",
 ];

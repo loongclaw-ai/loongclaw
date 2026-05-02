@@ -30,6 +30,7 @@ struct BrowserPage {
     page_text: String,
     links: Vec<BrowserLink>,
     bytes_downloaded: usize,
+    truncated: bool,
     redirect_count: usize,
 }
 
@@ -361,34 +362,31 @@ fn fetch_browser_page(
                 .and_then(|value| value.to_str().ok())
                 .map(|value| value.to_owned());
             let mut budget = super::download_guard::ByteBudget::new(max_bytes);
-            budget
-                .reject_if_content_length_exceeds(response.content_length(), "browser response")?;
+            let mut truncated = response
+                .content_length()
+                .is_some_and(|value| value > max_bytes as u64);
 
             let mut body = Vec::new();
             let mut stream = response.bytes_stream();
-            let mut remaining_read = (max_bytes as u64).saturating_add(1) as usize;
-            const BROWSER_READ_BUFFER_BYTES: usize = 8_192;
-            while remaining_read > 0 {
-                let Some(chunk) = stream.next().await else {
-                    break;
-                };
+            while let Some(chunk) = stream.next().await {
                 let chunk = chunk
                     .map_err(|error| format!("failed to read browser response body: {error}"))?;
-                let mut offset = 0usize;
-                while offset < chunk.len() && remaining_read > 0 {
-                    let read = chunk
-                        .len()
-                        .saturating_sub(offset)
-                        .min(remaining_read)
-                        .min(BROWSER_READ_BUFFER_BYTES);
-                    budget.try_consume(read, "browser response")?;
-                    let end = offset.saturating_add(read);
-                    let chunk_slice = chunk
-                        .get(offset..end)
-                        .ok_or_else(|| "failed to slice browser response buffer".to_owned())?;
-                    body.extend_from_slice(chunk_slice);
-                    remaining_read = remaining_read.saturating_sub(read);
-                    offset = end;
+                let remaining = max_bytes.saturating_sub(budget.consumed());
+                if remaining == 0 {
+                    truncated = true;
+                    break;
+                }
+                let chunk_len = chunk.len().min(remaining);
+                if chunk_len < chunk.len() {
+                    truncated = true;
+                }
+                budget.try_consume(chunk_len, "browser response")?;
+                let prefix = chunk
+                    .get(..chunk_len)
+                    .ok_or_else(|| "failed to clip browser response chunk".to_owned())?;
+                body.extend_from_slice(prefix);
+                if truncated {
+                    break;
                 }
             }
 
@@ -434,6 +432,7 @@ fn fetch_browser_page(
                 page_text,
                 links,
                 bytes_downloaded: budget.consumed(),
+                truncated,
                 redirect_count,
             });
         }
@@ -557,6 +556,7 @@ fn browser_page_payload(
         "page_text": page.page_text,
         "available_links": page.links.iter().map(browser_link_json).collect::<Vec<_>>(),
         "bytes_downloaded": page.bytes_downloaded,
+        "truncated": page.truncated,
         "redirect_count": page.redirect_count,
         "clicked_link": clicked_link,
     })
@@ -967,7 +967,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_open_rejects_declared_content_length_above_limit() {
+    fn browser_open_truncates_declared_content_length_above_limit() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let address = listener.local_addr().expect("listener addr");
         let handle = thread::spawn(move || {
@@ -988,7 +988,7 @@ mod tests {
         let mut config = local_browser_config();
         config.web_fetch.max_bytes = 8;
 
-        let error = execute_browser_tool_with_config(
+        let outcome = execute_browser_tool_with_config(
             scoped_request(
                 "browser.open",
                 json!({"url": format!("http://127.0.0.1:{}/", address.port())}),
@@ -996,9 +996,9 @@ mod tests {
             ),
             &config,
         )
-        .expect_err("oversize declared content length should fail closed");
+        .expect("oversize declared content length should truncate");
 
-        assert!(error.contains("max_bytes limit"));
+        assert_eq!(outcome.payload["truncated"], json!(true));
         handle.join().expect("server thread");
     }
 

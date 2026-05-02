@@ -75,8 +75,8 @@ fn tool_followup_request_entry(intent: &ToolIntent) -> Value {
     let request = effective_followup_request(intent);
     let request = sanitize_followup_request_summary(canonical_tool_name.as_str(), request);
     serde_json::json!({
-        "tool": visible_tool_name,
-        "request": request,
+        "name": visible_tool_name,
+        "arguments": request,
     })
 }
 

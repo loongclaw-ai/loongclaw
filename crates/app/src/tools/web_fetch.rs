@@ -116,19 +116,32 @@ fn execute_web_fetch_tool_enabled(
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .map(|value| value.to_owned());
-            budget.reject_if_content_length_exceeds(
-                response.content_length(),
-                "web.fetch response",
-            )?;
-
+            let mut truncated = response
+                .content_length()
+                .is_some_and(|value| value > max_bytes as u64);
             let mut body = Vec::new();
             let mut stream = response.bytes_stream();
             use futures_util::StreamExt;
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk
                     .map_err(|error| format!("failed to read web.fetch response body: {error}"))?;
-                budget.try_consume(chunk.len(), "web.fetch response")?;
-                body.extend_from_slice(&chunk);
+                let remaining = max_bytes.saturating_sub(budget.consumed());
+                if remaining == 0 {
+                    truncated = true;
+                    break;
+                }
+                let chunk_len = chunk.len().min(remaining);
+                if chunk_len < chunk.len() {
+                    truncated = true;
+                }
+                budget.try_consume(chunk_len, "web.fetch response")?;
+                let prefix = chunk
+                    .get(..chunk_len)
+                    .ok_or_else(|| "failed to clip web.fetch response chunk".to_owned())?;
+                body.extend_from_slice(prefix);
+                if truncated {
+                    break;
+                }
             }
 
             let raw_text = String::from_utf8_lossy(&body).into_owned();
@@ -164,6 +177,7 @@ fn execute_web_fetch_tool_enabled(
                     "content": content,
                     "title": title,
                     "bytes_downloaded": budget.consumed(),
+                    "truncated": truncated,
                     "redirect_count": redirect_count,
                 }),
             });
@@ -641,19 +655,20 @@ mod tests {
     }
 
     #[test]
-    fn web_fetch_enforces_max_bytes_limit() {
+    fn web_fetch_truncates_when_response_exceeds_max_bytes_limit() {
         let body = "x".repeat(128);
         let url = spawn_http_server(move |_request| ok_response("text/plain", &body));
         let mut config = local_runtime_config();
         config.web_fetch.max_bytes = 32;
 
-        let error = execute_web_fetch_tool_with_config(request(json!({"url": url})), &config)
-            .expect_err("oversized body should be rejected");
+        let outcome = execute_web_fetch_tool_with_config(request(json!({"url": url})), &config)
+            .expect("oversized body should be truncated");
 
-        assert!(
-            error.contains("max_bytes limit"),
-            "expected max_bytes error, got: {error}"
-        );
+        assert_eq!(outcome.payload["truncated"], json!(true));
+        let content = outcome.payload["content"]
+            .as_str()
+            .expect("content should be string");
+        assert_eq!(content.len(), 32);
     }
 
     #[test]

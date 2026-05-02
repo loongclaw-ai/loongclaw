@@ -131,6 +131,7 @@ use self::safe_lane_state::{SafeLaneExecutionMetrics, SafeLanePlanLoopState};
 use self::setup::{lane_policy_from_config, require_production_kernel_binding};
 use self::skill_activation::{
     explicit_skill_activation_tool_call_id, parse_explicit_skill_activation_input,
+    parse_named_skill_activation_input,
 };
 pub use self::state::ConversationTurnOutcome;
 use self::state::*;

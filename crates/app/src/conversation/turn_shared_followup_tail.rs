@@ -346,9 +346,14 @@ fn render_tool_failure_repair_guidance(
 ) -> Option<String> {
     let tool_request_summary = tool_request_summary?;
     let request_summary_json = serde_json::from_str::<Value>(tool_request_summary).ok()?;
-    let summary_tool_name = request_summary_json.get("tool").and_then(Value::as_str)?;
+    let summary_tool_name = request_summary_json
+        .get("tool")
+        .or_else(|| request_summary_json.get("name"))
+        .and_then(Value::as_str)?;
     let repair_tool_name = repair_guidance_tool_name(summary_tool_name, tool_failure_reason);
-    let request_summary_request = request_summary_json.get("request");
+    let request_summary_request = request_summary_json
+        .get("request")
+        .or_else(|| request_summary_json.get("arguments"));
     let direct_routing_guidance = render_direct_routing_failure_repair_guidance(
         repair_tool_name.as_str(),
         request_summary_request,
@@ -357,6 +362,15 @@ fn render_tool_failure_repair_guidance(
 
     if direct_routing_guidance.is_some() {
         return direct_routing_guidance;
+    }
+
+    let byte_budget_guidance = render_byte_budget_failure_repair_guidance(
+        repair_tool_name.as_str(),
+        request_summary_request,
+        tool_failure_reason,
+    );
+    if byte_budget_guidance.is_some() {
+        return byte_budget_guidance;
     }
 
     let reason_mentions_repairable_shape = tool_failure_reason.contains("tool input needs repair")
@@ -385,6 +399,66 @@ fn render_tool_failure_repair_guidance(
     }
 
     render_tool_input_repair_guidance_from_reason(repair_tool_name.as_str(), tool_failure_reason)
+}
+
+fn render_byte_budget_failure_repair_guidance(
+    tool_name: &str,
+    request_summary_request: Option<&Value>,
+    tool_failure_reason: &str,
+) -> Option<String> {
+    if !tool_failure_reason.contains("max_bytes limit") {
+        return None;
+    }
+
+    let request_object = request_summary_request?.as_object()?;
+    let mut retry_request = request_object.clone();
+    let current_max_bytes = retry_request
+        .get("max_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(match tool_name {
+            "read" => 65_536,
+            "browser" => 32_768,
+            "web" => 32_768,
+            _ => 32_768,
+        });
+    let suggested_max_bytes = current_max_bytes.clamp(1_024, 32_768);
+    let suggested_max_bytes = if suggested_max_bytes < current_max_bytes {
+        suggested_max_bytes
+    } else {
+        current_max_bytes.max(2_048) / 2
+    };
+    retry_request.insert(
+        "max_bytes".to_owned(),
+        serde_json::json!(suggested_max_bytes),
+    );
+    let retry_call = serde_json::json!({
+        "name": tool_name,
+        "arguments": Value::Object(retry_request),
+    });
+    let retry_call = serde_json::to_string_pretty(&retry_call).ok()?;
+
+    let mut lines = vec![format!("Repair guidance for {tool_name}:")];
+    match tool_name {
+        "web" => {
+            lines.push(
+                "Retry the same web request with a smaller `max_bytes`. If you only need search hits, keep the request in query mode instead of escalating to a full page fetch.".to_owned(),
+            );
+        }
+        "browser" => {
+            lines.push(
+                "Retry the browser extraction with a smaller `max_bytes` or a more focused extraction target.".to_owned(),
+            );
+        }
+        _ => {
+            lines.push(
+                "Retry the same request with a smaller `max_bytes` or a narrower read window."
+                    .to_owned(),
+            );
+        }
+    }
+    lines.push("Suggested retry:".to_owned());
+    lines.push(retry_call);
+    Some(lines.join("\n"))
 }
 
 fn render_direct_routing_failure_repair_guidance(

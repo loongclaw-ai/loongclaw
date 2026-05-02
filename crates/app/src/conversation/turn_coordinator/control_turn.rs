@@ -126,7 +126,14 @@ impl ConversationTurnCoordinator {
         binding: ConversationRuntimeBinding<'_>,
         observer: Option<&ConversationTurnObserverHandle>,
     ) -> CliResult<Option<ConversationTurnOutcome>> {
-        let Some(explicit_activation) = parse_explicit_skill_activation_input(user_input) else {
+        let tool_runtime_config =
+            crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None);
+        let visible_skill_ids =
+            crate::tools::model_visible_external_skill_ids_with_config(&tool_runtime_config);
+        let explicit_activation = parse_explicit_skill_activation_input(user_input).or_else(|| {
+            parse_named_skill_activation_input(user_input, visible_skill_ids.as_slice())
+        });
+        let Some(explicit_activation) = explicit_activation else {
             return Ok(None);
         };
 
@@ -155,8 +162,6 @@ impl ConversationTurnCoordinator {
                 preparation.session.estimated_tokens,
             ),
         );
-        let tool_runtime_config =
-            crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None);
         let activation_payload =
             crate::tools::model_visible_external_skill_context_payload_for_skill_id(
                 &tool_runtime_config,
@@ -245,6 +250,47 @@ impl ConversationTurnCoordinator {
             followup_request,
             None,
         );
+        let followup_preparation = preparation.for_followup_messages(follow_up_messages.clone());
+        if observer.is_some() {
+            let followup_tool_view = runtime.tool_view(config, session_id, binding)?;
+            let resolved_turn = resolve_provider_turn(
+                config,
+                runtime,
+                session_id,
+                followup_request,
+                &followup_preparation,
+                request_provider_turn_with_observer(
+                    config,
+                    runtime,
+                    session_id,
+                    followup_preparation.turn_id.as_str(),
+                    &followup_preparation.session.messages,
+                    &followup_tool_view,
+                    binding,
+                    observer,
+                    None,
+                )
+                .await,
+                error_mode,
+                binding,
+                None,
+                observer,
+                None,
+            )
+            .await;
+            let reply = apply_resolved_provider_turn(
+                config,
+                runtime,
+                session_id,
+                followup_request,
+                &followup_preparation,
+                &resolved_turn,
+                binding,
+                observer,
+            )
+            .await?;
+            return Ok(Some(reply));
+        }
         let reply = request_completion_with_raw_fallback(
             runtime,
             config,

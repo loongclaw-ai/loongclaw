@@ -257,7 +257,7 @@ fn capability_snapshot_is_deterministic() {
     assert!(snapshot.contains("- bash:"));
     assert!(snapshot.contains("Available tools:"));
     assert!(snapshot.contains("Guidelines:"));
-    assert!(snapshot.contains("Use read for repo inspection before shelling out."));
+    assert!(snapshot.contains("Use read for filesystem inspection before shelling out."));
     assert!(snapshot.contains(
             "Use `offset` and `limit` to page through large files instead of reading everything at once."
         ));

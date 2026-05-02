@@ -221,6 +221,15 @@ pub fn external_skills_operator_inspect_with_config(
     external_skills::execute_external_skills_operator_inspect_tool_with_config(skill_id, config)
 }
 
+pub(crate) fn model_visible_external_skill_ids_with_config(
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Vec<String> {
+    external_skills::model_visible_skill_catalog_entries_with_config(config)
+        .into_iter()
+        .map(|entry| entry.skill_id)
+        .collect()
+}
+
 pub fn external_skills_operator_search_with_config(
     query: &str,
     limit: usize,

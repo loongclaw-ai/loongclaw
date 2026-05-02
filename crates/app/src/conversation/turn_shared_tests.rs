@@ -1317,6 +1317,36 @@ fn tool_failure_followup_tail_renders_hidden_channel_operation_guidance() {
 }
 
 #[test]
+fn tool_failure_followup_tail_renders_max_bytes_retry_guidance_for_web() {
+    let payload = ToolDrivenFollowupPayload::ToolFailure {
+        reason: "tool execution failed: web.fetch response exceeded max_bytes limit (120000 bytes)"
+            .to_owned(),
+        retryable: true,
+    };
+    let tool_request_summary =
+        r#"{"name":"web","arguments":{"url":"https://github.com/chumyin","max_bytes":120000}}"#;
+    let tail = build_tool_driven_followup_tail(
+        "preface",
+        &payload,
+        Some(tool_request_summary),
+        "看一下 github.com/chumyin",
+        None,
+        |_, text| text.to_owned(),
+    );
+
+    let user_prompt = tail
+        .last()
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .expect("user followup prompt should exist");
+
+    assert!(user_prompt.contains("Repair guidance for web"));
+    assert!(user_prompt.contains("Suggested retry:"));
+    assert!(user_prompt.contains("\"name\": \"web\""));
+    assert!(user_prompt.contains("\"max_bytes\": 32768"));
+}
+
+#[test]
 fn tool_failure_followup_tail_uses_failure_reason_when_shell_summary_redacts_args_type() {
     let payload = ToolDrivenFollowupPayload::ToolFailure {
         reason:
@@ -2077,10 +2107,10 @@ fn summarize_failed_provider_lane_tool_request_preserves_multi_intent_context_wi
         .expect("multi-intent request summary should be an array");
 
     assert_eq!(request_entries.len(), 2);
-    assert_eq!(request_entries[0]["tool"], "read");
-    assert_eq!(request_entries[1]["tool"], "bash");
-    assert_eq!(request_entries[1]["request"]["command"], "ls");
-    assert_eq!(request_entries[1]["request"]["args_redacted"], 1);
+    assert_eq!(request_entries[0]["name"], "read");
+    assert_eq!(request_entries[1]["name"], "bash");
+    assert_eq!(request_entries[1]["arguments"]["command"], "ls");
+    assert_eq!(request_entries[1]["arguments"]["args_redacted"], 1);
 }
 
 #[test]
@@ -2106,12 +2136,12 @@ fn summarize_single_tool_followup_request_resolves_grouped_hidden_invoke_to_prec
     let request_summary_json: Value =
         serde_json::from_str(&request_summary).expect("request summary should be valid json");
 
-    assert_eq!(request_summary_json["tool"], "delegate_async");
+    assert_eq!(request_summary_json["name"], "delegate_async");
     assert_eq!(
-        request_summary_json["request"]["task"],
+        request_summary_json["arguments"]["task"],
         "summarize the repo"
     );
-    assert!(request_summary_json["request"].get("operation").is_none());
+    assert!(request_summary_json["arguments"].get("operation").is_none());
 }
 
 #[test]

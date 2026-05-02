@@ -10,6 +10,7 @@ pub(super) fn build_prompt_fragments_from_prompt_sources(
     workspace_guidance_section: Option<String>,
     runtime_self_section: Option<String>,
     runtime_identity_section: Option<String>,
+    runtime_scope_section: Option<String>,
     extra_section: Option<String>,
     capability_snapshot: String,
     native_tool_sections: Vec<ProviderNativePromptSection>,
@@ -69,6 +70,19 @@ pub(super) fn build_prompt_fragments_from_prompt_sources(
         .with_cacheable(true);
 
         prompt_fragments.push(runtime_identity_fragment);
+    }
+
+    if let Some(section) = runtime_scope_section {
+        let runtime_scope_fragment = PromptFragment::new(
+            "runtime-scope",
+            PromptLane::RuntimeIdentity,
+            "runtime-scope",
+            section,
+            ContextArtifactKind::RuntimeContract,
+        )
+        .with_cacheable(true);
+
+        prompt_fragments.push(runtime_scope_fragment);
     }
 
     let execution_discipline_fragment = PromptFragment::new(
@@ -217,7 +231,7 @@ fn render_deferred_tool_text_workflow_section() -> String {
     let lines = [
         "## Tool Access".to_owned(),
         "Structured provider tool schemas are disabled for this profile.".to_owned(),
-        "Use the smallest direct tool that fits: `read`, `write`, `exec`, `web`, `browser`, or `memory`.".to_owned(),
+        "Use the smallest direct tool that fits: `read`, `write`, `bash`, `web`, `browser`, or `memory`.".to_owned(),
         "For `web`, distinguish search-provider mode from ordinary network mode: `web { query }` uses web-search providers, while `web { url }` or low-level request fields are still normal network access.".to_owned(),
         "When you need a tool, emit the raw JSON call instead of only describing the missing capability.".to_owned(),
         "Direct tool example:".to_owned(),
@@ -239,4 +253,25 @@ pub(super) fn render_governed_runtime_binding_section(
         "## Governed Runtime Binding\n- session_mode: {}\n- kernel_binding: {kernel_binding}",
         binding.session_mode().as_str()
     )
+}
+
+pub(super) fn render_runtime_scope_section(config: &LoongConfig) -> String {
+    let file_root_resolution = config.tools.file_root_resolution();
+    let file_root_path = file_root_resolution.path().display().to_string();
+    let file_root_source = if file_root_resolution.uses_current_working_directory_fallback() {
+        "current_working_directory_fallback"
+    } else {
+        "explicit_file_root"
+    };
+
+    let lines = [
+        "## Runtime Scope".to_owned(),
+        format!("- file_root_source: {file_root_source}"),
+        format!("- file_root: {file_root_path}"),
+        "- `read`, `write`, and `edit` resolve paths under the runtime file root.".to_owned(),
+        "- When `tools.file_root` is unset, the current working directory becomes the default file root.".to_owned(),
+        "- `bash` starts from the runtime file root by default, but command effects still depend on shell policy and any external sandboxing.".to_owned(),
+    ];
+
+    lines.join("\n")
 }

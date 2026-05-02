@@ -44,6 +44,65 @@ pub(super) fn parse_explicit_skill_activation_input(
     })
 }
 
+pub(super) fn parse_named_skill_activation_input(
+    input: &str,
+    visible_skill_ids: &[String],
+) -> Option<ExplicitSkillActivationInput> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized_input = normalize_skill_activation_phrase(trimmed);
+    let mut matched_skill_id = None;
+    let mut matched_len = 0usize;
+
+    for skill_id in visible_skill_ids {
+        let normalized_skill_id = normalize_explicit_skill_activation_id(skill_id)?;
+        let spaced_alias = normalized_skill_id.replace('-', " ");
+        let mentions_skill = normalized_input.contains(format!("{spaced_alias} skill").as_str())
+            || normalized_input.contains(format!("skill {spaced_alias}").as_str())
+            || normalized_input.contains(normalized_skill_id.as_str());
+        if !mentions_skill {
+            continue;
+        }
+        let has_activation_verb = [
+            "use ",
+            "load ",
+            "invoke ",
+            "call ",
+            "run ",
+            "apply ",
+            "activate ",
+            "try ",
+            "inspect ",
+            "check ",
+            "调用",
+            "使用",
+            "用",
+            "加载",
+            "启用",
+            "看看",
+            "查看",
+        ]
+        .iter()
+        .any(|token| normalized_input.contains(token));
+        if !has_activation_verb {
+            continue;
+        }
+        if normalized_skill_id.len() > matched_len {
+            matched_len = normalized_skill_id.len();
+            matched_skill_id = Some(normalized_skill_id);
+        }
+    }
+
+    let skill_id = matched_skill_id?;
+    Some(ExplicitSkillActivationInput {
+        skill_id,
+        followup_request: trimmed.to_owned(),
+    })
+}
+
 pub(super) fn explicit_skill_activation_tool_call_id(skill_id: &str) -> String {
     let normalized = normalize_explicit_skill_activation_id(skill_id)
         .unwrap_or_else(|| "external-skill".to_owned());
@@ -79,4 +138,21 @@ fn normalize_explicit_skill_activation_id(raw: &str) -> Option<String> {
     }
     let normalized = normalized.trim_matches('-').to_owned();
     (!normalized.is_empty()).then_some(normalized)
+}
+
+fn normalize_skill_activation_phrase(raw: &str) -> String {
+    raw.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else if matches!(ch, '-' | '_' | '.' | '/' | '\\') {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
