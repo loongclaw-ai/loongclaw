@@ -10,6 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -57,6 +58,7 @@ pub enum Focus {
 const FOOTER_BOTTOM_BREATHING_HEIGHT: u16 = 1;
 const FOOTER_HORIZONTAL_INDENT: u16 = 2;
 const PENDING_TOOL_ANIMATION_FRAME_MS: u64 = 90;
+const TEST_TUI_SURFACE_EXECUTABLE_ENV: &str = "LOONG_TEST_TUI_SURFACE_EXECUTABLE";
 const PENDING_TOOL_LABEL_COLORS: [Color; 6] = [
     SURFACE_DIM_GRAY,
     SURFACE_GRAY,
@@ -2096,7 +2098,7 @@ fn render_startup_onboarding_lines(
                 lines.extend(render_onboarding_wrapped_line(
                     "  ",
                     format!(
-                        "trusted startup extension follow-up stays available through `/extensions {first_plugin_id}`."
+                        "trusted startup extension follow-up stays available through `/extensions run {first_plugin_id} startup_onboarding`."
                     )
                     .as_str(),
                     Style::default().fg(SURFACE_GRAY),
@@ -2168,7 +2170,7 @@ fn startup_setup_path_detail_lines(state: &StartupOnboardingState) -> Vec<String
         ));
         if let Some(first_plugin_id) = state.startup_extension_plugin_ids.first() {
             lines.push(format!(
-                "Inspect one immediately after onboarding with `/extensions {first_plugin_id}`."
+                "Inspect one immediately after onboarding with `/extensions run {first_plugin_id} startup_onboarding`."
             ));
         }
     }
@@ -2472,7 +2474,7 @@ fn build_runtime_extension_command_palette_entries(
     collect_ready_trusted_tui_surface_extensions(runtime, "command_palette")
         .into_iter()
         .map(|entry| DynamicCommandEntry {
-            command: format!("/extensions {}", entry.plugin_id),
+            command: format!("/extensions run {} command_palette", entry.plugin_id),
             description: format!(
                 "inspect trusted command palette extension · {} · {}",
                 entry.source_language, entry.bridge_kind
@@ -2493,7 +2495,10 @@ fn build_runtime_extension_settings_entries(runtime: &CliTurnRuntime) -> Vec<Set
                 "inspect trusted settings extension · {} · {}",
                 entry.source_language, entry.bridge_kind
             ),
-            action: CommandAction::RunCommandOwned(format!("/extensions {}", entry.plugin_id)),
+            action: CommandAction::RunCommandOwned(format!(
+                "/extensions run {} settings_flow",
+                entry.plugin_id
+            )),
             selectable: true,
         })
         .collect()
@@ -2508,6 +2513,7 @@ fn build_runtime_extension_settings_entries(_runtime: &CliTurnRuntime) -> Vec<Se
 #[derive(Debug, Clone)]
 struct TrustedTuiSurfaceExtensionEntry {
     plugin_id: String,
+    package_root: String,
     source_language: String,
     bridge_kind: String,
 }
@@ -2565,6 +2571,7 @@ fn collect_ready_trusted_tui_surface_extensions(
 
         entries.push(TrustedTuiSurfaceExtensionEntry {
             plugin_id: plugin.plugin_id.clone(),
+            package_root: plugin.package_root.clone(),
             source_language: plugin.runtime.source_language.clone(),
             bridge_kind: plugin.runtime.bridge_kind.as_str().to_owned(),
         });
@@ -2572,6 +2579,85 @@ fn collect_ready_trusted_tui_surface_extensions(
 
     entries.sort_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
     entries
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn run_trusted_tui_surface_probe(
+    runtime: &CliTurnRuntime,
+    plugin: &TrustedTuiSurfaceExtensionEntry,
+    tui_surface: &str,
+) -> CliResult<TrustedTuiSurfaceProbeExecution> {
+    let allowed_commands = runtime
+        .config
+        .runtime_plugins
+        .normalized_allowed_process_commands();
+    if allowed_commands.is_empty() {
+        return Err(
+            "runtime_plugins.allowed_process_commands is empty; trusted TUI surface probes need at least one allowlisted process command"
+                .to_owned(),
+        );
+    }
+
+    let executable_path = resolve_tui_surface_probe_executable_path()?;
+    let payload = sample_tui_surface_probe_payload(tui_surface);
+    let mut command = Command::new(executable_path);
+    command
+        .arg("plugins")
+        .arg("--json")
+        .arg("invoke-tui-surface")
+        .arg("--root")
+        .arg(plugin.package_root.as_str())
+        .arg("--plugin-id")
+        .arg(plugin.plugin_id.as_str())
+        .arg("--tui-surface")
+        .arg(tui_surface)
+        .arg("--payload")
+        .arg(payload);
+    for allow_command in allowed_commands {
+        command.arg("--allow-command").arg(allow_command);
+    }
+
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to launch trusted TUI surface probe: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("exit status {}", output.status)
+        };
+        return Err(format!("trusted TUI surface probe failed: {detail}"));
+    }
+
+    serde_json::from_slice::<TrustedTuiSurfaceProbeExecution>(&output.stdout).map_err(|error| {
+        format!("trusted TUI surface probe returned invalid JSON payload: {error}")
+    })
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn resolve_tui_surface_probe_executable_path() -> CliResult<PathBuf> {
+    if cfg!(debug_assertions)
+        && let Some(executable_path) = std::env::var_os(TEST_TUI_SURFACE_EXECUTABLE_ENV)
+    {
+        return Ok(PathBuf::from(executable_path));
+    }
+
+    std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable: {error}"))
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn sample_tui_surface_probe_payload(surface: &str) -> &'static str {
+    match surface {
+        "command_palette" => "{\"query\":\":ext\"}",
+        "settings_flow" => "{\"section\":\"workspace\"}",
+        "startup_onboarding" => "{\"step\":\"welcome\"}",
+        _ => "{}",
+    }
 }
 
 fn sync_slash_palette_composer(app: &mut App) {
@@ -5653,6 +5739,15 @@ fn render_extensions_command_lines_with_width(
         roots
     };
 
+    if let Some((plugin_id, tui_surface)) = parse_extension_run_args(requested_plugin_id) {
+        return render_extension_tui_surface_probe_lines_with_width(
+            runtime,
+            width,
+            plugin_id,
+            tui_surface,
+        );
+    }
+
     if !requested_plugin_id.is_empty() {
         let maybe_entry = entries
             .iter()
@@ -5749,6 +5844,102 @@ fn render_extensions_command_lines_with_width(
         footer_lines,
     };
 
+    Ok(super::super::render_cli_chat_message_spec_with_width(
+        &message_spec,
+        width,
+    ))
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn parse_extension_run_args(args: &str) -> Option<(&str, &str)> {
+    let mut parts = args.split_whitespace();
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("run"), Some(plugin_id), Some(tui_surface), None) => Some((plugin_id, tui_surface)),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+#[derive(Debug, Deserialize)]
+struct TrustedTuiSurfaceProbeExecution {
+    plugin_id: String,
+    tui_surface: String,
+    response_payload: Value,
+    runtime_evidence: Value,
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn render_extension_tui_surface_probe_lines_with_width(
+    runtime: &CliTurnRuntime,
+    width: usize,
+    plugin_id: &str,
+    tui_surface: &str,
+) -> CliResult<Vec<String>> {
+    let Some(plugin) = collect_ready_trusted_tui_surface_extensions(runtime, tui_surface)
+        .into_iter()
+        .find(|entry| entry.plugin_id == plugin_id)
+    else {
+        let message_spec = TuiMessageSpec {
+            role: "extensions".to_owned(),
+            caption: Some("extension run".to_owned()),
+            sections: vec![TuiSectionSpec::Callout {
+                tone: TuiCalloutTone::Warning,
+                title: Some("unavailable".to_owned()),
+                lines: vec![format!(
+                    "No ready trusted `{tui_surface}` extension named `{plugin_id}` is currently visible."
+                )],
+            }],
+            footer_lines: vec![format!(
+                "Use `/extensions {plugin_id}` to inspect the current declaration and setup truth."
+            )],
+        };
+        return Ok(super::super::render_cli_chat_message_spec_with_width(
+            &message_spec,
+            width,
+        ));
+    };
+
+    let execution = run_trusted_tui_surface_probe(runtime, &plugin, tui_surface)?;
+    let response_payload = serde_json::to_string_pretty(&execution.response_payload)
+        .unwrap_or_else(|_| execution.response_payload.to_string());
+    let runtime_evidence = serde_json::to_string_pretty(&execution.runtime_evidence)
+        .unwrap_or_else(|_| execution.runtime_evidence.to_string());
+    let message_spec = TuiMessageSpec {
+        role: "extensions".to_owned(),
+        caption: Some(format!(
+            "{} · {}",
+            execution.plugin_id, execution.tui_surface
+        )),
+        sections: vec![
+            TuiSectionSpec::KeyValues {
+                title: Some("trusted tui surface probe".to_owned()),
+                items: vec![
+                    TuiKeyValueSpec::Plain {
+                        key: "plugin".to_owned(),
+                        value: execution.plugin_id,
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "surface".to_owned(),
+                        value: execution.tui_surface,
+                    },
+                ],
+            },
+            TuiSectionSpec::Narrative {
+                title: Some("response payload".to_owned()),
+                lines: response_payload.lines().map(str::to_owned).collect(),
+            },
+            TuiSectionSpec::Narrative {
+                title: Some("runtime evidence".to_owned()),
+                lines: runtime_evidence.lines().map(str::to_owned).collect(),
+            },
+        ],
+        footer_lines: vec![
+            format!("Use `/extensions {plugin_id}` to inspect the declaration and package truth."),
+            format!(
+                "Rerun with `/extensions run {plugin_id} {tui_surface}` whenever you want a fresh bounded probe."
+            ),
+        ],
+    };
     Ok(super::super::render_cli_chat_message_spec_with_width(
         &message_spec,
         width,
@@ -7833,6 +8024,32 @@ mod tests {
         }
     }
 
+    fn sample_process_stdio_tui_surface_manifest(
+        plugin_id: &str,
+        tui_surface: &str,
+    ) -> PluginManifest {
+        let mut manifest = sample_runtime_plugin_manifest(plugin_id);
+        manifest.endpoint = None;
+        manifest
+            .metadata
+            .insert("bridge_kind".to_owned(), "process_stdio".to_owned());
+        manifest
+            .metadata
+            .insert("adapter_family".to_owned(), "native_runtime".to_owned());
+        manifest
+            .metadata
+            .insert("command".to_owned(), "node".to_owned());
+        manifest.metadata.insert(
+            "loong_extension_methods_json".to_owned(),
+            "[\"extension/event\"]".to_owned(),
+        );
+        manifest.metadata.insert(
+            "loong_extension_tui_surfaces_json".to_owned(),
+            format!("[\"{tui_surface}\"]"),
+        );
+        manifest
+    }
+
     fn test_runtime_without_config(path: PathBuf) -> crate::chat::CliTurnRuntime {
         let mut runtime = test_runtime_with_path(path);
         runtime.config_present = false;
@@ -8481,6 +8698,66 @@ mod tests {
     }
 
     #[test]
+    fn extensions_command_run_tui_surface_renders_probe_output() {
+        let root = std::env::temp_dir().join(format!(
+            "loong-chat-extension-run-surface-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("mkdir extension root");
+        write_runtime_plugin_manifest(
+            root.as_path(),
+            "weather-extension",
+            &sample_process_stdio_tui_surface_manifest("weather-extension", "command_palette"),
+        );
+
+        let fake_cli = root.join("fake-loong-plugins");
+        crate::test_support::write_executable_script_atomically(
+            &fake_cli,
+            r#"#!/bin/sh
+surface=""
+previous=""
+for arg in "$@"; do
+  if [ "$previous" = "--tui-surface" ]; then
+    surface="$arg"
+  fi
+  previous="$arg"
+done
+printf '{"plugin_id":"weather-extension","tui_surface":"%s","response_payload":{"handled_tui_surface":"%s","probe":"ok"},"runtime_evidence":{"executor":"fake-cli"}}\n' "$surface" "$surface"
+"#,
+        )
+        .expect("write fake cli");
+
+        let mut config = LoongConfig::default();
+        config.runtime_plugins.enabled = true;
+        config.runtime_plugins.roots = vec![root.display().to_string()];
+        config.runtime_plugins.allowed_process_commands = vec!["node".to_owned()];
+        let runtime = test_runtime_with_config(root.join("loong.toml"), config);
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.set(
+            super::TEST_TUI_SURFACE_EXECUTABLE_ENV,
+            fake_cli.to_string_lossy().as_ref(),
+        );
+
+        let rendered = super::render_extensions_command_lines_with_width(
+            &runtime,
+            100,
+            "run weather-extension command_palette",
+        )
+        .expect("render executed tui surface")
+        .join("\n");
+
+        assert!(rendered.contains("trusted tui surface probe"));
+        assert!(rendered.contains("handled_tui_surface"));
+        assert!(rendered.contains("command_palette"));
+        assert!(rendered.contains("fake-cli"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn extensions_command_detail_falls_back_to_runtime_bridge_when_no_probes_declared() {
         let root = std::env::temp_dir().join(format!(
             "loong-chat-extension-no-probes-{}",
@@ -9025,7 +9302,7 @@ description: "actual description"
                 KeyModifiers::NONE,
             )) {
             Some(CommandAction::RunCommandOwned(command))
-                if command == "/extensions weather-extension" => {}
+                if command == "/extensions run weather-extension command_palette" => {}
             other => {
                 panic!("expected runtime extension palette entry, got {other:?}");
             }
@@ -11217,7 +11494,7 @@ description: "actual description"
         assert!(matches!(
             &extension_entry.action,
             CommandAction::RunCommandOwned(command)
-                if command == "/extensions weather-extension"
+                if command == "/extensions run weather-extension settings_flow"
         ));
 
         let _ = fs::remove_dir_all(root);
@@ -11299,7 +11576,8 @@ description: "actual description"
 
         assert!(rendered.contains("Trusted startup extensions available now"));
         assert!(rendered.contains("weather-extension"));
-        assert!(rendered.contains("/extensions weather-extension"));
+        assert!(rendered.contains("/extensions run"));
+        assert!(rendered.contains("startup_onboarding"));
     }
 
     #[test]
@@ -11321,7 +11599,9 @@ description: "actual description"
 
         assert!(rendered.contains("startup extensions · 1 available"));
         assert!(rendered.contains("trusted startup extension follow-up stays available"));
+        assert!(rendered.contains("/extensions run"));
         assert!(rendered.contains("weather-extension"));
+        assert!(rendered.contains("startup_onboarding"));
     }
 
     #[test]
