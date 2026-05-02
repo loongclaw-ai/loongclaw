@@ -338,11 +338,6 @@ pub(super) fn apply_active_external_skill_blocked_tools_to_tool_view(
             {
                 blocked_names.insert(direct_tool_name.to_owned());
             }
-            if let Some(hidden_facade_tool_name) =
-                crate::tools::hidden_facade_tool_name_for_hidden_tool(blocked_tool)
-            {
-                blocked_names.insert(hidden_facade_tool_name.to_owned());
-            }
         }
     }
 

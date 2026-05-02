@@ -1,16 +1,7 @@
 use serde_json::Map;
 use serde_json::Value;
 
-pub(crate) fn compact_tool_search_payload_summary_str(payload_summary: &str) -> Option<String> {
-    let payload_json = serde_json::from_str::<Value>(payload_summary).ok()?;
-    let compacted_summary = compact_tool_search_payload_summary(&payload_json)?;
-    let compacted_summary_str = serde_json::to_string(&compacted_summary).ok()?;
-    let is_smaller = compacted_summary_str.len() < payload_summary.len();
-
-    is_smaller.then_some(compacted_summary_str)
-}
-
-pub(crate) fn compact_tool_search_payload_summary(payload: &Value) -> Option<Value> {
+pub(crate) fn compact_discovery_payload_summary(payload: &Value) -> Option<Value> {
     let payload_object = payload.as_object()?;
     let results = payload_object.get("results")?.as_array()?;
     let mut compacted = Map::new();
@@ -36,7 +27,7 @@ pub(crate) fn compact_tool_search_payload_summary(payload: &Value) -> Option<Val
         Value::Array(
             results
                 .iter()
-                .map(compact_tool_search_payload_result)
+                .map(compact_discovery_payload_result)
                 .collect(),
         ),
     );
@@ -44,7 +35,7 @@ pub(crate) fn compact_tool_search_payload_summary(payload: &Value) -> Option<Val
     Some(Value::Object(compacted))
 }
 
-fn compact_tool_search_payload_result(result: &Value) -> Value {
+fn compact_discovery_payload_result(result: &Value) -> Value {
     let Some(result_object) = result.as_object() else {
         return result.clone();
     };
@@ -86,11 +77,11 @@ fn clone_array_field_if_present(
 mod tests {
     use serde_json::json;
 
-    use super::compact_tool_search_payload_summary;
+    use super::compact_discovery_payload_summary;
     use crate::conversation::tool_discovery_state::ToolDiscoveryState;
 
     #[test]
-    fn compact_tool_search_payload_summary_keeps_runtime_usable_leases_and_advisory_metadata() {
+    fn compact_discovery_payload_summary_keeps_runtime_usable_leases_and_advisory_metadata() {
         let payload = json!({
             "adapter": "core-tools",
             "tool_name": "tool.search",
@@ -119,7 +110,7 @@ mod tests {
         });
 
         let compacted =
-            compact_tool_search_payload_summary(&payload).expect("compacted tool search payload");
+            compact_discovery_payload_summary(&payload).expect("compacted discovery payload");
         let compacted_result = compacted["results"][0]
             .as_object()
             .expect("compacted result object");

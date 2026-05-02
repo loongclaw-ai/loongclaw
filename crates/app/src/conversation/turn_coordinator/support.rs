@@ -180,22 +180,20 @@ impl ProviderTurnPreparation {
 }
 
 #[derive(Debug)]
-pub(super) struct DiscoveryFirstFollowupTurnSummary {
+pub(super) struct FollowupTurnSummary {
     pub(super) outcome: String,
     pub(super) followup_tool_name: Option<String>,
     pub(super) followup_target_tool_id: Option<String>,
-    pub(super) resolved_to_tool_invoke: bool,
+    pub(super) used_legacy_hidden_tool_wrapper: bool,
 }
 
-pub(super) fn summarize_discovery_first_followup_turn(
-    turn: &ProviderTurn,
-) -> DiscoveryFirstFollowupTurnSummary {
+pub(super) fn summarize_followup_turn(turn: &ProviderTurn) -> FollowupTurnSummary {
     let Some(first) = turn.tool_intents.first() else {
-        return DiscoveryFirstFollowupTurnSummary {
+        return FollowupTurnSummary {
             outcome: "final_reply".to_owned(),
             followup_tool_name: None,
             followup_target_tool_id: None,
-            resolved_to_tool_invoke: false,
+            used_legacy_hidden_tool_wrapper: false,
         };
     };
 
@@ -208,8 +206,9 @@ pub(super) fn summarize_discovery_first_followup_turn(
         .unwrap_or(first);
     let canonical_tool_name =
         crate::tools::canonical_tool_name(intent.tool_name.as_str()).to_owned();
-    let resolved_to_tool_invoke = canonical_tool_name == "tool.invoke";
-    let followup_target_tool_id = resolved_to_tool_invoke
+    let visible_tool_name = crate::tools::user_visible_tool_name(canonical_tool_name.as_str());
+    let used_legacy_hidden_tool_wrapper = canonical_tool_name == "tool.invoke";
+    let followup_target_tool_id = used_legacy_hidden_tool_wrapper
         .then(|| {
             intent
                 .args_json
@@ -219,11 +218,11 @@ pub(super) fn summarize_discovery_first_followup_turn(
         })
         .flatten();
 
-    DiscoveryFirstFollowupTurnSummary {
-        outcome: canonical_tool_name.clone(),
-        followup_tool_name: Some(canonical_tool_name),
+    FollowupTurnSummary {
+        outcome: visible_tool_name.clone(),
+        followup_tool_name: Some(visible_tool_name),
         followup_target_tool_id,
-        resolved_to_tool_invoke,
+        used_legacy_hidden_tool_wrapper,
     }
 }
 

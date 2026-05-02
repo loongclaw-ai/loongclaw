@@ -4,6 +4,7 @@ use super::{
     provider_tool_denial_should_conceal_name, session_context_from_turn, tool_intent_is_visible,
     tool_intent_skips_provider_exposed_gate,
 };
+use loong_contracts::ToolCoreRequest;
 
 impl TurnEngine {
     /// Evaluate a provider turn and produce a deterministic result.
@@ -64,6 +65,42 @@ impl TurnEngine {
 
         let catalog = crate::tools::tool_catalog();
         for intent in &turn.tool_intents {
+            let outer_request = ToolCoreRequest {
+                tool_name: intent.tool_name.clone(),
+                payload: intent.args_json.clone(),
+            };
+            if let Some(peeked_request) = crate::tools::peek_tool_invoke_request(&outer_request) {
+                let Some(descriptor) = catalog.resolve(peeked_request.tool_name) else {
+                    let reason = provider_tool_denial_reason(
+                        "tool_not_found: tool.invoke",
+                        intent.source.as_str(),
+                    );
+                    return Err(TurnFailure::policy_denied_with_discovery_recovery(
+                        "tool_not_found",
+                        reason,
+                    ));
+                };
+
+                if descriptor.is_provider_exposed()
+                    || crate::tools::direct_tool_name_for_hidden_tool(descriptor.name).is_some()
+                {
+                    let reason = provider_tool_denial_reason(
+                        "tool_not_found: tool.invoke",
+                        intent.source.as_str(),
+                    );
+                    return Err(TurnFailure::policy_denied_with_discovery_recovery(
+                        "tool_not_found",
+                        reason,
+                    ));
+                }
+
+                if !session_context.tool_view.contains(descriptor.name) {
+                    return Err(concealed_provider_tool_denial());
+                }
+
+                continue;
+            }
+
             let Some(resolved_tool) = crate::tools::resolve_tool_execution(&intent.tool_name)
             else {
                 let raw_reason = format!("tool_not_found: {}", intent.tool_name);

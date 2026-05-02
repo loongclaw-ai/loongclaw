@@ -36,7 +36,8 @@ const DEFAULT_MAX_DOWNLOAD_BYTES: usize = 5 * 1024 * 1024;
 const HARD_MAX_DOWNLOAD_BYTES: usize = 20 * 1024 * 1024;
 const DEFAULT_SKILL_RESOURCE_LIST_LIMIT: usize = 64;
 #[cfg(test)]
-const INSTALLED_SKILL_SNAPSHOT_HINT: &str = "installed managed external skill; use external_skills.inspect or external_skills.invoke for details";
+const INSTALLED_SKILL_SNAPSHOT_HINT: &str =
+    "installed managed external skill; use skills.inspect or skills.invoke for details";
 const PROJECT_DISCOVERY_DIRS: [(&str, usize); 5] = [
     (".loong/skills", 0),
     (".agents/skills", 1),
@@ -302,13 +303,6 @@ struct RankedBlockedSkillDiscoveryResult {
     match_reasons: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SkillDiscoveryToolHint {
-    pub(super) skill_id: String,
-    pub(super) display_name: String,
-    pub(super) summary: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SkillAudience {
     Model,
@@ -362,7 +356,7 @@ pub(super) fn execute_external_skills_policy_tool_with_config(
     let payload = request
         .payload
         .as_object()
-        .ok_or_else(|| "external_skills.policy payload must be an object".to_owned())?;
+        .ok_or_else(|| "skills.policy payload must be an object".to_owned())?;
     let action = payload
         .get("action")
         .and_then(Value::as_str)
@@ -373,7 +367,7 @@ pub(super) fn execute_external_skills_policy_tool_with_config(
 
     if !matches!(action.as_str(), "get" | "set" | "reset") {
         return Err(format!(
-            "external_skills.policy payload.action must be `get`, `set`, or `reset`, got `{action}`"
+            "skills.policy payload.action must be `get`, `set`, or `reset`, got `{action}`"
         ));
     }
 
@@ -482,8 +476,8 @@ pub(super) fn execute_external_skills_fetch_tool_with_config(
     let payload = request
         .payload
         .as_object()
-        .ok_or_else(|| "external_skills.fetch payload must be an object".to_owned())?;
-    let reference = parse_required_external_skill_reference(payload, "external_skills.fetch")?;
+        .ok_or_else(|| "skills.fetch payload must be an object".to_owned())?;
+    let reference = parse_required_external_skill_reference(payload, "skills.fetch")?;
     if reqwest::Url::parse(reference.as_str()).is_ok() {
         ensure_external_skill_https_url(reference.as_str(), "download")?;
     }
@@ -587,8 +581,8 @@ pub(super) fn execute_external_skills_resolve_tool_with_config(
     let payload = request
         .payload
         .as_object()
-        .ok_or_else(|| "external_skills.resolve payload must be an object".to_owned())?;
-    let reference = parse_required_external_skill_reference(payload, "external_skills.resolve")?;
+        .ok_or_else(|| "skills.resolve payload must be an object".to_owned())?;
+    let reference = parse_required_external_skill_reference(payload, "skills.resolve")?;
     let candidate = resolve_external_skill_candidate(reference.as_str())?;
     let candidate_payload = serialize_external_skill_candidate(&candidate)?;
 
@@ -611,13 +605,12 @@ pub(super) fn execute_external_skills_source_search_tool_with_config(
     let payload = request
         .payload
         .as_object()
-        .ok_or_else(|| "external_skills.source_search payload must be an object".to_owned())?;
-    let query = parse_required_query(payload, "external_skills.source_search")?;
-    let max_results = parse_optional_source_search_limit(payload, "external_skills.source_search")?
+        .ok_or_else(|| "skills.source_search payload must be an object".to_owned())?;
+    let query = parse_required_query(payload, "skills.source_search")?;
+    let max_results = parse_optional_source_search_limit(payload, "skills.source_search")?
         .unwrap_or(5)
         .clamp(1, 10);
-    let source_kinds =
-        parse_external_skill_search_sources(payload, "external_skills.source_search")?;
+    let source_kinds = parse_external_skill_search_sources(payload, "skills.source_search")?;
     let per_source_limit = max_results.clamp(1, 5);
 
     let mut collected_results = Vec::new();
@@ -711,7 +704,7 @@ pub(super) fn execute_external_skills_install_tool_with_config(
     let payload = request
         .payload
         .as_object()
-        .ok_or_else(|| "external_skills.install payload must be an object".to_owned())?;
+        .ok_or_else(|| "skills.install payload must be an object".to_owned())?;
     let raw_path = payload
         .get("path")
         .and_then(Value::as_str)
@@ -726,8 +719,7 @@ pub(super) fn execute_external_skills_install_tool_with_config(
         .get("replace")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let security_decision =
-        parse_external_skill_security_decision(payload, "external_skills.install")?;
+    let security_decision = parse_external_skill_security_decision(payload, "skills.install")?;
     let explicit_skill_id = payload
         .get("skill_id")
         .and_then(Value::as_str)
@@ -740,14 +732,12 @@ pub(super) fn execute_external_skills_install_tool_with_config(
 
     if raw_path.is_some() && bundled_skill_id.is_some() {
         return Err(
-            "external_skills.install accepts either payload.path or payload.bundled_skill_id, not both"
+            "skills.install accepts either payload.path or payload.bundled_skill_id, not both"
                 .to_owned(),
         );
     }
     if raw_path.is_none() && bundled_skill_id.is_none() {
-        return Err(
-            "external_skills.install requires payload.path or payload.bundled_skill_id".to_owned(),
-        );
+        return Err("skills.install requires payload.path or payload.bundled_skill_id".to_owned());
     }
 
     require_enabled_runtime_policy(config)?;
@@ -768,15 +758,13 @@ pub(super) fn execute_external_skills_install_tool_with_config(
                 .is_some()
             {
                 return Err(
-                    "external_skills.install cannot override payload.skill_id when payload.bundled_skill_id is used"
+                    "skills.install cannot override payload.skill_id when payload.bundled_skill_id is used"
                         .to_owned(),
                 );
             }
             let bundled = super::bundled_skills::bundled_external_skill(bundled_skill_id)
                 .ok_or_else(|| {
-                    format!(
-                        "external_skills.install does not recognize bundled skill `{bundled_skill_id}`"
-                    )
+                    format!("skills.install does not recognize bundled skill `{bundled_skill_id}`")
                 })?;
             let bundled_markdown =
                 super::bundled_skills::bundled_external_skill_markdown(&bundled)?;
@@ -816,7 +804,7 @@ pub(super) fn execute_external_skills_install_tool_with_config(
         } else {
             let Some(raw_path) = raw_path else {
                 return Err(
-                    "external_skills.install internal error: missing path after payload validation"
+                    "skills.install internal error: missing path after payload validation"
                         .to_owned(),
                 );
             };
@@ -1072,13 +1060,13 @@ pub(super) fn execute_external_skills_inspect_tool_with_config(
     let payload = request
         .payload
         .as_object()
-        .ok_or_else(|| "external_skills.inspect payload must be an object".to_owned())?;
+        .ok_or_else(|| "skills.inspect payload must be an object".to_owned())?;
     let skill_id = payload
         .get("skill_id")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "external_skills.inspect requires payload.skill_id".to_owned())?;
+        .ok_or_else(|| "skills.inspect requires payload.skill_id".to_owned())?;
 
     require_enabled_runtime_policy(config)?;
     execute_external_skills_inspect_for_audience(
@@ -1096,13 +1084,13 @@ pub(super) fn execute_external_skills_invoke_tool_with_config(
     let payload = request
         .payload
         .as_object()
-        .ok_or_else(|| "external_skills.invoke payload must be an object".to_owned())?;
+        .ok_or_else(|| "skills.invoke payload must be an object".to_owned())?;
     let skill_id = payload
         .get("skill_id")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "external_skills.invoke requires payload.skill_id".to_owned())?;
+        .ok_or_else(|| "skills.invoke requires payload.skill_id".to_owned())?;
 
     require_enabled_runtime_policy(config)?;
 
@@ -1117,7 +1105,7 @@ pub(super) fn execute_external_skills_invoke_tool_with_config(
     }
     if matches!(skill.invocation_policy, SkillInvocationPolicy::Manual) {
         return Err(format!(
-            "external skill `{skill_id}` is marked invocation_policy=manual and cannot be invoked through external_skills.invoke"
+            "external skill `{skill_id}` is marked invocation_policy=manual and cannot be invoked through skills.invoke"
         ));
     }
     let invocation_policy_id = invocation_policy_id(skill.invocation_policy);
@@ -1150,7 +1138,7 @@ pub(crate) fn execute_external_skills_operator_list_tool_with_config(
     config: &super::runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
     execute_external_skills_list_for_audience(
-        "external_skills.list".to_owned(),
+        "skills.list".to_owned(),
         config,
         SkillAudience::Operator,
     )
@@ -1161,7 +1149,7 @@ pub(crate) fn execute_external_skills_operator_inspect_tool_with_config(
     config: &super::runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
     execute_external_skills_inspect_for_audience(
-        "external_skills.inspect".to_owned(),
+        "skills.inspect".to_owned(),
         config,
         skill_id,
         SkillAudience::Operator,
@@ -1193,13 +1181,13 @@ pub(super) fn execute_external_skills_remove_tool_with_config(
     let payload = request
         .payload
         .as_object()
-        .ok_or_else(|| "external_skills.remove payload must be an object".to_owned())?;
+        .ok_or_else(|| "skills.remove payload must be an object".to_owned())?;
     let skill_id = payload
         .get("skill_id")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "external_skills.remove requires payload.skill_id".to_owned())?;
+        .ok_or_else(|| "skills.remove requires payload.skill_id".to_owned())?;
 
     require_enabled_runtime_policy(config)?;
 
@@ -1372,8 +1360,8 @@ fn discovery_tool_name(mode: SkillDiscoveryMode) -> &'static str {
     // If mode-specific ranking or filtering lands later, update both this
     // mapping and the downstream discovery behavior together.
     match mode {
-        SkillDiscoveryMode::Search => "external_skills.search",
-        SkillDiscoveryMode::Recommend => "external_skills.recommend",
+        SkillDiscoveryMode::Search => "skills.search",
+        SkillDiscoveryMode::Recommend => "skills.recommend",
     }
 }
 
@@ -1500,66 +1488,6 @@ fn build_skill_search_summary(skill: &DiscoveredSkillEntry) -> String {
     }
 
     format!("{display_name}. {summary}")
-}
-
-pub(super) fn exact_model_visible_skill_hint(
-    config: &super::runtime_config::ToolRuntimeConfig,
-    skill_id: &str,
-) -> Result<Option<SkillDiscoveryToolHint>, String> {
-    if !config.external_skills.enabled {
-        return Ok(None);
-    }
-
-    let requested_skill_id = skill_id.trim();
-    if requested_skill_id.is_empty() {
-        return Ok(None);
-    }
-
-    let inventory = discover_skill_inventory(config)?;
-    let filtered = filter_inventory_for_audience(inventory, SkillAudience::Model);
-    let matched = filtered
-        .skills
-        .into_iter()
-        .find(|entry| entry.skill_id.eq_ignore_ascii_case(requested_skill_id));
-
-    Ok(matched.map(skill_discovery_tool_hint_from_entry))
-}
-
-pub(super) fn ranked_model_visible_skill_hints(
-    config: &super::runtime_config::ToolRuntimeConfig,
-    query: &str,
-    limit: usize,
-) -> Result<Vec<SkillDiscoveryToolHint>, String> {
-    if !config.external_skills.enabled {
-        return Ok(Vec::new());
-    }
-
-    let trimmed_query = query.trim();
-    if trimmed_query.is_empty() || limit == 0 {
-        return Ok(Vec::new());
-    }
-
-    let inventory = discover_skill_inventory(config)?;
-    let filtered = filter_inventory_for_audience(inventory, SkillAudience::Model);
-    let results = build_ranked_skill_discovery_results(
-        filtered.skills.as_slice(),
-        trimmed_query,
-        limit,
-        SkillDiscoveryResolution::Active,
-    );
-
-    Ok(results
-        .into_iter()
-        .map(|result| skill_discovery_tool_hint_from_entry(result.skill))
-        .collect())
-}
-
-fn skill_discovery_tool_hint_from_entry(entry: DiscoveredSkillEntry) -> SkillDiscoveryToolHint {
-    SkillDiscoveryToolHint {
-        skill_id: entry.skill_id,
-        display_name: entry.display_name,
-        summary: entry.summary,
-    }
 }
 
 fn build_skill_search_argument_hint(
@@ -1821,8 +1749,7 @@ fn require_enabled_runtime_policy(
     let policy = resolve_effective_policy(config)?;
     if !policy.enabled {
         return Err(
-            "external skills runtime is disabled; enable `external_skills.enabled = true` first"
-                .to_owned(),
+            "external skills runtime is disabled; enable `skills.enabled = true` first".to_owned(),
         );
     }
     Ok(policy)
@@ -1890,7 +1817,7 @@ fn parse_optional_bool(payload: &Map<String, Value>, key: &str) -> Result<Option
     };
     let parsed = value
         .as_bool()
-        .ok_or_else(|| format!("external_skills.policy payload.{key} must be a boolean"))?;
+        .ok_or_else(|| format!("skills.policy payload.{key} must be a boolean"))?;
     Ok(Some(parsed))
 }
 
@@ -1905,7 +1832,7 @@ fn parse_optional_string(
         .as_str()
         .map(str::trim)
         .filter(|candidate| !candidate.is_empty())
-        .ok_or_else(|| format!("external_skills.fetch payload.{key} must be a non-empty string"))?;
+        .ok_or_else(|| format!("skills.fetch payload.{key} must be a non-empty string"))?;
     Ok(Some(parsed.to_owned()))
 }
 
@@ -2508,15 +2435,15 @@ fn parse_optional_domain_list(
         return Ok(None);
     };
 
-    let items = value.as_array().ok_or_else(|| {
-        format!("external_skills.policy payload.{key} must be an array of strings")
-    })?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| format!("skills.policy payload.{key} must be an array of strings"))?;
 
     let mut normalized = BTreeSet::new();
     for item in items {
-        let raw = item.as_str().ok_or_else(|| {
-            format!("external_skills.policy payload.{key} must contain only strings")
-        })?;
+        let raw = item
+            .as_str()
+            .ok_or_else(|| format!("skills.policy payload.{key} must contain only strings"))?;
         let rule = normalize_domain_rule(raw)
             .map_err(|error| format!("invalid domain rule in payload.{key}: {error}"))?;
         normalized.insert(rule);
@@ -2601,9 +2528,9 @@ fn parse_max_download_bytes(payload: &Map<String, Value>) -> Result<usize, Strin
     };
     let parsed = value
         .as_u64()
-        .ok_or_else(|| "external_skills.fetch payload.max_bytes must be an integer".to_owned())?;
+        .ok_or_else(|| "skills.fetch payload.max_bytes must be an integer".to_owned())?;
     if parsed == 0 {
-        return Err("external_skills.fetch payload.max_bytes must be >= 1".to_owned());
+        return Err("skills.fetch payload.max_bytes must be >= 1".to_owned());
     }
     let capped = parsed.min(HARD_MAX_DOWNLOAD_BYTES as u64);
     usize::try_from(capped).map_err(|error| format!("invalid max_bytes `{parsed}`: {error}"))
@@ -4169,9 +4096,7 @@ fn runtime_config_selector_enabled(
     }
 
     match normalized_selector.as_str() {
-        "external_skills.enabled" | "tools.external_skills.enabled" => {
-            Some(config.external_skills.enabled)
-        }
+        "skills.enabled" | "tools.skills.enabled" => Some(config.external_skills.enabled),
         "browser.enabled" | "tools.browser.enabled" => Some(config.browser.enabled),
         "browser_companion.enabled" | "tools.browser_companion.enabled" => {
             Some(config.browser_companion.enabled)
@@ -5382,7 +5307,7 @@ mod tests {
 
             let set_outcome = execute_external_skills_policy_tool_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.policy".to_owned(),
+                    tool_name: "skills.policy".to_owned(),
                     payload: json!({
                         "action": "set",
                         "policy_update_approved": true,
@@ -5405,7 +5330,7 @@ mod tests {
 
             let reset_outcome = execute_external_skills_policy_tool_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.policy".to_owned(),
+                    tool_name: "skills.policy".to_owned(),
                     payload: json!({
                         "action": "reset",
                         "policy_update_approved": true
@@ -5428,7 +5353,7 @@ mod tests {
 
             let error = execute_external_skills_policy_tool_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.policy".to_owned(),
+                    tool_name: "skills.policy".to_owned(),
                     payload: json!({
                         "action": "set",
                         "enabled": true
@@ -5450,7 +5375,7 @@ mod tests {
 
             let error = execute_external_skills_fetch_tool_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.fetch".to_owned(),
+                    tool_name: "skills.fetch".to_owned(),
                     payload: json!({
                         "url": "https://skills.sh/demo.tgz",
                         "approval_granted": true
@@ -5472,7 +5397,7 @@ mod tests {
 
             let error = execute_external_skills_fetch_tool_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.fetch".to_owned(),
+                    tool_name: "skills.fetch".to_owned(),
                     payload: json!({
                         "url": "http://skills.sh/demo.tgz",
                         "approval_granted": true
@@ -5494,7 +5419,7 @@ mod tests {
 
             execute_external_skills_policy_tool_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.policy".to_owned(),
+                    tool_name: "skills.policy".to_owned(),
                     payload: json!({
                         "action": "set",
                         "policy_update_approved": true,
@@ -5510,7 +5435,7 @@ mod tests {
 
             let approval_error = execute_external_skills_fetch_tool_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.fetch".to_owned(),
+                    tool_name: "skills.fetch".to_owned(),
                     payload: json!({
                         "url": "https://skills.sh/demo.tgz"
                     }),
@@ -5522,7 +5447,7 @@ mod tests {
 
             let deny_error = execute_external_skills_fetch_tool_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.fetch".to_owned(),
+                    tool_name: "skills.fetch".to_owned(),
                     payload: json!({
                         "url": "https://cdn.evil.example/demo.tgz",
                         "approval_granted": true
@@ -5535,7 +5460,7 @@ mod tests {
 
             let allowlist_error = execute_external_skills_fetch_tool_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.fetch".to_owned(),
+                    tool_name: "skills.fetch".to_owned(),
                     payload: json!({
                         "url": "https://clawhub.ai/demo.tgz",
                         "approval_granted": true
@@ -5548,7 +5473,7 @@ mod tests {
 
             execute_external_skills_policy_tool_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.policy".to_owned(),
+                    tool_name: "skills.policy".to_owned(),
                     payload: json!({
                         "action": "reset",
                         "policy_update_approved": true
@@ -5569,7 +5494,7 @@ mod tests {
 
             let error = execute_external_skills_fetch_tool_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.fetch".to_owned(),
+                    tool_name: "skills.fetch".to_owned(),
                     payload: json!({
                         "url": "https://clawhub.io/demo.tgz",
                         "approval_granted": true
@@ -5593,7 +5518,7 @@ mod tests {
 
             let outcome = execute_external_skills_resolve_tool_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.resolve".to_owned(),
+                    tool_name: "skills.resolve".to_owned(),
                     payload: json!({
                         "reference": "https://clawhub.ai/skills/hybrid-deep-search"
                     }),
@@ -5643,7 +5568,7 @@ mod tests {
 
             let outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -5683,7 +5608,7 @@ mod tests {
 
             let outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "bundled_skill_id": "browser-companion-preview"
                     }),
@@ -5727,7 +5652,7 @@ mod tests {
 
             let outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "bundled_skill_id": "agent-browser"
                     }),
@@ -5772,7 +5697,7 @@ mod tests {
 
             let outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "bundled_skill_id": "github-issues"
                     }),
@@ -5817,7 +5742,7 @@ mod tests {
 
             let outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "bundled_skill_id": "lark-doc"
                     }),
@@ -5852,7 +5777,7 @@ mod tests {
 
             let outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "bundled_skill_id": "minimax-docx"
                     }),
@@ -5904,7 +5829,7 @@ mod tests {
 
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill",
                         "bundled_skill_id": "browser-companion-preview"
@@ -5939,7 +5864,7 @@ mod tests {
 
             let first_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill",
                         "replace": true
@@ -5953,7 +5878,7 @@ mod tests {
 
             let replace_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill-v2",
                         "skill_id": "demo-skill",
@@ -5984,7 +5909,7 @@ mod tests {
 
             let outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/risky-skill"
                     }),
@@ -6029,7 +5954,7 @@ mod tests {
 
             let outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/risky-skill",
                         "security_decision": "approve_once"
@@ -6069,7 +5994,7 @@ mod tests {
 
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -6098,7 +6023,7 @@ mod tests {
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -6111,15 +6036,9 @@ mod tests {
             disabled_config.external_skills.enabled = false;
 
             for (tool_name, payload) in [
-                ("external_skills.list", json!({})),
-                (
-                    "external_skills.inspect",
-                    json!({ "skill_id": "demo-skill" }),
-                ),
-                (
-                    "external_skills.remove",
-                    json!({ "skill_id": "demo-skill" }),
-                ),
+                ("skills.list", json!({})),
+                ("skills.inspect", json!({ "skill_id": "demo-skill" })),
+                ("skills.remove", json!({ "skill_id": "demo-skill" })),
             ] {
                 let error = crate::tools::execute_tool_core_with_config(
                     ToolCoreRequest {
@@ -6154,7 +6073,7 @@ mod tests {
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -6165,7 +6084,7 @@ mod tests {
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -6185,7 +6104,7 @@ mod tests {
 
             let invoke_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -6216,7 +6135,7 @@ mod tests {
             write_file(
                 &home.path,
                 ".agents/skills/release-guard/SKILL.md",
-                "---\nname: release-guard\ndescription: Guard release discipline when: tags, releases, or CI promotion are involved.\ncompatibility: Requires sh and a writable repository.\nmetadata:\n  author: example-org\n  version: \"1.0\"\ninvocation-policy: both\nrequired-env:\n- LOONG_RELEASE_GUARD_TOKEN\nrequired-bin:\n- sh\nrequired-config:\n- external_skills.enabled\nallowed-tools: shell.exec bash.exec\nblocked-tools: web.fetch\n---\n\n# Release Guard\n\nPrefer release checklists.\n\nSee [checklists](references/release-checklist.md).\n",
+                "---\nname: release-guard\ndescription: Guard release discipline when: tags, releases, or CI promotion are involved.\ncompatibility: Requires sh and a writable repository.\nmetadata:\n  author: example-org\n  version: \"1.0\"\ninvocation-policy: both\nrequired-env:\n- LOONG_RELEASE_GUARD_TOKEN\nrequired-bin:\n- sh\nrequired-config:\n- skills.enabled\nallowed-tools: shell.exec bash.exec\nblocked-tools: web.fetch\n---\n\n# Release Guard\n\nPrefer release checklists.\n\nSee [checklists](references/release-checklist.md).\n",
             );
             write_file(
                 &home.path,
@@ -6227,7 +6146,7 @@ mod tests {
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -6287,7 +6206,7 @@ mod tests {
             );
             assert_eq!(
                 inspect_outcome.payload["skill"]["required_config"],
-                json!(["external_skills.enabled"])
+                json!(["skills.enabled"])
             );
             assert_eq!(
                 inspect_outcome.payload["skill"]["metadata"],
@@ -6307,7 +6226,7 @@ mod tests {
 
             let invoke_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "release-guard"
                     }),
@@ -6374,7 +6293,7 @@ mod tests {
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "bundled_skill_id": "docx"
                     }),
@@ -6454,7 +6373,7 @@ Safe for model-driven activation.
 
             let model_list = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -6477,7 +6396,7 @@ Safe for model-driven activation.
 
             let manual_inspect_error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.inspect".to_owned(),
+                    tool_name: "skills.inspect".to_owned(),
                     payload: json!({
                         "skill_id": "manual-only"
                     }),
@@ -6522,7 +6441,7 @@ Safe for model-driven activation.
                 "catalog should include structured skill locations for read-first loading: {catalog}"
             );
             assert!(
-                !catalog.contains("use `tool.search` to lease `external_skills.invoke`"),
+                !catalog.contains("use `tool.search` to lease `skills.invoke`"),
                 "catalog should not steer routine skill loading through tool discovery leases: {catalog}"
             );
 
@@ -6568,7 +6487,7 @@ Safe for model-driven activation.
 
             let manual_error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "manual-only"
                     }),
@@ -6584,7 +6503,7 @@ Safe for model-driven activation.
 
             let env_error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "env-gated"
                     }),
@@ -6689,7 +6608,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -6700,7 +6619,7 @@ Safe for model-driven activation.
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -6762,7 +6681,7 @@ Safe for model-driven activation.
 
             let inspect_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.inspect".to_owned(),
+                    tool_name: "skills.inspect".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -6785,7 +6704,7 @@ Safe for model-driven activation.
 
             let user_invoke = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "user-only"
                     }),
@@ -6804,7 +6723,7 @@ Safe for model-driven activation.
 
             let project_invoke = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "project-only"
                     }),
@@ -6856,7 +6775,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/release-guard"
                     }),
@@ -6867,7 +6786,7 @@ Safe for model-driven activation.
 
             let search_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.search".to_owned(),
+                    tool_name: "skills.search".to_owned(),
                     payload: json!({
                         "query": "release",
                         "limit": 5,
@@ -6876,10 +6795,7 @@ Safe for model-driven activation.
                 &config,
             )
             .expect("search should succeed");
-            assert_eq!(
-                search_outcome.payload["tool_name"],
-                "external_skills.search"
-            );
+            assert_eq!(search_outcome.payload["tool_name"], "skills.search");
             assert_eq!(
                 search_outcome.payload["results"][0]["skill_id"],
                 "release-guard"
@@ -6903,7 +6819,7 @@ Safe for model-driven activation.
 
             let recommend_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.recommend".to_owned(),
+                    tool_name: "skills.recommend".to_owned(),
                     payload: json!({
                         "query": "release helper",
                         "limit": 3,
@@ -6912,10 +6828,7 @@ Safe for model-driven activation.
                 &config,
             )
             .expect("recommend should succeed");
-            assert_eq!(
-                recommend_outcome.payload["tool_name"],
-                "external_skills.recommend"
-            );
+            assert_eq!(recommend_outcome.payload["tool_name"], "skills.recommend");
             assert_eq!(
                 recommend_outcome.payload["results"][0]["skill_id"],
                 "release-guard"
@@ -6953,7 +6866,7 @@ Safe for model-driven activation.
             env.set("HOME", &home);
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &managed_runtime_config(&root),
@@ -6990,7 +6903,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -7003,7 +6916,7 @@ Safe for model-driven activation.
             disabled_config.external_skills.enabled = false;
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -7033,7 +6946,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -7044,7 +6957,7 @@ Safe for model-driven activation.
 
             let remove_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.remove".to_owned(),
+                    tool_name: "skills.remove".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -7057,7 +6970,7 @@ Safe for model-driven activation.
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -7093,7 +7006,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -7116,7 +7029,7 @@ Safe for model-driven activation.
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -7134,7 +7047,7 @@ Safe for model-driven activation.
 
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -7175,7 +7088,7 @@ Safe for model-driven activation.
             let config = managed_runtime_config(&root);
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -7228,7 +7141,7 @@ Safe for model-driven activation.
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -7247,7 +7160,7 @@ Safe for model-driven activation.
 
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -7279,7 +7192,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -7290,7 +7203,7 @@ Safe for model-driven activation.
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -7308,7 +7221,7 @@ Safe for model-driven activation.
 
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -7347,7 +7260,7 @@ Safe for model-driven activation.
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -7365,7 +7278,7 @@ Safe for model-driven activation.
 
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "env-guarded"
                     }),
@@ -7419,7 +7332,7 @@ Safe for model-driven activation.
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -7437,7 +7350,7 @@ Safe for model-driven activation.
 
             let inspect_error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.inspect".to_owned(),
+                    tool_name: "skills.inspect".to_owned(),
                     payload: json!({
                         "skill_id": "mcp-guarded"
                     }),
@@ -7503,7 +7416,7 @@ Safe for model-driven activation.
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -7540,7 +7453,7 @@ Safe for model-driven activation.
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -7592,7 +7505,7 @@ Safe for model-driven activation.
 
             let inspect_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.inspect".to_owned(),
+                    tool_name: "skills.inspect".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -7675,7 +7588,7 @@ Safe for model-driven activation.
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -7693,7 +7606,7 @@ Safe for model-driven activation.
 
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "bin-guarded"
                     }),
@@ -7733,7 +7646,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/healthy-skill"
                     }),
@@ -7765,7 +7678,7 @@ Safe for model-driven activation.
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -7789,7 +7702,7 @@ Safe for model-driven activation.
 
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "broken-skill"
                     }),
@@ -7831,7 +7744,7 @@ Safe for model-driven activation.
             let config = managed_runtime_config(&root);
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill-v1",
                         "skill_id": "demo-skill"
@@ -7843,7 +7756,7 @@ Safe for model-driven activation.
 
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill-v2",
                         "skill_id": "demo-skill",
@@ -7861,7 +7774,7 @@ Safe for model-driven activation.
 
             let invoke_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -7912,7 +7825,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -7945,7 +7858,7 @@ Safe for model-driven activation.
 
             let inspect_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.inspect".to_owned(),
+                    tool_name: "skills.inspect".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -7963,7 +7876,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.remove".to_owned(),
+                    tool_name: "skills.remove".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -8001,7 +7914,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -8026,7 +7939,7 @@ Safe for model-driven activation.
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -8047,7 +7960,7 @@ Safe for model-driven activation.
 
             let invoke_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.invoke".to_owned(),
+                    tool_name: "skills.invoke".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -8090,7 +8003,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/broken-managed"
                     }),
@@ -8107,7 +8020,7 @@ Safe for model-driven activation.
 
             let list_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.list".to_owned(),
+                    tool_name: "skills.list".to_owned(),
                     payload: json!({}),
                 },
                 &config,
@@ -8153,7 +8066,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -8176,7 +8089,7 @@ Safe for model-driven activation.
 
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.inspect".to_owned(),
+                    tool_name: "skills.inspect".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -8188,7 +8101,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.remove".to_owned(),
+                    tool_name: "skills.remove".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -8235,7 +8148,7 @@ Safe for model-driven activation.
             let config = managed_runtime_config(&root);
             let outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "demo-skill.tar.gz"
                     }),
@@ -8292,7 +8205,7 @@ Safe for model-driven activation.
             let config = managed_runtime_config(&root);
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/multi-skill"
                     }),
@@ -8327,7 +8240,7 @@ Safe for model-driven activation.
             let config = managed_runtime_config(&root);
             let outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/multi-skill",
                         "source_skill_id": "beta-skill"
@@ -8401,7 +8314,7 @@ Safe for model-driven activation.
             let config = managed_runtime_config(&root);
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "demo-skill.tar.gz"
                     }),
@@ -8462,7 +8375,7 @@ Safe for model-driven activation.
             let config = managed_runtime_config(&root);
             let outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "demo-skill.zip"
                     }),
@@ -8516,7 +8429,7 @@ Safe for model-driven activation.
             let config = managed_runtime_config(&root);
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "demo-skill.zip"
                     }),
@@ -8561,7 +8474,7 @@ Safe for model-driven activation.
 
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -8572,7 +8485,7 @@ Safe for model-driven activation.
 
             let inspect_outcome = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.inspect".to_owned(),
+                    tool_name: "skills.inspect".to_owned(),
                     payload: json!({
                         "skill_id": "demo-skill"
                     }),
@@ -8598,7 +8511,7 @@ Safe for model-driven activation.
             let missing_config = managed_runtime_config(&missing_root);
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/not-a-skill"
                     }),
@@ -8631,7 +8544,7 @@ Safe for model-driven activation.
             let config = managed_runtime_config(&root);
             let error = crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),
@@ -8658,7 +8571,7 @@ Safe for model-driven activation.
             let enabled_config = managed_runtime_config(&root);
             crate::tools::execute_tool_core_with_config(
                 ToolCoreRequest {
-                    tool_name: "external_skills.install".to_owned(),
+                    tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill"
                     }),

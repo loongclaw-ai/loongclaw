@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use loong_app::conversation::turn_engine::TurnResult;
 use loong_app::test_support::{FakeProviderBuilder, TurnTestHarness};
-use loong_app::tools::runtime_config::ToolRuntimeConfig;
+use loong_app::tools::runtime_config::{BashExecRuntimePolicy, ToolRuntimeConfig};
 use loong_contracts::Capability;
 use serde_json::json;
 
@@ -21,16 +22,8 @@ fn fake_provider_builder_with_tool_call() {
         .build();
     assert_eq!(turn.assistant_text, "checking file");
     assert_eq!(turn.tool_intents.len(), 1);
-    // Discoverable tools are bridged through tool.invoke with a lease.
-    assert_eq!(turn.tool_intents[0].tool_name, "tool.invoke");
-    assert_eq!(
-        turn.tool_intents[0].args_json["tool_id"],
-        json!("file.read")
-    );
-    assert_eq!(
-        turn.tool_intents[0].args_json["arguments"],
-        json!({"path": "test.txt"})
-    );
+    assert_eq!(turn.tool_intents[0].tool_name, "read");
+    assert_eq!(turn.tool_intents[0].args_json, json!({"path": "test.txt"}));
     assert!(!turn.tool_intents[0].tool_call_id.is_empty());
 }
 
@@ -142,15 +135,20 @@ async fn integ_shell_exec_echo() {
             Capability::InvokeTool,
             Capability::FilesystemRead,
             Capability::FilesystemWrite,
+            Capability::NetworkEgress,
         ]),
         ToolRuntimeConfig {
-            shell_allow: BTreeSet::from(["echo".to_owned()]),
+            bash_exec: BashExecRuntimePolicy {
+                available: true,
+                command: Some(PathBuf::from("bash")),
+                ..BashExecRuntimePolicy::default()
+            },
             ..ToolRuntimeConfig::default()
         },
     );
 
     let turn = FakeProviderBuilder::new()
-        .with_tool_call("shell.exec", json!({"command": "echo", "args": ["hello"]}))
+        .with_tool_call("bash", json!({"command": "echo hello"}))
         .build();
     let result = harness.execute(&turn).await;
 
@@ -169,18 +167,25 @@ async fn integ_shell_exec_echo() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn integ_shell_exec_blocked_command() {
     let harness = TurnTestHarness::with_tool_config(
-        BTreeSet::from([Capability::InvokeTool]),
+        BTreeSet::from([
+            Capability::InvokeTool,
+            Capability::FilesystemRead,
+            Capability::FilesystemWrite,
+            Capability::NetworkEgress,
+        ]),
         ToolRuntimeConfig {
-            shell_deny: BTreeSet::from(["echo".to_owned()]),
+            bash_exec: BashExecRuntimePolicy {
+                available: true,
+                command: Some(PathBuf::from("bash")),
+                ..BashExecRuntimePolicy::default()
+            },
+            shell_default_mode: loong_app::tools::shell_policy_ext::ShellPolicyDefault::Deny,
             ..ToolRuntimeConfig::default()
         },
     );
 
     let turn = FakeProviderBuilder::new()
-        .with_tool_call(
-            "shell.exec",
-            json!({"command": "echo", "args": ["denied_test_command"]}),
-        )
+        .with_tool_call("bash", json!({"command": "echo denied_test_command"}))
         .build();
     let result = harness.execute(&turn).await;
 
@@ -188,8 +193,8 @@ async fn integ_shell_exec_blocked_command() {
     match result {
         TurnResult::ToolDenied(err) => {
             assert!(
-                err.contains("blocked by shell policy"),
-                "expected policy-block reason, got: {err}"
+                err.contains("denied") || err.contains("default-deny"),
+                "expected denied bash-governance reason, got: {err}"
             );
         }
         other => panic!("expected ToolDenied with policy reason, got: {other:?}"),
@@ -246,15 +251,20 @@ async fn integ_audit_captures_tool_plane_invocation() {
             Capability::InvokeTool,
             Capability::FilesystemRead,
             Capability::FilesystemWrite,
+            Capability::NetworkEgress,
         ]),
         ToolRuntimeConfig {
-            shell_allow: BTreeSet::from(["echo".to_owned()]),
+            bash_exec: BashExecRuntimePolicy {
+                available: true,
+                command: Some(PathBuf::from("bash")),
+                ..BashExecRuntimePolicy::default()
+            },
             ..ToolRuntimeConfig::default()
         },
     );
 
     let turn = FakeProviderBuilder::new()
-        .with_tool_call("shell.exec", json!({"command": "echo", "args": ["audit"]}))
+        .with_tool_call("bash", json!({"command": "echo audit"}))
         .build();
     let result = harness.execute(&turn).await;
     assert!(
@@ -295,11 +305,11 @@ async fn integ_malformed_tool_args_returns_error() {
     match result {
         TurnResult::ToolError(err) => {
             let mentions_repairable_shape = err.contains("tool input needs repair");
-            let mentions_object_requirement =
-                err.contains("must be an object") || err.contains("must be object");
+            let mentions_current_direct_read_contract = err.contains("direct_read_requires_one_of")
+                || err.contains("expected exactly one of `path`, `query`, or `pattern`");
             assert!(
-                mentions_repairable_shape && mentions_object_requirement,
-                "expected repairable object-shape error, got: {err}"
+                mentions_repairable_shape && mentions_current_direct_read_contract,
+                "expected repairable direct-read guidance, got: {err}"
             );
         }
         other => {

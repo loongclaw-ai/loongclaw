@@ -214,50 +214,14 @@ fn render_deferred_tool_text_workflow_section() -> String {
     ];
     let direct_call_example = direct_call_example_lines.join("\n");
 
-    let discovery_call_example_lines = [
-        "{",
-        "  \"name\": \"tool_search\",",
-        "  \"arguments\": {",
-        "    \"query\": \"approval session status\",",
-        "    \"limit\": 5",
-        "  }",
-        "}",
-    ];
-    let discovery_call_example = discovery_call_example_lines.join("\n");
-
-    let invoke_call_example_lines = [
-        "{",
-        "  \"name\": \"tool_invoke\",",
-        "  \"arguments\": {",
-        "    \"tool_id\": \"agent\",",
-        "    \"lease\": \"<lease from tool_search>\",",
-        "    \"arguments\": {",
-        "      \"operation\": \"session-status\",",
-        "      \"session_id\": \"<session id>\"",
-        "    }",
-        "  }",
-        "}",
-    ];
-    let invoke_call_example = invoke_call_example_lines.join("\n");
-
     let lines = [
         "## Tool Access".to_owned(),
         "Structured provider tool schemas are disabled for this profile.".to_owned(),
-        "Use the smallest tool that fits: `read`, `write`, `exec`, `web`, `browser`, or `memory`. These direct tools are the normal path.".to_owned(),
+        "Use the smallest direct tool that fits: `read`, `write`, `exec`, `web`, `browser`, or `memory`.".to_owned(),
         "For `web`, distinguish search-provider mode from ordinary network mode: `web { query }` uses web-search providers, while `web { url }` or low-level request fields are still normal network access.".to_owned(),
-        "Use `tool_search` only when the task needs a hidden surface such as `agent`, `skills`, or `channel`, and keep the query short and capability-focused.".to_owned(),
-        "Use `tool_invoke` only with a fresh lease returned by `tool_search`; do not route normal direct-tool work through leases.".to_owned(),
-        "Grouped hidden surfaces such as `agent`, `skills`, and `channel` are not direct tool calls. If `tool_search` returns one of them, pass it back through `tool_invoke` with the returned lease instead of emitting that grouped name directly.".to_owned(),
         "When you need a tool, emit the raw JSON call instead of only describing the missing capability.".to_owned(),
         "Direct tool example:".to_owned(),
         direct_call_example,
-        "In raw JSON tool calls, use the provider tool names `tool_search` and `tool_invoke`.".to_owned(),
-        "tool_invoke leases are short-lived; after any invalid_tool_lease response, refresh with tool_search before retrying.".to_owned(),
-        "If you already know the tool id, refresh directly with exact_tool_id to fetch a fresh lease card.".to_owned(),
-        "Hidden-tool discovery example:".to_owned(),
-        discovery_call_example,
-        "Hidden-tool invocation example:".to_owned(),
-        invoke_call_example,
     ];
 
     lines.join("\n")

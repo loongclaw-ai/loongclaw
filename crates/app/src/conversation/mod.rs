@@ -23,6 +23,7 @@ mod session_address;
 mod session_history;
 mod session_state;
 mod subagent;
+#[cfg(test)]
 mod tool_discovery_state;
 mod tool_input_contract;
 mod tool_result_compaction;
@@ -135,7 +136,6 @@ pub use subagent::{
     ConstrainedSubagentRole, ConstrainedSubagentRuntimeBinding, ConstrainedSubagentTerminalReason,
     DelegateBuiltinProfile, coordination_actions_for_subagent_handle, subagent_surface_fields,
 };
-pub(crate) use tool_discovery_state::latest_tool_discovery_state_from_assistant_contents;
 pub use turn_budget::SafeLaneFailureRouteReason;
 pub(crate) use turn_checkpoint::{TurnCheckpointDiagnostics, TurnCheckpointRecoveryAssessment};
 pub use turn_checkpoint::{

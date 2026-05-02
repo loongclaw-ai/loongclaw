@@ -23,9 +23,9 @@ use metadata_support::{
 #[path = "catalog_core_definition_support.rs"]
 mod core_definition_support;
 use core_definition_support::{
-    direct_browser_definition, direct_exec_definition, direct_memory_definition,
-    direct_read_definition, direct_web_definition, direct_write_definition, tool_invoke_definition,
-    tool_search_definition,
+    direct_bash_definition, direct_browser_definition, direct_edit_definition,
+    direct_memory_definition, direct_read_definition, direct_web_definition,
+    direct_write_definition,
 };
 #[path = "catalog_browser_definition_support.rs"]
 mod browser_definition_support;
@@ -316,7 +316,7 @@ pub struct ToolDescriptor {
 fn primary_surface_id(raw: &str) -> bool {
     matches!(
         raw,
-        "read" | "write" | "exec" | "web" | "browser" | "memory" | "agent" | "skills" | "channel"
+        "read" | "write" | "edit" | "bash" | "web" | "browser" | "memory"
     )
 }
 
@@ -519,13 +519,11 @@ pub struct ToolCatalog {
     descriptor_indices: BTreeMap<&'static str, usize>,
     resolved_name_indices: BTreeMap<String, usize>,
     all_entries: Box<[ToolCatalogEntry]>,
-    provider_exposed_entries: Box<[ToolCatalogEntry]>,
     catalog_digest: String,
 }
 
 struct ToolCatalogEntryCaches {
     all_entries: Box<[ToolCatalogEntry]>,
-    provider_exposed_entries: Box<[ToolCatalogEntry]>,
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -581,10 +579,6 @@ impl ToolCatalog {
         &self.all_entries
     }
 
-    fn provider_exposed_entries(&self) -> &[ToolCatalogEntry] {
-        &self.provider_exposed_entries
-    }
-
     fn catalog_digest(&self) -> &str {
         self.catalog_digest.as_str()
     }
@@ -626,13 +620,12 @@ fn declared_concurrency_class(tool_name: &str) -> ToolConcurrencyClass {
         "read"
         | "web"
         | "memory"
-        | "tool.search"
-        | "external_skills.resolve"
-        | "external_skills.search"
-        | "external_skills.recommend"
-        | "external_skills.source_search"
-        | "external_skills.inspect"
-        | "external_skills.list"
+        | "skills.resolve"
+        | "skills.search"
+        | "skills.recommend"
+        | "skills.source_search"
+        | "skills.inspect"
+        | "skills.list"
         | "approval_request_status"
         | "approval_requests_list"
         | "session_artifacts"
@@ -663,14 +656,15 @@ fn declared_concurrency_class(tool_name: &str) -> ToolConcurrencyClass {
         | "web.fetch"
         | "web.search" => Some(ToolConcurrencyClass::ReadOnly),
         "write"
-        | "exec"
+        | "edit"
+        | "bash"
         | "browser"
         | "config.import"
-        | "external_skills.fetch"
-        | "external_skills.install"
-        | "external_skills.invoke"
-        | "external_skills.policy"
-        | "external_skills.remove"
+        | "skills.fetch"
+        | "skills.install"
+        | "skills.invoke"
+        | "skills.policy"
+        | "skills.remove"
         | "provider.switch"
         | "approval_request_resolve"
         | "delegate"
@@ -722,34 +716,6 @@ fn annotate_tool_concurrency_classes(descriptors: &mut [ToolDescriptor]) {
 fn build_tool_catalog() -> ToolCatalog {
     let mut descriptors = vec![
         ToolDescriptor {
-            name: "tool.search",
-            provider_name: "tool_search",
-            aliases: &[],
-            description: "Discover hidden specialized tools relevant to the current task.",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Gateway,
-            visibility_gate: ToolVisibilityGate::Always,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: PARALLEL_SAFE_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: tool_search_definition,
-        },
-        ToolDescriptor {
-            name: "tool.invoke",
-            provider_name: "tool_invoke",
-            aliases: &[],
-            description: "Invoke a discovered hidden specialized tool using a valid lease from tool_search.",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Gateway,
-            visibility_gate: ToolVisibilityGate::Always,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: tool_invoke_definition,
-        },
-        ToolDescriptor {
             name: "read",
             provider_name: "read",
             aliases: &[],
@@ -767,7 +733,7 @@ fn build_tool_catalog() -> ToolCatalog {
             name: "write",
             provider_name: "write",
             aliases: &[],
-            description: "Write workspace files or apply one or more exact text edits",
+            description: "Write workspace files or replace full file contents",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Direct,
@@ -778,10 +744,10 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: direct_write_definition,
         },
         ToolDescriptor {
-            name: "exec",
-            provider_name: "exec",
+            name: "edit",
+            provider_name: "edit",
             aliases: &[],
-            description: "Run guarded workspace commands or raw shell scripts",
+            description: "Apply one or more exact text edits to a file",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Direct,
@@ -789,7 +755,21 @@ fn build_tool_catalog() -> ToolCatalog {
             capability_action_class: CapabilityActionClass::ExecuteExisting,
             policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
             concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: direct_exec_definition,
+            provider_definition_builder: direct_edit_definition,
+        },
+        ToolDescriptor {
+            name: "bash",
+            provider_name: "bash",
+            aliases: &[],
+            description: "Run a guarded bash command in the workspace",
+            execution_kind: ToolExecutionKind::Core,
+            availability: ToolAvailability::Runtime,
+            exposure: ToolExposureClass::Direct,
+            visibility_gate: ToolVisibilityGate::Always,
+            capability_action_class: CapabilityActionClass::ExecuteExisting,
+            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
+            concurrency_class: ToolConcurrencyClass::Unknown,
+            provider_definition_builder: direct_bash_definition,
         },
         ToolDescriptor {
             name: "web",
@@ -809,7 +789,7 @@ fn build_tool_catalog() -> ToolCatalog {
             name: "browser",
             provider_name: "browser",
             aliases: &[],
-            description: "Open pages, extract content, or follow discovered links",
+            description: "Drive a managed browser session",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Direct,
@@ -848,9 +828,9 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: config_import_definition,
         },
         ToolDescriptor {
-            name: "external_skills.fetch",
-            provider_name: "external_skills_fetch",
-            aliases: &[],
+            name: "skills.fetch",
+            provider_name: "skills_fetch",
+            aliases: &["skills.fetch"],
             description: "Download external skills artifacts with domain policy and approval guards",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -862,9 +842,9 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: external_skills_fetch_definition,
         },
         ToolDescriptor {
-            name: "external_skills.resolve",
-            provider_name: "external_skills_resolve",
-            aliases: &[],
+            name: "skills.resolve",
+            provider_name: "skills_resolve",
+            aliases: &["skills.resolve"],
             description: "Normalize an external skill reference into a source-aware candidate",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -876,9 +856,9 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: external_skills_resolve_definition,
         },
         ToolDescriptor {
-            name: "external_skills.search",
-            provider_name: "external_skills_search",
-            aliases: &[],
+            name: "skills.search",
+            provider_name: "skills_search",
+            aliases: &["skills.search"],
             description: "Search the resolved external-skills inventory for active and shadowed matches",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -890,9 +870,9 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: external_skills_search_definition,
         },
         ToolDescriptor {
-            name: "external_skills.recommend",
-            provider_name: "external_skills_recommend",
-            aliases: &[],
+            name: "skills.recommend",
+            provider_name: "skills_recommend",
+            aliases: &["skills.recommend"],
             description: "Recommend the best-fit resolved external skills for an operator goal",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -904,9 +884,9 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: external_skills_recommend_definition,
         },
         ToolDescriptor {
-            name: "external_skills.source_search",
-            provider_name: "external_skills_source_search",
-            aliases: &[],
+            name: "skills.source_search",
+            provider_name: "skills_source_search",
+            aliases: &["skills.source_search"],
             description: "Search preferred external skill ecosystems and return normalized source-aware candidates",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -918,9 +898,9 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: external_skills_source_search_definition,
         },
         ToolDescriptor {
-            name: "external_skills.inspect",
-            provider_name: "external_skills_inspect",
-            aliases: &[],
+            name: "skills.inspect",
+            provider_name: "skills_inspect",
+            aliases: &["skills.inspect"],
             description: "Read metadata for a resolved external skill across managed, user, and project scopes",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -932,9 +912,9 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: external_skills_inspect_definition,
         },
         ToolDescriptor {
-            name: "external_skills.install",
-            provider_name: "external_skills_install",
-            aliases: &[],
+            name: "skills.install",
+            provider_name: "skills_install",
+            aliases: &["skills.install"],
             description: "Install a managed external skill from a local directory or archive",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -946,9 +926,9 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: external_skills_install_definition,
         },
         ToolDescriptor {
-            name: "external_skills.invoke",
-            provider_name: "external_skills_invoke",
-            aliases: &[],
+            name: "skills.invoke",
+            provider_name: "skills_invoke",
+            aliases: &["skills.invoke"],
             description: "Load a resolved external skill into the conversation loop",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -960,9 +940,9 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: external_skills_invoke_definition,
         },
         ToolDescriptor {
-            name: "external_skills.list",
-            provider_name: "external_skills_list",
-            aliases: &[],
+            name: "skills.list",
+            provider_name: "skills_list",
+            aliases: &["skills.list"],
             description: "List resolved external skills across managed, user, and project scopes",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -974,9 +954,9 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: external_skills_list_definition,
         },
         ToolDescriptor {
-            name: "external_skills.policy",
-            provider_name: "external_skills_policy",
-            aliases: &[],
+            name: "skills.policy",
+            provider_name: "skills_policy",
+            aliases: &["skills.policy"],
             description: "Read/update external skills domain allow/block policy at runtime",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -988,9 +968,9 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: external_skills_policy_definition,
         },
         ToolDescriptor {
-            name: "external_skills.remove",
-            provider_name: "external_skills_remove",
-            aliases: &[],
+            name: "skills.remove",
+            provider_name: "skills_remove",
+            aliases: &["skills.remove"],
             description: "Remove an installed external skill from the managed runtime",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -2124,7 +2104,6 @@ fn build_tool_catalog() -> ToolCatalog {
     let resolved_name_indices = build_resolved_name_indices(descriptors.as_slice());
     let entry_caches = build_tool_catalog_entry_caches(descriptors.as_slice());
     let all_entries = entry_caches.all_entries;
-    let provider_exposed_entries = entry_caches.provider_exposed_entries;
     let catalog_digest = build_tool_catalog_digest(all_entries.as_ref());
 
     ToolCatalog {
@@ -2132,7 +2111,6 @@ fn build_tool_catalog() -> ToolCatalog {
         descriptor_indices,
         resolved_name_indices,
         all_entries,
-        provider_exposed_entries,
         catalog_digest,
     }
 }
@@ -2184,21 +2162,14 @@ fn build_resolved_name_indices(descriptors: &[ToolDescriptor]) -> BTreeMap<Strin
 
 fn build_tool_catalog_entry_caches(descriptors: &[ToolDescriptor]) -> ToolCatalogEntryCaches {
     let mut all_entries = Vec::new();
-    let mut provider_exposed_entries = Vec::new();
 
     for descriptor in descriptors {
         let entry = descriptor_to_entry(descriptor);
-
-        if descriptor.is_provider_exposed() {
-            provider_exposed_entries.push(entry);
-        }
-
         all_entries.push(entry);
     }
 
     ToolCatalogEntryCaches {
         all_entries: all_entries.into_boxed_slice(),
-        provider_exposed_entries: provider_exposed_entries.into_boxed_slice(),
     }
 }
 
@@ -2433,8 +2404,14 @@ fn tool_visibility_gate_enabled_for_delegate_child(
     }
 }
 
+#[cfg(test)]
 pub fn provider_exposed_tool_catalog() -> Vec<ToolCatalogEntry> {
-    tool_catalog().provider_exposed_entries().to_vec()
+    tool_catalog()
+        .all_entries()
+        .iter()
+        .filter(|entry| entry.is_provider_exposed())
+        .cloned()
+        .collect()
 }
 
 pub fn all_tool_catalog() -> Vec<ToolCatalogEntry> {

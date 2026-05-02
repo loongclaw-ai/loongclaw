@@ -1,5 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet};
-
 use super::searchable_entry_from_descriptor;
 use crate::tools::catalog::{self, ToolDescriptor, ToolView};
 use crate::tools::runtime_config;
@@ -9,6 +7,7 @@ use crate::tools::{
     effective_runtime_visible_tool_view,
 };
 
+#[cfg(test)]
 pub(crate) fn tool_id_visible_in_view(tool_id: &str, view: &ToolView) -> bool {
     let canonical_tool_id = super::canonical_tool_name(tool_id);
     if view.contains(canonical_tool_id) {
@@ -26,7 +25,7 @@ pub(crate) fn tool_id_visible_in_view(tool_id: &str, view: &ToolView) -> bool {
 pub(crate) fn runtime_tool_search_entries(
     config: &runtime_config::ToolRuntimeConfig,
     visible_tool_view: Option<&ToolView>,
-    collapse_hidden_surfaces: bool,
+    _collapse_hidden_surfaces: bool,
 ) -> Vec<SearchableToolEntry> {
     let visible_tool_view = effective_runtime_visible_tool_view(config, visible_tool_view);
     let mut entries = Vec::new();
@@ -50,13 +49,6 @@ pub(crate) fn runtime_tool_search_entries(
     }
 
     let hidden_entries = runtime_discoverable_tool_entries(config, Some(&visible_tool_view), true);
-    let hidden_entries = if collapse_hidden_surfaces {
-        let collapsible_surface_ids =
-            provider_visible_collapsible_hidden_surface_ids(config, &visible_tool_view);
-        super::collapse_hidden_surface_search_entries(hidden_entries, &collapsible_surface_ids)
-    } else {
-        hidden_entries
-    };
     entries.extend(hidden_entries);
     entries
 }
@@ -81,6 +73,7 @@ pub(crate) fn runtime_discoverable_tool_entries(
             }
 
             descriptor.is_provider_invokable_discoverable()
+                && !descriptor.name.starts_with("skills.")
         })
         .filter(|descriptor| visible_tool_view.contains(descriptor.name))
         .filter(|descriptor| {
@@ -95,54 +88,6 @@ pub(crate) fn runtime_discoverable_tool_entries(
         })
         .map(searchable_entry_from_descriptor)
         .collect::<Vec<_>>()
-}
-
-fn hidden_surface_entry_counts(entries: &[SearchableToolEntry]) -> BTreeMap<String, usize> {
-    let mut counts = BTreeMap::new();
-
-    for entry in entries {
-        let Some(surface_id) = entry.surface_id.as_deref() else {
-            continue;
-        };
-        let is_grouped_surface = matches!(surface_id, "agent" | "skills" | "channel");
-        if !is_grouped_surface {
-            continue;
-        }
-
-        let entry_count = counts.entry(surface_id.to_owned()).or_insert(0);
-        *entry_count += 1;
-    }
-
-    counts
-}
-
-pub(crate) fn provider_visible_collapsible_hidden_surface_ids(
-    config: &runtime_config::ToolRuntimeConfig,
-    visible_tool_view: &ToolView,
-) -> BTreeSet<String> {
-    let all_discoverable_entries =
-        runtime_discoverable_tool_entries(config, Some(visible_tool_view), false);
-    let provider_discoverable_entries =
-        runtime_discoverable_tool_entries(config, Some(visible_tool_view), true);
-    let all_entry_counts = hidden_surface_entry_counts(all_discoverable_entries.as_slice());
-    let provider_entry_counts =
-        hidden_surface_entry_counts(provider_discoverable_entries.as_slice());
-    let mut surface_ids = BTreeSet::new();
-
-    for (surface_id, all_entry_count) in all_entry_counts {
-        let Some(provider_entry_count) = provider_entry_counts.get(surface_id.as_str()).copied()
-        else {
-            continue;
-        };
-        let surface_is_fully_provider_visible = provider_entry_count == all_entry_count;
-        if !surface_is_fully_provider_visible {
-            continue;
-        }
-
-        surface_ids.insert(surface_id);
-    }
-
-    surface_ids
 }
 
 fn searchable_entry_from_descriptor_for_runtime_view(
@@ -208,11 +153,6 @@ fn direct_search_hint_for_runtime_view(
         "web" => {
             let web_runtime_modes = tool_surface::direct_web_runtime_modes_for_view(view);
             let search_hint = web_runtime_modes.search_hint()?;
-            Some(search_hint.to_owned())
-        }
-        "browser" => {
-            let browser_runtime_modes = tool_surface::direct_browser_runtime_modes_for_view(view);
-            let search_hint = browser_runtime_modes.search_hint()?;
             Some(search_hint.to_owned())
         }
         _ => None,

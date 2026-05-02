@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 
@@ -203,65 +203,6 @@ fn build_schema_preview(
         "required_field_groups": required_field_groups,
         "common_optional_fields": common_optional_fields,
     })
-}
-
-pub(crate) fn collapse_hidden_surface_search_entries(
-    entries: Vec<SearchableToolEntry>,
-    collapsible_surface_ids: &BTreeSet<String>,
-) -> Vec<SearchableToolEntry> {
-    let mut grouped_members = BTreeMap::<String, Vec<SearchableToolEntry>>::new();
-    let mut passthrough_entries = Vec::new();
-
-    for entry in entries {
-        let Some(surface_id) = entry.surface_id.as_deref() else {
-            passthrough_entries.push(entry);
-            continue;
-        };
-        if !collapsible_surface_ids.contains(surface_id) {
-            passthrough_entries.push(entry);
-            continue;
-        }
-
-        grouped_members
-            .entry(surface_id.to_owned())
-            .or_default()
-            .push(entry);
-    }
-
-    let mut collapsed_entries = Vec::new();
-    for (surface_id, members) in grouped_members {
-        let Some(summary) =
-            super::super::tool_surface::hidden_surface_search_summary(surface_id.as_str())
-        else {
-            continue;
-        };
-        let Some(argument_hint) =
-            super::super::tool_surface::hidden_surface_search_argument_hint(surface_id.as_str())
-        else {
-            continue;
-        };
-        let mut tags = BTreeSet::new();
-        tags.insert(surface_id.clone());
-        for member in &members {
-            tags.insert(member.tool_id.clone());
-            tags.insert(member.canonical_name.clone());
-            for tag in &member.tags {
-                tags.insert(tag.clone());
-            }
-        }
-
-        collapsed_entries.push(searchable_entry_from_manual_definition(
-            surface_id.as_str(),
-            summary,
-            argument_hint,
-            Vec::new(),
-            Vec::new(),
-            tags.into_iter().collect(),
-        ));
-    }
-
-    passthrough_entries.extend(collapsed_entries);
-    passthrough_entries
 }
 
 pub(crate) fn searchable_entry_from_manual_definition(

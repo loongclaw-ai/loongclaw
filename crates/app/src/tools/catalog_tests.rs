@@ -383,8 +383,8 @@ fn scheduling_class_marks_parallel_safe_subset() {
     let catalog = tool_catalog();
     assert_eq!(
         catalog
-            .descriptor("tool.search")
-            .expect("tool.search descriptor")
+            .descriptor("file.read")
+            .expect("file.read descriptor")
             .scheduling_class(),
         ToolSchedulingClass::ParallelSafe
     );
@@ -445,13 +445,18 @@ fn scheduling_class_marks_parallel_safe_subset() {
 
 #[test]
 fn tool_catalog_entries_expose_concurrency_class() {
-    let search = find_tool_catalog_entry("tool.search").expect("tool.search catalog entry");
-    assert_eq!(search.scheduling_class, ToolSchedulingClass::ParallelSafe);
-    assert_eq!(search.concurrency_class, ToolConcurrencyClass::ReadOnly);
+    assert!(find_tool_catalog_entry("tool.search").is_none());
+    assert!(find_tool_catalog_entry("tool.invoke").is_none());
 
-    let invoke = find_tool_catalog_entry("tool.invoke").expect("tool.invoke catalog entry");
-    assert_eq!(invoke.scheduling_class, ToolSchedulingClass::SerialOnly);
-    assert_eq!(invoke.concurrency_class, ToolConcurrencyClass::Unknown);
+    let read = find_tool_catalog_entry("file.read").expect("file.read catalog entry");
+    assert_eq!(read.scheduling_class, ToolSchedulingClass::ParallelSafe);
+    assert_eq!(read.concurrency_class, ToolConcurrencyClass::ReadOnly);
+    assert_eq!(read.surface_id, Some("read"));
+
+    let write = find_tool_catalog_entry("file.write").expect("file.write catalog entry");
+    assert_eq!(write.scheduling_class, ToolSchedulingClass::SerialOnly);
+    assert_eq!(write.concurrency_class, ToolConcurrencyClass::Mutating);
+    assert_eq!(write.surface_id, Some("write"));
 
     let delegate_async =
         find_tool_catalog_entry("delegate_async").expect("delegate_async catalog entry");
@@ -482,29 +487,29 @@ fn tool_catalog_entries_expose_concurrency_class() {
     assert_eq!(file_write.scheduling_class, ToolSchedulingClass::SerialOnly);
     assert_eq!(file_write.concurrency_class, ToolConcurrencyClass::Mutating);
     assert_eq!(file_write.surface_id, Some("write"));
-    assert!(
-        file_write
-            .usage_guidance
-            .is_some_and(|guidance| guidance.contains("normal patching and file creation"))
-    );
+    assert!(file_write.usage_guidance.is_some_and(
+        |guidance| guidance.contains("whole-file") || guidance.contains("file creation")
+    ));
 
     let bash_exec = find_tool_catalog_entry("bash.exec").expect("bash.exec catalog entry");
     assert_eq!(bash_exec.scheduling_class, ToolSchedulingClass::SerialOnly);
     assert_eq!(bash_exec.concurrency_class, ToolConcurrencyClass::Mutating);
-    assert_eq!(bash_exec.surface_id, Some("exec"));
+    assert_eq!(bash_exec.surface_id, Some("bash"));
 }
 
 #[test]
 fn tool_catalog_resolve_preserves_canonical_provider_and_alias_lookup() {
     let catalog = tool_catalog();
 
-    let canonical = catalog.resolve("tool.search").expect("canonical lookup");
-    let provider_name = catalog.resolve("tool_search").expect("provider lookup");
+    let canonical = catalog.resolve("file.read").expect("canonical lookup");
+    let provider_name = catalog.resolve("file_read").expect("provider lookup");
     let alias = catalog.resolve("shell").expect("alias lookup");
 
-    assert_eq!(canonical.name, "tool.search");
-    assert_eq!(provider_name.name, "tool.search");
+    assert_eq!(canonical.name, "file.read");
+    assert_eq!(provider_name.name, "file.read");
     assert_eq!(alias.name, "shell.exec");
+    assert!(catalog.resolve("tool_search").is_none());
+    assert!(catalog.resolve("tool_invoke").is_none());
 }
 
 #[test]
@@ -734,22 +739,13 @@ fn autonomy_capability_action_is_independent_from_governance_profile() {
 #[test]
 fn autonomy_capability_action_classifies_representative_tool_families() {
     let expectations = [
-        ("tool.search", CapabilityActionClass::Discover),
-        ("tool_search", CapabilityActionClass::Discover),
-        ("tool.invoke", CapabilityActionClass::ExecuteExisting),
+        ("file.read", CapabilityActionClass::ExecuteExisting),
+        ("file.edit", CapabilityActionClass::ExecuteExisting),
+        ("shell.exec", CapabilityActionClass::ExecuteExisting),
         ("config.import", CapabilityActionClass::ExecuteExisting),
-        (
-            "external_skills.fetch",
-            CapabilityActionClass::CapabilityFetch,
-        ),
-        (
-            "external_skills.install",
-            CapabilityActionClass::CapabilityInstall,
-        ),
-        (
-            "external_skills.invoke",
-            CapabilityActionClass::CapabilityLoad,
-        ),
+        ("skills.fetch", CapabilityActionClass::CapabilityFetch),
+        ("skills.install", CapabilityActionClass::CapabilityInstall),
+        ("skills.invoke", CapabilityActionClass::CapabilityLoad),
         ("provider.switch", CapabilityActionClass::RuntimeSwitch),
         ("delegate", CapabilityActionClass::TopologyExpand),
         ("delegate_async", CapabilityActionClass::TopologyExpand),
@@ -757,10 +753,7 @@ fn autonomy_capability_action_classifies_representative_tool_families() {
             "approval_request_resolve",
             CapabilityActionClass::ExecuteExisting,
         ),
-        (
-            "external_skills.policy",
-            CapabilityActionClass::PolicyMutation,
-        ),
+        ("skills.policy", CapabilityActionClass::PolicyMutation),
         ("session_archive", CapabilityActionClass::SessionMutation),
         ("session_cancel", CapabilityActionClass::SessionMutation),
         ("session_continue", CapabilityActionClass::SessionMutation),
@@ -801,10 +794,10 @@ fn autonomy_capability_action_catalog_entries_expose_serializable_metadata() {
         find_tool_catalog_entry("delegate_async").expect("delegate_async catalog entry");
     let delegate_async_value =
         serde_json::to_value(delegate_async).expect("serialize delegate_async catalog entry");
-    let search = find_tool_catalog_entry("tool.search").expect("tool.search catalog entry");
-    let search_value = serde_json::to_value(search).expect("serialize tool.search catalog entry");
-    let invoke = find_tool_catalog_entry("tool.invoke").expect("tool.invoke catalog entry");
-    let invoke_value = serde_json::to_value(invoke).expect("serialize tool.invoke catalog entry");
+    let read = find_tool_catalog_entry("file.read").expect("file.read catalog entry");
+    let read_value = serde_json::to_value(read).expect("serialize file.read catalog entry");
+    let bash = find_tool_catalog_entry("bash.exec").expect("bash.exec catalog entry");
+    let bash_value = serde_json::to_value(bash).expect("serialize bash.exec catalog entry");
 
     assert_eq!(
         delegate_async.capability_action_class,
@@ -815,8 +808,8 @@ fn autonomy_capability_action_catalog_entries_expose_serializable_metadata() {
         "topology_expand"
     );
     assert_eq!(delegate_async_value["concurrency_class"], "mutating");
-    assert_eq!(search_value["concurrency_class"], "read_only");
-    assert_eq!(invoke_value["concurrency_class"], "unknown");
+    assert_eq!(read_value["concurrency_class"], "read_only");
+    assert_eq!(bash_value["concurrency_class"], "mutating");
 }
 
 #[test]
@@ -903,8 +896,8 @@ fn delegate_definitions_surface_shared_and_worktree_isolation_modes() {
 #[test]
 fn external_skills_policy_definition_surfaces_update_controls() {
     let descriptor = tool_catalog()
-        .descriptor("external_skills.policy")
-        .expect("external_skills.policy descriptor");
+        .descriptor("skills.policy")
+        .expect("skills.policy descriptor");
     let definition = descriptor.provider_definition();
     let properties = &definition["function"]["parameters"]["properties"];
 
@@ -1020,16 +1013,7 @@ fn read_definitions_surface_line_window_fields() {
 }
 
 #[test]
-fn exec_definition_supports_script_mode() {
+fn top_level_catalog_no_longer_exposes_public_exec_descriptor() {
     let catalog = tool_catalog();
-    let descriptor = catalog.descriptor("exec").expect("exec descriptor");
-    let definition = descriptor.provider_definition();
-    let properties = &definition["function"]["parameters"]["properties"];
-    let any_of = &definition["function"]["parameters"]["anyOf"];
-
-    assert!(properties.get("script").is_some());
-    assert!(descriptor.argument_hint().contains("script?:string"));
-    assert!(descriptor.parameter_types().contains(&("script", "string")));
-    assert_eq!(descriptor.required_fields(), Vec::<&str>::new());
-    assert!(any_of.is_array());
+    assert!(catalog.descriptor("exec").is_none());
 }

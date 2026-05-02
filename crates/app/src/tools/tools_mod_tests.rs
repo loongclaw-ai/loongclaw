@@ -253,30 +253,21 @@ fn capability_snapshot_is_deterministic() {
     assert!(snapshot.contains("Available tools:"));
     assert!(snapshot.contains("- read:"));
     assert!(snapshot.contains("- write:"));
-    assert!(snapshot.contains("- exec:"));
+    assert!(snapshot.contains("- edit:"));
+    assert!(snapshot.contains("- bash:"));
     assert!(snapshot.contains("Available tools:"));
-    assert!(snapshot.contains(
-        "- tool.search: Discover hidden specialized tools relevant to the current task."
-    ));
-    assert!(snapshot.contains("- tool.invoke: Invoke a discovered hidden specialized tool using a valid lease from tool_search."));
-    assert!(snapshot.contains("Hidden specialized tool tags currently discoverable:"));
-    assert!(snapshot.contains("Additional specialized tools available through tool.search:"));
     assert!(snapshot.contains("Guidelines:"));
-    assert!(snapshot.contains("Keep tool.search queries short and capability-focused."));
     assert!(snapshot.contains("Use read for repo inspection before shelling out."));
     assert!(snapshot.contains(
             "Use `offset` and `limit` to page through large files instead of reading everything at once."
         ));
-    assert!(snapshot.contains("Use exec for normal command-line work."));
-    assert!(snapshot.contains(
-            "Use agent only for Loong's own approvals, sessions, delegation, provider routing, or config work."
-        ));
+    assert!(snapshot.contains("Use bash for normal command-line work."));
     assert!(!snapshot.contains("shell.exec"));
     assert!(!snapshot.contains("file.read"));
 
     let snapshot2 = capability_snapshot();
     assert!(snapshot2.starts_with("[tool_discovery_runtime]"));
-    assert!(snapshot2.contains("- tool.search:"));
+    assert!(snapshot2.contains("- read:"));
 }
 
 #[test]
@@ -314,7 +305,7 @@ fn capability_snapshot_stays_compact_when_external_skills_are_installed() {
     let config = test_tool_runtime_config(&root);
     execute_tool_core_with_config(
         ToolCoreRequest {
-            tool_name: "external_skills.install".to_owned(),
+            tool_name: "skills.install".to_owned(),
             payload: json!({
                 "path": "skills/demo-skill"
             }),
@@ -354,26 +345,20 @@ fn capability_snapshot_only_lists_visible_direct_and_gateway_tools() {
     assert!(snapshot.contains("Available tools:"));
     assert!(snapshot.contains("- read:"));
     assert!(snapshot.contains("- write:"));
-    assert!(snapshot.contains("- exec:"));
+    assert!(snapshot.contains("- edit:"));
+    assert!(snapshot.contains("- bash:"));
     assert!(snapshot.contains("Available tools:"));
-    assert!(snapshot.contains(
-        "- tool.search: Discover hidden specialized tools relevant to the current task."
-    ));
-    assert!(snapshot.contains("- tool.invoke: Invoke a discovered hidden specialized tool using a valid lease from tool_search."));
-    assert!(snapshot.contains("Hidden specialized tool tags currently discoverable:"));
-    assert!(snapshot.contains("Additional specialized tools available through tool.search:"));
     assert!(snapshot.contains("Guidelines:"));
-    assert!(snapshot.contains("Keep tool.search queries short and capability-focused."));
-    assert!(snapshot.contains("Use write for new files or whole-file rewrites."));
+    assert!(snapshot.contains("Use write for whole-file writes and file creation."));
     assert!(!snapshot.contains("claw.migrate"));
     assert!(!snapshot.contains("external_skills.fetch"));
     assert!(!snapshot.contains("file.read"));
     assert!(!snapshot.contains("shell.exec"));
 
     let lines: Vec<&str> = snapshot.lines().skip(1).collect();
-    assert!(lines.len() >= 8);
+    assert!(lines.len() >= 4);
     assert!(lines.iter().any(|line| line.starts_with("- read:")));
-    assert!(lines.iter().any(|line| line.starts_with("- tool.search:")));
+    assert!(lines.iter().any(|line| line.starts_with("- write:")));
 }
 
 #[cfg(all(
@@ -388,61 +373,13 @@ fn tool_registry_returns_runtime_discoverable_tools_for_default_config() {
     let entries = tool_registry_with_config(Some(&config));
     let names = entries
         .iter()
-        .map(|entry| entry.name.as_str())
+        .map(|entry| entry.name.clone())
         .collect::<BTreeSet<_>>();
-    let mut expected = BTreeSet::from([
-        "approval_request_resolve",
-        "approval_request_status",
-        "approval_requests_list",
-        "config.import",
-        "delegate",
-        "delegate_async",
-        "external_skills.policy",
-        "provider.switch",
-        "session_archive",
-        "session_artifacts",
-        "session_cancel",
-        "session_children",
-        "session_continue",
-        "session_create_branch_summary",
-        "session_create_checkpoint",
-        "session_events",
-        "session_fork_head",
-        "session_heads",
-        "session_pin_head",
-        "session_path",
-        "session_recover",
-        "session_search",
-        "session_set_active_head",
-        "session_status",
-        "session_tool_policy_clear",
-        "session_tool_policy_set",
-        "session_tool_policy_status",
-        "session_unpin_head",
-        "session_wait",
-        "task_events",
-        "task_history",
-        "task_status",
-        "task_wait",
-        "tasks_list",
-        "tasks_search",
-        "sessions_history",
-        "sessions_list",
-    ]);
-    if config.external_skills.enabled {
-        expected.extend([
-            "external_skills.fetch",
-            "external_skills.inspect",
-            "external_skills.install",
-            "external_skills.invoke",
-            "external_skills.list",
-            "external_skills.recommend",
-            "external_skills.remove",
-            "external_skills.resolve",
-            "external_skills.search",
-            "external_skills.source_search",
-        ]);
-    }
+    let expected =
+        visible_direct_tool_states_for_view(&runtime_tool_view_for_runtime_config(&config))
+            .into_iter()
+            .map(|state| state.surface_id)
+            .collect::<BTreeSet<_>>();
     assert_eq!(names, expected);
 }
 
@@ -458,62 +395,13 @@ fn tool_registry_returns_runtime_discoverable_tools_for_default_config_no_websea
     let entries = tool_registry_with_config(Some(&config));
     let names = entries
         .iter()
-        .map(|entry| entry.name.as_str())
+        .map(|entry| entry.name.clone())
         .collect::<BTreeSet<_>>();
-    let mut expected = BTreeSet::from([
-        "approval_request_resolve",
-        "approval_request_status",
-        "approval_requests_list",
-        "config.import",
-        "delegate",
-        "delegate_async",
-        "external_skills.policy",
-        "provider.switch",
-        "session_archive",
-        "session_artifacts",
-        "session_cancel",
-        "session_children",
-        "session_continue",
-        "session_create_branch_summary",
-        "session_create_checkpoint",
-        "session_events",
-        "session_fork_head",
-        "session_heads",
-        "session_pin_head",
-        "session_path",
-        "session_recover",
-        "session_search",
-        "session_set_active_head",
-        "session_status",
-        "session_tool_policy_clear",
-        "session_tool_policy_set",
-        "session_tool_policy_status",
-        "session_unpin_head",
-        "session_wait",
-        "task_events",
-        "task_history",
-        "task_status",
-        "task_wait",
-        "tasks_list",
-        "tasks_search",
-        "sessions_history",
-        "sessions_list",
-    ]);
-    if config.external_skills.enabled {
-        expected.extend([
-            "external_skills.fetch",
-            "external_skills.inspect",
-            "external_skills.install",
-            "external_skills.invoke",
-            "external_skills.list",
-            "external_skills.recommend",
-            "external_skills.remove",
-            "external_skills.resolve",
-            "external_skills.search",
-            "external_skills.source_search",
-        ]);
-    }
-
+    let expected =
+        visible_direct_tool_states_for_view(&runtime_tool_view_for_runtime_config(&config))
+            .into_iter()
+            .map(|state| state.surface_id)
+            .collect::<BTreeSet<_>>();
     assert_eq!(names, expected);
 }
 
@@ -530,20 +418,14 @@ fn tool_registry_re_exposes_session_mutation_tools_when_runtime_policy_allows_th
     let names = entries
         .iter()
         .map(|entry| entry.name.clone())
-        .collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>();
 
-    assert!(names.contains(&"session_archive".to_owned()));
-    assert!(names.contains(&"session_create_checkpoint".to_owned()));
-    assert!(names.contains(&"session_create_branch_summary".to_owned()));
-    assert!(names.contains(&"session_cancel".to_owned()));
-    assert!(names.contains(&"session_continue".to_owned()));
-    assert!(names.contains(&"session_fork_head".to_owned()));
-    assert!(names.contains(&"session_pin_head".to_owned()));
-    assert!(names.contains(&"session_recover".to_owned()));
-    assert!(names.contains(&"session_set_active_head".to_owned()));
-    assert!(names.contains(&"session_tool_policy_set".to_owned()));
-    assert!(names.contains(&"session_tool_policy_clear".to_owned()));
-    assert!(names.contains(&"session_unpin_head".to_owned()));
+    let expected =
+        visible_direct_tool_states_for_view(&runtime_tool_view_for_runtime_config(&config))
+            .into_iter()
+            .map(|state| state.surface_id)
+            .collect::<BTreeSet<_>>();
+    assert_eq!(names, expected);
 }
 
 #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
@@ -553,21 +435,17 @@ fn capability_snapshot_for_view_keeps_hidden_tools_out_of_direct_surface_copy() 
     let snapshot = capability_snapshot_for_view(&view);
 
     assert!(snapshot.contains("Available tools:"));
-    assert!(snapshot.contains(
-        "- tool.search: Discover hidden specialized tools relevant to the current task."
-    ));
-    assert!(snapshot.contains("- tool.invoke: Invoke a discovered hidden specialized tool using a valid lease from tool_search."));
     assert!(!snapshot.contains("- config.import:"));
     assert!(!snapshot.contains("- shell.exec:"));
-    assert!(snapshot.contains("- exec:"));
+    assert!(snapshot.contains("- bash:"));
 }
 
 #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
 #[test]
-fn try_provider_tool_definitions_for_view_exposes_gateway_when_no_direct_tool_is_visible() {
+fn try_provider_tool_definitions_for_view_returns_empty_when_no_direct_tool_is_visible() {
     let view = ToolView::from_tool_names(["config.import"]);
     let defs = try_provider_tool_definitions_for_view(&view)
-        .expect("restricted runtime view should still expose the discovery gateway");
+        .expect("restricted runtime view should still expose direct tools");
     let names: Vec<&str> = defs
         .iter()
         .filter_map(|item| item.get("function"))
@@ -575,7 +453,7 @@ fn try_provider_tool_definitions_for_view_exposes_gateway_when_no_direct_tool_is
         .filter_map(Value::as_str)
         .collect();
 
-    assert_eq!(names, vec!["tool_invoke", "tool_search"]);
+    assert!(names.is_empty());
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -701,14 +579,14 @@ fn runtime_tool_view_respects_explicit_external_skills_toggle() {
     let config = crate::config::ToolConfig::default();
 
     let disabled_view = runtime_tool_view_for_config(&config);
-    assert!(!disabled_view.contains("external_skills.fetch"));
-    assert!(!disabled_view.contains("external_skills.invoke"));
-    assert!(!disabled_view.contains("external_skills.list"));
+    assert!(!disabled_view.contains("skills.fetch"));
+    assert!(!disabled_view.contains("skills.invoke"));
+    assert!(!disabled_view.contains("skills.list"));
 
     let enabled_view = runtime_tool_view_for_config_with_external_skills(&config, true);
-    assert!(enabled_view.contains("external_skills.fetch"));
-    assert!(enabled_view.contains("external_skills.invoke"));
-    assert!(enabled_view.contains("external_skills.list"));
+    assert!(enabled_view.contains("skills.fetch"));
+    assert!(enabled_view.contains("skills.invoke"));
+    assert!(enabled_view.contains("skills.list"));
 }
 
 #[test]
@@ -723,9 +601,9 @@ fn runtime_tool_view_with_runtime_config_uses_runtime_external_skills_policy() {
 
     let view = runtime_tool_view_with_runtime_config(&ToolConfig::default(), &runtime_config);
 
-    assert!(view.contains("external_skills.fetch"));
-    assert!(view.contains("external_skills.invoke"));
-    assert!(view.contains("external_skills.list"));
+    assert!(view.contains("skills.fetch"));
+    assert!(view.contains("skills.invoke"));
+    assert!(view.contains("skills.list"));
 }
 
 #[test]
@@ -823,15 +701,7 @@ fn delegate_child_tool_view_can_allow_shell_when_enabled() {
 fn provider_tool_definitions_are_stable_and_cover_direct_surface() {
     let config = runtime_config::ToolRuntimeConfig::default();
     let defs = provider_tool_definitions_with_config(Some(&config));
-    let expected_names = vec![
-        "browser",
-        "exec",
-        "read",
-        "tool_invoke",
-        "tool_search",
-        "web",
-        "write",
-    ];
+    let expected_names = vec!["bash", "edit", "read", "web", "write"];
     assert_eq!(defs.len(), expected_names.len());
 
     let names: Vec<&str> = defs
@@ -857,30 +727,6 @@ fn provider_tool_definitions_are_stable_and_cover_direct_surface() {
         }
     }
 
-    let tool_search = defs
-        .iter()
-        .find(|item| {
-            item.get("function")
-                .and_then(|function| function.get("name"))
-                .and_then(Value::as_str)
-                == Some("tool_search")
-        })
-        .expect("tool_search definition should exist");
-    let tool_search_properties = tool_search["function"]["parameters"]["properties"]
-        .as_object()
-        .expect("tool_search properties should be an object");
-    let tool_search_required = tool_search["function"]["parameters"]["required"]
-        .as_array()
-        .expect("required should be an array");
-
-    assert!(tool_search_properties.contains_key("query"));
-    assert!(tool_search_properties.contains_key("exact_tool_id"));
-    assert!(!tool_search_required.contains(&Value::String("query".to_owned())));
-    assert!(
-        tool_search["function"]["parameters"].get("anyOf").is_none(),
-        "anyOf removed for OpenAI-compatible provider compatibility"
-    );
-
     let web = defs
         .iter()
         .find(|item| {
@@ -902,33 +748,21 @@ fn provider_tool_definitions_are_stable_and_cover_direct_surface() {
     assert!(web_provider_description.contains("`web { query }` / `web.search`"));
     assert!(web_provider_description.contains("plain URL fetch/request mode"));
 
-    let browser = defs
-        .iter()
-        .find(|item| {
-            item.get("function")
-                .and_then(|function| function.get("name"))
-                .and_then(Value::as_str)
-                == Some("browser")
-        })
-        .expect("browser definition should exist");
-    let browser_properties = browser["function"]["parameters"]["properties"]
-        .as_object()
-        .expect("browser properties should be an object");
-    assert!(browser_properties.contains_key("url"));
-    assert!(browser_properties.contains_key("session_id"));
-    assert!(browser_properties.contains_key("action"));
-    assert!(!browser_properties.contains_key("text"));
-    assert!(!browser_properties.contains_key("condition"));
-    assert!(!browser_properties.contains_key("timeout_ms"));
+    assert!(!defs.iter().any(|item| {
+        item.get("function")
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str)
+            == Some("browser")
+    }));
 }
 
 #[test]
 fn provider_exposed_tool_gate_covers_direct_and_gateway_tools() {
     assert!(is_provider_exposed_tool_name("read"));
     assert!(is_provider_exposed_tool_name("write"));
-    assert!(is_provider_exposed_tool_name("exec"));
-    assert!(is_provider_exposed_tool_name("tool.search"));
-    assert!(is_provider_exposed_tool_name("tool.invoke"));
+    assert!(is_provider_exposed_tool_name("bash"));
+    assert!(is_provider_exposed_tool_name("edit"));
+    assert!(is_provider_exposed_tool_name("browser"));
     assert!(!is_provider_exposed_tool_name("file.read"));
     assert!(!is_provider_exposed_tool_name("shell.exec"));
 }
@@ -1035,73 +869,62 @@ fn file_write_catalog_exposes_overwrite_flag() {
 
 #[cfg(feature = "tool-file")]
 #[test]
-fn file_edit_catalog_exposes_exact_edit_blocks() {
+fn direct_edit_catalog_exposes_exact_edit_blocks_and_write_stays_whole_file_only() {
     let catalog = tool_catalog();
-    let direct_descriptor = catalog
+    let write_descriptor = catalog
         .descriptor("write")
         .expect("write should be in the catalog");
-    let direct_definition = direct_descriptor.provider_definition();
-    let direct_properties = direct_definition["function"]["parameters"]["properties"]
+    let write_definition = write_descriptor.provider_definition();
+    let write_properties = write_definition["function"]["parameters"]["properties"]
         .as_object()
         .expect("write parameters");
-    let direct_any_of = direct_definition["function"]["parameters"]["anyOf"]
-        .as_array()
-        .expect("write anyOf");
 
     assert!(
-        direct_properties.contains_key("edits"),
-        "write schema should expose exact edit blocks"
+        write_properties.contains_key("content"),
+        "write schema should keep whole-file content mode"
     );
+    assert!(!write_properties.contains_key("edits"));
+    assert!(!write_properties.contains_key("old_string"));
+    assert!(!write_properties.contains_key("new_string"));
     assert!(
-        direct_descriptor.argument_hint().contains("edits?:array"),
-        "write argument hint should expose edits"
+        write_definition["function"]["parameters"]
+            .get("anyOf")
+            .is_none(),
+        "write should no longer advertise mixed edit branches"
     );
-    assert!(
-        direct_descriptor
-            .parameter_types()
-            .contains(&("edits", "array")),
-        "write parameter types should expose edits"
-    );
-    assert!(
-        direct_any_of
-            .iter()
-            .any(|branch| branch["required"] == json!(["edits"])),
-        "write anyOf should include edits mode"
-    );
+    assert_eq!(write_descriptor.required_fields(), vec!["path", "content"]);
 
-    let file_edit_descriptor = catalog
-        .descriptor("file.edit")
-        .expect("file.edit should be in the catalog");
-    let file_edit_definition = file_edit_descriptor.provider_definition();
-    let file_edit_properties = file_edit_definition["function"]["parameters"]["properties"]
+    let edit_descriptor = catalog
+        .descriptor("edit")
+        .expect("edit should be in the catalog");
+    let edit_definition = edit_descriptor.provider_definition();
+    let edit_properties = edit_definition["function"]["parameters"]["properties"]
         .as_object()
-        .expect("file.edit parameters");
-    let file_edit_any_of = file_edit_definition["function"]["parameters"]["anyOf"]
+        .expect("edit parameters");
+    let edit_any_of = edit_definition["function"]["parameters"]["anyOf"]
         .as_array()
-        .expect("file.edit anyOf");
+        .expect("edit anyOf");
 
     assert!(
-        file_edit_properties.contains_key("edits"),
-        "file.edit schema should expose exact edit blocks"
+        edit_properties.contains_key("edits"),
+        "edit schema should expose exact edit blocks"
     );
     assert!(
-        file_edit_descriptor
-            .argument_hint()
-            .contains("edits?:array"),
-        "file.edit argument hint should expose edits"
+        edit_descriptor.argument_hint().contains("edits?:array"),
+        "edit argument hint should expose edits"
     );
     assert!(
-        file_edit_descriptor
+        edit_descriptor
             .parameter_types()
             .contains(&("edits", "array")),
-        "file.edit parameter types should expose edits"
+        "edit parameter types should expose edits"
     );
-    assert_eq!(file_edit_descriptor.required_fields(), vec!["path"]);
+    assert_eq!(edit_descriptor.required_fields(), vec!["path"]);
     assert!(
-        file_edit_any_of
+        edit_any_of
             .iter()
             .any(|branch| branch["required"] == json!(["edits"])),
-        "file.edit anyOf should include edits mode"
+        "edit anyOf should include edits mode"
     );
 }
 
@@ -1170,9 +993,23 @@ fn provider_tool_definitions_trim_web_query_mode_when_search_is_runtime_disabled
 }
 
 #[test]
-fn provider_tool_definitions_trim_managed_browser_modes_when_companion_is_runtime_disabled() {
+fn provider_tool_definitions_hide_browser_surface_when_companion_is_runtime_disabled() {
     let defs =
         provider_tool_definitions_with_config(Some(&runtime_config::ToolRuntimeConfig::default()));
+    assert!(!defs.iter().any(|item| {
+        item.get("function")
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str)
+            == Some("browser")
+    }));
+}
+
+#[test]
+fn provider_tool_definitions_expose_managed_browser_surface_when_companion_is_runtime_enabled() {
+    let root = unique_tool_temp_dir("loong-managed-browser-provider-surface");
+    let config = browser_companion_runtime_config(&root, "browser-companion".to_owned());
+
+    let defs = provider_tool_definitions_with_config(Some(&config));
     let browser = defs
         .iter()
         .find(|item| {
@@ -1189,22 +1026,23 @@ fn provider_tool_definitions_trim_managed_browser_modes_when_companion_is_runtim
     let action_enum = properties["action"]["enum"]
         .as_array()
         .expect("browser action enum should exist");
-    assert!(action_enum.contains(&json!("open")));
-    assert!(action_enum.contains(&json!("extract")));
+    assert!(action_enum.contains(&json!("start")));
+    assert!(action_enum.contains(&json!("navigate")));
+    assert!(action_enum.contains(&json!("snapshot")));
+    assert!(action_enum.contains(&json!("wait")));
     assert!(action_enum.contains(&json!("click")));
-    assert!(!action_enum.contains(&json!("start")));
-    assert!(!action_enum.contains(&json!("navigate")));
-    assert!(!properties.contains_key("text"));
-    assert!(!properties.contains_key("condition"));
-    assert!(!properties.contains_key("timeout_ms"));
+    assert!(action_enum.contains(&json!("type")));
+    assert!(action_enum.contains(&json!("stop")));
+    assert!(!action_enum.contains(&json!("open")));
+    assert!(!action_enum.contains(&json!("extract")));
 
     let mode_enum = properties["mode"]["enum"]
         .as_array()
         .expect("browser mode enum should exist");
-    assert!(mode_enum.contains(&json!("page_text")));
-    assert!(mode_enum.contains(&json!("selector_text")));
-    assert!(!mode_enum.contains(&json!("summary")));
-    assert!(!mode_enum.contains(&json!("html")));
+    assert!(mode_enum.contains(&json!("summary")));
+    assert!(mode_enum.contains(&json!("html")));
+    assert!(!mode_enum.contains(&json!("page_text")));
+    assert!(!mode_enum.contains(&json!("selector_text")));
 }
 
 #[test]
@@ -1233,57 +1071,48 @@ fn runtime_tool_search_entries_trim_web_search_mode_when_query_mode_is_disabled(
 }
 
 #[test]
-fn runtime_tool_search_entries_trim_managed_browser_mode_when_companion_is_runtime_disabled() {
+fn runtime_tool_search_entries_hide_browser_surface_when_companion_is_runtime_disabled() {
     let entries =
         runtime_tool_search_entries(&runtime_config::ToolRuntimeConfig::default(), None, false);
+    assert!(!entries.iter().any(|entry| entry.tool_id == "browser"));
+}
+
+#[test]
+fn runtime_tool_search_entries_expose_managed_browser_surface_when_companion_is_runtime_enabled() {
+    let root = unique_tool_temp_dir("loong-managed-browser-search-surface");
+    let config = browser_companion_runtime_config(&root, "browser-companion".to_owned());
+    let entries = runtime_tool_search_entries(&config, None, false);
     let browser = entries
         .iter()
         .find(|entry| entry.tool_id == "browser")
         .expect("browser direct search entry");
 
+    assert!(browser.summary.contains("Drive a managed browser session"));
+    assert!(!browser.argument_hint.contains("link_id"));
     assert!(
         browser
-            .summary
-            .contains("Open pages and inspect page structure")
-    );
-    assert!(!browser.argument_hint.contains("text"));
-    assert!(!browser.argument_hint.contains("condition"));
-    assert!(!browser.argument_hint.contains("timeout_ms"));
-    assert!(
-        browser
-            .search_hint
-            .contains("managed browser session mode is unavailable"),
-        "search_hint={}",
-        browser.search_hint
-    );
-    assert!(
-        browser.usage_guidance.as_deref().is_some_and(
-            |guidance| guidance.contains("Managed browser session mode is unavailable")
-        )
+            .usage_guidance
+            .as_deref()
+            .is_some_and(|guidance| guidance.contains("live page interaction"))
     );
 }
 
 #[test]
 fn canonical_tool_name_maps_known_aliases() {
-    assert_eq!(canonical_tool_name("tool_search"), "tool.search");
-    assert_eq!(canonical_tool_name("tool_invoke"), "tool.invoke");
+    assert_eq!(canonical_tool_name("tool_search"), "tool_search");
+    assert_eq!(canonical_tool_name("tool_invoke"), "tool_invoke");
     assert_eq!(canonical_tool_name("claw.migrate"), "config.import");
     assert_eq!(canonical_tool_name("claw_migrate"), "config.import");
     assert_eq!(canonical_tool_name("config_import"), "config.import");
-    assert_eq!(
-        canonical_tool_name("external_skills_policy"),
-        "external_skills.policy"
-    );
-    assert_eq!(
-        canonical_tool_name("external_skills_fetch"),
-        "external_skills.fetch"
-    );
+    assert_eq!(canonical_tool_name("skills_policy"), "skills.policy");
+    assert_eq!(canonical_tool_name("skills_fetch"), "skills.fetch");
     assert_eq!(canonical_tool_name("file_read"), "file.read");
     assert_eq!(canonical_tool_name("file_write"), "file.write");
     assert_eq!(canonical_tool_name("provider_switch"), "provider.switch");
     assert_eq!(canonical_tool_name("browser_open"), "browser.open");
     assert_eq!(canonical_tool_name("browser_extract"), "browser.extract");
     assert_eq!(canonical_tool_name("browser_click"), "browser.click");
+    assert_eq!(canonical_tool_name("file_edit"), "file.edit");
     assert_eq!(canonical_tool_name("shell_exec"), "shell.exec");
     assert_eq!(canonical_tool_name("shell"), "shell.exec");
     assert_eq!(canonical_tool_name("web_fetch"), "web.fetch");
@@ -1340,9 +1169,9 @@ fn tool_id_visible_in_view_supports_direct_aliases_and_grouped_surfaces() {
     assert!(tool_id_visible_in_view("read", &view));
     assert!(tool_id_visible_in_view("feishu.messages.send", &view));
     assert!(tool_id_visible_in_view("feishu_messages_send", &view));
-    assert!(tool_id_visible_in_view("channel", &view));
+    assert!(!tool_id_visible_in_view("channel", &view));
     assert!(!tool_id_visible_in_view("skills", &view));
-    assert!(!tool_id_visible_in_view("external_skills.install", &view));
+    assert!(!tool_id_visible_in_view("skills.install", &view));
 }
 
 #[cfg(feature = "tool-file")]
@@ -1807,8 +1636,8 @@ fn tool_search_result_includes_search_hint_and_schema_preview() {
     let results = outcome.payload["results"].as_array().expect("results");
     let shell_entry = results
         .iter()
-        .find(|entry| entry["tool_id"] == "exec")
-        .expect("direct exec should be discoverable");
+        .find(|entry| entry["tool_id"] == "bash")
+        .expect("direct bash should be discoverable");
 
     assert!(shell_entry["search_hint"].as_str().is_some());
     assert!(shell_entry["schema_preview"].is_object());
@@ -1839,7 +1668,7 @@ fn tool_search_accepts_keywords_array_payloads() {
 
     assert!(!results.is_empty());
     assert_eq!(outcome.payload["query"], json!("run shell command"));
-    assert_eq!(results[0]["tool_id"], "exec");
+    assert_eq!(results[0]["tool_id"], "bash");
 
     std::fs::remove_dir_all(&root).ok();
 }
@@ -1887,8 +1716,7 @@ fn tool_search_matches_prompt_style_queries_across_tool_surfaces() {
         ("read repo file", "read"),
         ("search memory notes", "memory"),
         ("search the web", "web"),
-        ("install skill", "skills"),
-        ("switch provider", "agent"),
+        ("switch provider", "provider-switch"),
     ];
 
     for (query, expected_tool) in cases {
@@ -1967,14 +1795,14 @@ fn tool_search_uses_coarse_listing_fallback_when_query_is_missing() {
 
 #[cfg(feature = "tool-file")]
 #[test]
-fn direct_write_routes_exact_edit_blocks_to_file_edit() {
+fn direct_write_rejects_exact_edit_blocks() {
     let root = unique_tool_temp_dir("loongclaw-direct-write-edit-blocks");
     std::fs::create_dir_all(&root).expect("create fixture root");
     let target = root.join("notes.txt");
     std::fs::write(&target, "alpha\nbeta\ngamma\n").expect("seed target file");
 
     let config = test_tool_runtime_config(root.clone());
-    let outcome = execute_tool_core_with_config(
+    let error = execute_tool_core_with_config(
         ToolCoreRequest {
             tool_name: "write".to_owned(),
             payload: json!({
@@ -1987,12 +1815,14 @@ fn direct_write_routes_exact_edit_blocks_to_file_edit() {
         },
         &config,
     )
-    .expect("direct write edit mode should succeed");
+    .expect_err("direct write should reject edit blocks");
 
-    assert_eq!(outcome.status, "ok");
-    assert_eq!(outcome.payload["edit_blocks_applied"], 2);
-    let updated = std::fs::read_to_string(&target).expect("read updated target");
-    assert_eq!(updated, "ALPHA\nbeta\nGAMMA\n");
+    assert!(
+        error.contains("content") || error.contains("edits") || error.contains("write"),
+        "write rejection should explain the whole-file contract: {error}"
+    );
+    let unchanged = std::fs::read_to_string(&target).expect("read unchanged target");
+    assert_eq!(unchanged, "alpha\nbeta\ngamma\n");
 
     std::fs::remove_dir_all(&root).ok();
 }
@@ -2061,20 +1891,12 @@ fn tool_search_accepts_keywords_array_queries() {
 #[test]
 fn capability_snapshot_summarizes_hidden_tags_without_tool_names() {
     let snapshot = capability_snapshot();
-    let hidden_tag_line = snapshot
-        .lines()
-        .find(|line| line.starts_with("Hidden specialized tool tags currently discoverable:"))
-        .expect("hidden tool tag line");
-
-    assert!(
-        !hidden_tag_line.contains("provider.switch"),
-        "capability summary should expose tags, not tool names: {hidden_tag_line}"
-    );
+    assert!(!snapshot.contains("Hidden specialized tool tags currently discoverable:"));
 }
 
 #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
 #[test]
-fn runtime_discoverable_tool_surface_summary_groups_visible_direct_and_hidden_surfaces() {
+fn runtime_discoverable_tool_surface_summary_only_reports_direct_surfaces() {
     let root = unique_tool_temp_dir("loong-tool-surface-summary");
     std::fs::create_dir_all(&root).expect("create fixture root");
 
@@ -2084,18 +1906,9 @@ fn runtime_discoverable_tool_surface_summary_groups_visible_direct_and_hidden_su
         Some(&runtime_tool_view_for_runtime_config(&config)),
     );
 
-    assert!(summary.hidden_tool_count > 0);
-    assert!(summary.visible_direct_tools.contains(&"read".to_owned()));
-    assert!(summary.visible_direct_tools.contains(&"write".to_owned()));
-    assert!(summary.visible_direct_tools.contains(&"exec".to_owned()));
-    assert!(!summary.hidden_tags.is_empty());
-
-    let agent_surface = summary
-        .hidden_surfaces
-        .iter()
-        .find(|surface| surface.surface_id == "agent")
-        .expect("agent surface");
-    assert!(agent_surface.tool_ids.contains(&"agent".to_owned()));
+    assert_eq!(summary.hidden_tool_count, 0);
+    assert!(summary.hidden_tags.is_empty());
+    assert!(summary.hidden_surfaces.is_empty());
 
     std::fs::remove_dir_all(&root).ok();
 }
@@ -2123,10 +1936,9 @@ fn runtime_discoverable_tool_surface_summary_uses_provider_invokable_hidden_entr
     assert!(!provider_discoverable_names.contains("session_status"));
     assert!(!provider_discoverable_names.contains("delegate"));
     assert!(provider_discoverable_names.contains("provider.switch"));
-    assert_eq!(
-        summary.hidden_tool_count,
-        provider_discoverable_entries.len()
-    );
+    assert_eq!(summary.hidden_tool_count, 0);
+    assert!(summary.hidden_tags.is_empty());
+    assert!(summary.hidden_surfaces.is_empty());
 }
 
 #[cfg(feature = "tool-webfetch")]
@@ -2618,8 +2430,8 @@ fn browser_companion_visible_app_tool_click_skips_env_recheck_when_runtime_ready
 #[test]
 fn tool_search_reports_no_required_field_groups_for_bundled_skill_install() {
     let descriptor = catalog::tool_catalog()
-        .descriptor("external_skills.install")
-        .expect("external_skills.install should exist in the catalog");
+        .descriptor("skills.install")
+        .expect("skills.install should exist in the catalog");
     let searchable = searchable_entry_from_descriptor(descriptor);
 
     assert!(
@@ -2887,7 +2699,7 @@ fn tool_search_includes_feishu_tools_when_runtime_configured() {
     let outcome = execute_tool_core_with_config(
         ToolCoreRequest {
             tool_name: "tool.search".to_owned(),
-            payload: json!({"query": "feishu message search", "limit": 8}),
+            payload: json!({"exact_tool_id": "feishu.messages.search", "limit": 8}),
         },
         &config,
     )
@@ -2895,14 +2707,14 @@ fn tool_search_includes_feishu_tools_when_runtime_configured() {
 
     let results = outcome.payload["results"].as_array().expect("results");
     assert!(
-        results.iter().any(|entry| entry["tool_id"] == "channel"),
-        "feishu runtime tools should collapse beneath the channel surface: {results:?}"
-    );
-    assert!(
         results
             .iter()
-            .all(|entry| entry["tool_id"] != "feishu-messages-send"),
-        "feishu-specific ids should stay hidden behind the channel surface: {results:?}"
+            .any(|entry| entry["tool_id"] == "feishu-messages-search"),
+        "feishu runtime tools should surface their concrete discovery ids: {results:?}"
+    );
+    assert!(
+        results.iter().all(|entry| entry["tool_id"] != "channel"),
+        "grouped channel facade should no longer appear in search results: {results:?}"
     );
 }
 
@@ -2942,7 +2754,7 @@ fn tool_invoke_dispatches_feishu_discovered_tool_with_a_valid_lease() {
     let search = execute_tool_core_with_config(
         ToolCoreRequest {
             tool_name: "tool.search".to_owned(),
-            payload: json!({"query": "send feishu message", "limit": 8}),
+            payload: json!({"exact_tool_id": "feishu.messages.send", "limit": 8}),
         },
         &config,
     )
@@ -2952,17 +2764,16 @@ fn tool_invoke_dispatches_feishu_discovered_tool_with_a_valid_lease() {
         .as_array()
         .expect("results")
         .iter()
-        .find(|entry| entry["tool_id"] == "channel")
-        .expect("channel search result");
+        .find(|entry| entry["tool_id"] == "feishu-messages-send")
+        .expect("feishu send search result");
 
     let error = execute_tool_core_with_config(
         ToolCoreRequest {
             tool_name: "tool.invoke".to_owned(),
             payload: json!({
-                "tool_id": "channel",
+                "tool_id": result["tool_id"].clone(),
                 "lease": result["lease"].clone(),
                 "arguments": {
-                    "operation": "messages.send",
                     "text": "ship by invoke"
                 }
             }),
@@ -2981,67 +2792,13 @@ fn tool_invoke_dispatches_feishu_discovered_tool_with_a_valid_lease() {
 
 #[cfg(feature = "tool-file")]
 #[test]
-fn tool_invoke_dispatches_a_discovered_tool_with_a_valid_lease() {
-    use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock should be after epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("loongclaw-tool-invoke-{nanos}"));
-    fs::create_dir_all(&root).expect("create fixture root");
-    fs::write(root.join("README.md"), "tool invoke fixture").expect("write fixture");
-
-    let config = test_tool_runtime_config(root.clone());
-    let search = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "tool.search".to_owned(),
-            payload: json!({"query": "external skills policy"}),
-        },
-        &config,
-    )
-    .expect("tool search should succeed");
-
-    let result = search.payload["results"]
-        .as_array()
-        .expect("results")
-        .iter()
-        .find(|entry| entry["tool_id"] == "skills")
-        .expect("skills search result");
-
-    let outcome = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "tool.invoke".to_owned(),
-            payload: json!({
-                "tool_id": "skills",
-                "lease": result["lease"].clone(),
-                "arguments": {
-                    "operation": "policy",
-                    "action": "get"
-                }
-            }),
-        },
-        &config,
-    )
-    .expect("tool invoke should succeed");
-
-    assert_eq!(outcome.status, "ok");
-    assert_eq!(outcome.payload["action"], "get");
-    assert!(outcome.payload["policy"].is_object());
-
-    fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-file")]
-#[test]
 fn discovered_tool_lease_uses_current_catalog_digest() {
     let root = unique_tool_temp_dir("loongclaw-tool-lease-digest");
     let config = test_tool_runtime_config(root.clone());
     let search = execute_tool_core_with_config(
         ToolCoreRequest {
             tool_name: "tool.search".to_owned(),
-            payload: json!({"query": "switch provider"}),
+            payload: json!({"exact_tool_id": "provider.switch"}),
         },
         &config,
     )
@@ -3051,9 +2808,9 @@ fn discovered_tool_lease_uses_current_catalog_digest() {
         .as_array()
         .expect("results")
         .iter()
-        .find(|entry| entry["tool_id"] == "agent")
+        .find(|entry| entry["tool_id"] == "provider-switch")
         .and_then(|entry| entry["lease"].as_str())
-        .expect("agent lease");
+        .expect("provider.switch lease");
     let lease_parts = lease.split_once('.').expect("lease separator");
     let encoded_claims = lease_parts.0;
     let claims_bytes = URL_SAFE_NO_PAD
@@ -3110,9 +2867,9 @@ fn tool_invoke_rejects_missing_outer_lease_field() {
         ToolCoreRequest {
             tool_name: "tool.invoke".to_owned(),
             payload: json!({
-                "tool_id": "skills",
+                "tool_id": "provider-switch",
                 "arguments": {
-                    "operation": "policy-status"
+                    "selector": "openai"
                 }
             }),
         },
@@ -3142,10 +2899,10 @@ fn tool_invoke_rejects_non_string_outer_lease_field() {
         ToolCoreRequest {
             tool_name: "tool.invoke".to_owned(),
             payload: json!({
-                "tool_id": "skills",
+                "tool_id": "provider-switch",
                 "lease": 123,
                 "arguments": {
-                    "operation": "policy-status"
+                    "selector": "openai"
                 }
             }),
         },
@@ -3175,7 +2932,7 @@ fn tool_invoke_rejects_leases_replayed_in_another_turn() {
         ToolCoreRequest {
             tool_name: "tool.search".to_owned(),
             payload: json!({
-                "query": "external skills policy",
+                "exact_tool_id": "provider.switch",
                 TOOL_LEASE_SESSION_ID_FIELD: "session-a",
                 TOOL_LEASE_TURN_ID_FIELD: "turn-a"
             }),
@@ -3188,18 +2945,17 @@ fn tool_invoke_rejects_leases_replayed_in_another_turn() {
         .as_array()
         .expect("results")
         .iter()
-        .find(|entry| entry["tool_id"] == "skills")
-        .expect("skills search result");
+        .find(|entry| entry["tool_id"] == "provider-switch")
+        .expect("provider.switch search result");
 
     let error = execute_tool_core_with_config(
         ToolCoreRequest {
             tool_name: "tool.invoke".to_owned(),
             payload: json!({
-                "tool_id": "skills",
+                "tool_id": result["tool_id"].clone(),
                 "lease": result["lease"].clone(),
                 "arguments": {
-                    "operation": "policy",
-                    "action": "get"
+                    "selector": "openai"
                 },
                 TOOL_LEASE_SESSION_ID_FIELD: "session-a",
                 TOOL_LEASE_TURN_ID_FIELD: "turn-b"
@@ -3266,16 +3022,14 @@ fn tool_invoke_rejects_forged_reserved_internal_context_inside_arguments() {
         "loongclaw-tool-invoke-inner-context-forged-{}",
         std::process::id()
     ));
-    let fixture_path = root.join("README.md");
-
     std::fs::create_dir_all(&root).expect("create fixture root");
-    std::fs::write(&fixture_path, "tool invoke fixture").expect("write fixture file");
 
     let config = test_tool_runtime_config(root.clone());
     let (tool_name, mut payload) = bridge_provider_tool_call_with_scope(
-        "file.read",
+        "config.import",
         json!({
-            "path": fixture_path.display().to_string()
+            "mode": "plan",
+            "input_path": "imports/demo"
         }),
         None,
         None,
@@ -3343,7 +3097,7 @@ fn tool_search_hides_app_only_discoverables_from_provider_visible_results() {
 }
 
 #[test]
-fn tool_search_exact_skill_id_returns_skills_surface_with_run_guidance() {
+fn tool_search_exact_skill_id_no_longer_surfaces_grouped_skills_facade() {
     use std::fs;
 
     let root = unique_temp_dir("loongclaw-tool-search-skill-exact");
@@ -3359,7 +3113,7 @@ fn tool_search_exact_skill_id_returns_skills_surface_with_run_guidance() {
     let config = test_tool_runtime_config(&root);
     execute_tool_core_with_config(
         ToolCoreRequest {
-            tool_name: "external_skills.install".to_owned(),
+            tool_name: "skills.install".to_owned(),
             payload: json!({
                 "path": "skills/agent-browser"
             }),
@@ -3380,28 +3134,23 @@ fn tool_search_exact_skill_id_returns_skills_surface_with_run_guidance() {
     .expect("tool search should succeed");
 
     let results = search.payload["results"].as_array().expect("results");
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0]["tool_id"], "skills");
-    assert_eq!(search.payload["exact_tool_id"], "agent-browser");
-    assert!(search.payload["diagnostics"].is_null());
     assert!(
-        results[0]["summary"]
+        results.iter().all(|entry| !entry["tool_id"]
             .as_str()
-            .is_some_and(|summary| summary.contains("Matching installed skills: agent-browser")),
-        "search result should mention the matched installed skill: {results:?}"
+            .is_some_and(|tool_id| tool_id.starts_with("skills-"))),
+        "skill-management tools should stay out of model discovery results: {results:?}"
     );
-    assert!(
-        results[0]["usage_guidance"].as_str().is_some_and(
-            |guidance| guidance.contains(r#"{"operation":"run","skill_id":"agent-browser"}"#)
-        ),
-        "skills surface should advertise the explicit run flow: {results:?}"
+    assert_eq!(search.payload["exact_tool_id"], "agent-browser");
+    assert_eq!(
+        search.payload["diagnostics"]["reason"].as_str(),
+        Some("exact_tool_id_not_visible")
     );
 
     fs::remove_dir_all(&root).ok();
 }
 
 #[test]
-fn tool_invoke_skills_surface_requires_operation_when_skill_id_is_present() {
+fn tool_search_query_for_installed_skill_no_longer_returns_grouped_skills_card() {
     use std::fs;
 
     let root = unique_temp_dir("loongclaw-tool-search-skill-operation");
@@ -3417,7 +3166,7 @@ fn tool_invoke_skills_surface_requires_operation_when_skill_id_is_present() {
     let config = test_tool_runtime_config(&root);
     execute_tool_core_with_config(
         ToolCoreRequest {
-            tool_name: "external_skills.install".to_owned(),
+            tool_name: "skills.install".to_owned(),
             payload: json!({
                 "path": "skills/agent-browser"
             }),
@@ -3436,32 +3185,12 @@ fn tool_invoke_skills_surface_requires_operation_when_skill_id_is_present() {
         &config,
     )
     .expect("tool search should succeed");
-    let lease = search.payload["results"]
-        .as_array()
-        .expect("results")
-        .iter()
-        .find(|entry| entry["tool_id"] == "skills")
-        .and_then(|entry| entry["lease"].as_str())
-        .expect("skills lease");
-
-    let error = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "tool.invoke".to_owned(),
-            payload: json!({
-                "tool_id": "skills",
-                "lease": lease,
-                "arguments": {
-                    "skill_id": "agent-browser"
-                }
-            }),
-        },
-        &config,
-    )
-    .expect_err("skill_id without operation should fail closed");
-
+    let results = search.payload["results"].as_array().expect("results");
     assert!(
-        error.contains("tool_not_found:") && error.contains("skills"),
-        "skill_id without operation should fail closed instead of silently inspecting: {error}"
+        results.iter().all(|entry| !entry["tool_id"]
+            .as_str()
+            .is_some_and(|tool_id| tool_id.starts_with("skills-"))),
+        "skill-management tools should stay out of query results: {results:?}"
     );
 
     fs::remove_dir_all(&root).ok();
@@ -3548,10 +3277,10 @@ fn is_known_tool_name_accepts_canonical_and_alias_forms() {
     assert!(is_known_tool_name("config_import"));
     assert!(is_known_tool_name("claw.migrate"));
     assert!(is_known_tool_name("claw_migrate"));
-    assert!(is_known_tool_name("external_skills.policy"));
-    assert!(is_known_tool_name("external_skills_policy"));
-    assert!(is_known_tool_name("external_skills.fetch"));
-    assert!(is_known_tool_name("external_skills_fetch"));
+    assert!(is_known_tool_name("skills.policy"));
+    assert!(is_known_tool_name("skills_policy"));
+    assert!(is_known_tool_name("skills.fetch"));
+    assert!(is_known_tool_name("skills_fetch"));
     assert!(is_known_tool_name("file.read"));
     assert!(is_known_tool_name("file_read"));
     assert!(is_known_tool_name("file.write"));
@@ -3605,8 +3334,8 @@ fn is_known_tool_name_accepts_canonical_and_alias_forms() {
     assert!(is_known_tool_name("feishu_calendar_list"));
     assert!(is_known_tool_name("feishu.calendar.freebusy"));
     assert!(is_known_tool_name("feishu_calendar_freebusy"));
-    assert!(is_known_tool_name("agent"));
-    assert!(is_known_tool_name("skills"));
+    assert!(!is_known_tool_name("agent"));
+    assert!(!is_known_tool_name("skills"));
     assert!(!is_known_tool_name("nonexistent.tool"));
 }
 
@@ -3628,21 +3357,14 @@ fn tool_registry_with_config_includes_feishu_tools_when_runtime_configured() {
     let names = entries
         .iter()
         .map(|entry| entry.name.clone())
-        .collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>();
 
-    assert!(names.contains(&"feishu.whoami".to_owned()));
-    assert!(names.contains(&"feishu.doc.create".to_owned()));
-    assert!(names.contains(&"feishu.doc.append".to_owned()));
-    assert!(names.contains(&"feishu.doc.read".to_owned()));
-    assert!(names.contains(&"feishu.messages.history".to_owned()));
-    assert!(names.contains(&"feishu.messages.get".to_owned()));
-    assert!(names.contains(&"feishu.messages.resource.get".to_owned()));
-    assert!(names.contains(&"feishu.messages.search".to_owned()));
-    assert!(names.contains(&"feishu.messages.send".to_owned()));
-    assert!(names.contains(&"feishu.messages.reply".to_owned()));
-    assert!(names.contains(&"feishu.card.update".to_owned()));
-    assert!(names.contains(&"feishu.calendar.list".to_owned()));
-    assert!(names.contains(&"feishu.calendar.freebusy".to_owned()));
+    let expected =
+        visible_direct_tool_states_for_view(&runtime_tool_view_for_runtime_config(&config))
+            .into_iter()
+            .map(|state| state.surface_id)
+            .collect::<BTreeSet<_>>();
+    assert_eq!(names, expected);
 }
 
 #[cfg(feature = "feishu-integration")]
@@ -3667,14 +3389,14 @@ fn provider_tool_definitions_with_config_keeps_direct_surface_when_feishu_runtim
         .filter_map(Value::as_str)
         .collect::<Vec<_>>();
 
-    assert!(names.contains(&"browser"));
-    assert!(names.contains(&"exec"));
+    assert!(names.contains(&"bash"));
+    assert!(names.contains(&"edit"));
     assert!(names.contains(&"read"));
-    assert!(names.contains(&"tool_invoke"));
-    assert!(names.contains(&"tool_search"));
     assert!(names.contains(&"web"));
     assert!(names.contains(&"write"));
-    assert_eq!(names.len(), 7);
+    assert!(!names.contains(&"tool_invoke"));
+    assert!(!names.contains(&"tool_search"));
+    assert_eq!(names.len(), 5);
 }
 
 #[cfg(feature = "feishu-integration")]

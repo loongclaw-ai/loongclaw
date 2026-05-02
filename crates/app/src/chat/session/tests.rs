@@ -409,7 +409,7 @@ fn approval_queue_item_summary_formats_list_and_detail_lines() {
     let item = ApprovalQueueItemSummary {
         approval_request_id: "apr_123".to_owned(),
         status: "pending".to_owned(),
-        tool_name: "exec".to_owned(),
+        tool_name: "bash".to_owned(),
         raw_tool_name: "shell.exec".to_owned(),
         request_summary: Some(
             "{\"command\":\"git\",\"timeout_ms\":3000,\"args_redacted\":1}".to_owned(),
@@ -428,7 +428,7 @@ fn approval_queue_item_summary_formats_list_and_detail_lines() {
     );
     let detail = item.detail_lines().join("\n");
     assert!(detail.contains("approval_request_id=apr_123"));
-    assert!(detail.contains("tool_name=exec"));
+    assert!(detail.contains("tool_name=bash"));
     assert!(detail.contains("raw_tool_name=shell.exec"));
     assert!(
         detail.contains(

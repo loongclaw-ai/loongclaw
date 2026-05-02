@@ -85,24 +85,13 @@ fn sanitize_followup_request_summary(tool_name: &str, request: Value) -> Value {
 }
 
 pub(crate) fn effective_followup_tool_name(intent: &ToolIntent) -> String {
-    let canonical_tool_name = crate::tools::canonical_tool_name(intent.tool_name.as_str());
-    if canonical_tool_name != "tool.invoke" {
-        return canonical_tool_name.to_owned();
-    }
-
-    if let Some((tool_name, _arguments)) =
-        crate::tools::invoked_discoverable_tool_request(&intent.args_json)
-    {
-        return tool_name.to_owned();
-    }
-
-    intent
-        .args_json
-        .get("tool_id")
-        .and_then(Value::as_str)
-        .map(crate::tools::canonical_tool_name)
-        .unwrap_or(canonical_tool_name)
-        .to_owned()
+    let request = loong_contracts::ToolCoreRequest {
+        tool_name: intent.tool_name.clone(),
+        payload: intent.args_json.clone(),
+    };
+    crate::tools::peek_tool_invoke_request(&request)
+        .map(|peeked| peeked.tool_name.to_owned())
+        .unwrap_or_else(|| crate::tools::canonical_tool_name(intent.tool_name.as_str()).to_owned())
 }
 
 pub(crate) fn effective_followup_visible_tool_name(intent: &ToolIntent) -> String {
@@ -111,51 +100,28 @@ pub(crate) fn effective_followup_visible_tool_name(intent: &ToolIntent) -> Strin
 }
 
 pub(crate) fn effective_followup_request(intent: &ToolIntent) -> Value {
-    let canonical_tool_name = crate::tools::canonical_tool_name(intent.tool_name.as_str());
-    if canonical_tool_name != "tool.invoke" {
-        return crate::tools::normalize_shell_payload_for_request(
-            canonical_tool_name,
-            intent.args_json.clone(),
-        );
-    }
-
-    let raw_tool_id = intent.args_json.get("tool_id").and_then(Value::as_str);
-    let resolved_invoke = crate::tools::invoked_discoverable_tool_request(&intent.args_json);
-    let (invoked_tool_name, request_payload) = match resolved_invoke {
-        Some((tool_name, arguments)) => {
-            let request_payload =
-                strip_grouped_hidden_operation_from_request(raw_tool_id, arguments.clone());
-            (tool_name, request_payload)
-        }
-        None => {
-            let invoked_tool_name = raw_tool_id
-                .map(crate::tools::canonical_tool_name)
-                .unwrap_or(canonical_tool_name);
-            let request_payload = intent
-                .args_json
-                .get("arguments")
-                .cloned()
-                .unwrap_or_else(|| intent.args_json.clone());
-            (invoked_tool_name, request_payload)
-        }
+    let request = loong_contracts::ToolCoreRequest {
+        tool_name: intent.tool_name.clone(),
+        payload: intent.args_json.clone(),
     };
-
-    crate::tools::normalize_shell_payload_for_request(invoked_tool_name, request_payload)
-}
-
-fn strip_grouped_hidden_operation_from_request(raw_tool_id: Option<&str>, request: Value) -> Value {
-    let Some(raw_tool_id) = raw_tool_id.map(crate::tools::canonical_tool_name) else {
-        return request;
-    };
-    let is_grouped_hidden_surface = crate::tools::is_tool_surface_id(raw_tool_id)
-        && !crate::tools::is_provider_exposed_tool_name(raw_tool_id);
-    if !is_grouped_hidden_surface {
-        return request;
-    }
-
-    let Value::Object(mut request_object) = request else {
-        return request;
-    };
-    request_object.remove("operation");
-    Value::Object(request_object)
+    let (canonical_tool_name, payload) = crate::tools::peek_tool_invoke_request(&request)
+        .map(|peeked| {
+            let mut payload = peeked.arguments.clone();
+            let grouped_agent_wrapper = request
+                .payload
+                .get("tool_id")
+                .and_then(Value::as_str)
+                .is_some_and(|tool_id| tool_id == "agent");
+            if grouped_agent_wrapper && let Some(payload_object) = payload.as_object_mut() {
+                payload_object.remove("operation");
+            }
+            (peeked.tool_name, payload)
+        })
+        .unwrap_or_else(|| {
+            (
+                crate::tools::canonical_tool_name(intent.tool_name.as_str()),
+                intent.args_json.clone(),
+            )
+        });
+    crate::tools::normalize_shell_payload_for_request(canonical_tool_name, payload)
 }

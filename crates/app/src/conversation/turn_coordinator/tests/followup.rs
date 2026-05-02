@@ -55,7 +55,7 @@ fn build_turn_reply_followup_messages_promotes_external_skill_invoke_to_system_c
         })],
         "preface",
         ToolDrivenFollowupPayload::ToolResult {
-            text: r#"[ok] {"status":"ok","tool":"external_skills.invoke","tool_call_id":"call-1","payload_summary":"{\"skill_id\":\"demo-skill\",\"display_name\":\"Demo Skill\",\"instructions\":\"Follow the managed skill instruction before answering.\"}","payload_chars":180,"payload_truncated":false}"#.to_owned(),
+            text: r#"[ok] {"status":"ok","tool":"skills.invoke","tool_call_id":"call-1","payload_summary":"{\"skill_id\":\"demo-skill\",\"display_name\":\"Demo Skill\",\"instructions\":\"Follow the managed skill instruction before answering.\"}","payload_chars":180,"payload_truncated":false}"#.to_owned(),
         },
         "summarize note.md",
     );
@@ -90,7 +90,7 @@ fn build_turn_reply_followup_messages_rejects_truncated_external_skill_invoke_pa
         })],
         "preface",
         ToolDrivenFollowupPayload::ToolResult {
-            text: r#"[ok] {"status":"ok","tool":"external_skills.invoke","tool_call_id":"call-1","payload_summary":"{\"skill_id\":\"demo-skill\",\"display_name\":\"Demo Skill\",\"instructions\":\"Follow the managed skill instruction before answering.\"}","payload_chars":180,"payload_truncated":true}"#.to_owned(),
+            text: r#"[ok] {"status":"ok","tool":"skills.invoke","tool_call_id":"call-1","payload_summary":"{\"skill_id\":\"demo-skill\",\"display_name\":\"Demo Skill\",\"instructions\":\"Follow the managed skill instruction before answering.\"}","payload_chars":180,"payload_truncated":true}"#.to_owned(),
         },
         "summarize note.md",
     );
@@ -114,46 +114,6 @@ fn build_turn_reply_followup_messages_rejects_truncated_external_skill_invoke_pa
             .any(|content| content.contains("[tool_result]\n[ok]")),
         "truncated invoke payload should stay as ordinary assistant tool_result content: {messages:?}"
     );
-}
-
-#[test]
-fn build_safe_lane_plan_graph_uses_precise_visible_names_for_grouped_hidden_invokes() {
-    let config = LoongConfig::default();
-    let lane_decision = LaneDecision {
-        lane: ExecutionLane::Safe,
-        risk_score: 0,
-        complexity_score: 0,
-        reasons: Vec::new(),
-    };
-    let turn = ProviderTurn {
-        assistant_text: String::new(),
-        tool_intents: vec![ToolIntent {
-            tool_name: "tool.invoke".to_owned(),
-            args_json: json!({
-                "tool_id": "agent",
-                "lease": "lease-agent",
-                "arguments": {
-                    "operation": "delegate-background",
-                    "task": "summarize the repo"
-                }
-            }),
-            source: "provider_tool_call".to_owned(),
-            session_id: "session-a".to_owned(),
-            turn_id: "turn-a".to_owned(),
-            tool_call_id: "call-agent".to_owned(),
-        }],
-        raw_meta: Value::Null,
-    };
-
-    let plan = build_safe_lane_plan_graph(&config, &lane_decision, &turn, 2, 0);
-    let tool_node = plan
-        .nodes
-        .iter()
-        .find(|node| node.kind == PlanNodeKind::Tool)
-        .expect("plan should include a tool node");
-
-    assert_eq!(tool_node.label, "invoke `delegate_async`");
-    assert_eq!(tool_node.tool_name.as_deref(), Some("delegate_async"));
 }
 
 #[test]
@@ -274,7 +234,7 @@ fn build_turn_reply_followup_messages_reduces_shell_exec_payload_summary() {
     let (envelope, summary) =
         crate::conversation::turn_shared::parse_tool_result_followup_for_test(&messages);
 
-    assert_eq!(envelope["tool"], "exec");
+    assert_eq!(envelope["tool"], "bash");
     assert_eq!(envelope["payload_truncated"], true);
     assert_eq!(summary["command"], "cargo");
     assert_eq!(summary["exit_code"], 0);
@@ -298,99 +258,4 @@ fn build_turn_reply_followup_messages_reduces_shell_exec_payload_summary() {
             .contains("stderr line 0"),
         "expected compact stderr preview, got: {summary:?}"
     );
-}
-
-#[test]
-fn build_turn_reply_followup_messages_compacts_tool_search_payload_summary() {
-    let payload_summary = serde_json::json!({
-        "adapter": "core-tools",
-        "tool_name": "tool.search",
-        "query": "read repo file",
-        "returned": 2,
-        "results": [
-            {
-                "tool_id": "file.read",
-                "summary": "Read a UTF-8 text file from the configured workspace root and return contents.",
-                "argument_hint": "path:string,offset?:integer,limit?:integer",
-                "required_fields": ["path"],
-                "required_field_groups": [["path"]],
-                "tags": ["core", "file", "read"],
-                "why": ["summary matches query", "tag matches read"],
-                "lease": "lease-file"
-            },
-            {
-                "tool_id": "shell.exec",
-                "summary": "Execute a shell command in the workspace.",
-                "argument_hint": "command:string,args?:string[]",
-                "required_fields": ["command"],
-                "required_field_groups": [["command"]],
-                "tags": ["core", "shell", "exec"],
-                "why": ["summary matches query", "tag matches exec"],
-                "lease": "lease-shell"
-            }
-        ]
-    });
-    let payload_summary_str = payload_summary.to_string();
-    let tool_result = format!(
-        "[ok] {}",
-        serde_json::json!({
-            "status": "ok",
-            "tool": "tool.search",
-            "tool_call_id": "call-search",
-            "payload_chars": 2_048,
-            "payload_summary": payload_summary_str,
-            "payload_truncated": false
-        })
-    );
-
-    let messages = build_turn_reply_followup_messages(
-        &[serde_json::json!({
-            "role": "system",
-            "content": "sys"
-        })],
-        "preface",
-        ToolDrivenFollowupPayload::ToolResult { text: tool_result },
-        "find the right tool",
-    );
-
-    let (envelope, summary) =
-        crate::conversation::turn_shared::parse_tool_result_followup_for_test(&messages);
-    let summary_str = envelope["payload_summary"]
-        .as_str()
-        .expect("payload summary should stay encoded json");
-    let results = summary["results"]
-        .as_array()
-        .expect("results should be an array");
-    let first = &results[0];
-
-    assert_eq!(envelope["tool"], "tool.search");
-    assert_eq!(envelope["payload_truncated"], false);
-    assert_ne!(summary_str, payload_summary.to_string());
-    assert_eq!(summary["query"], "read repo file");
-    assert!(summary.get("adapter").is_none());
-    assert!(summary.get("tool_name").is_none());
-    assert_eq!(summary["returned"], 2);
-    assert_eq!(results.len(), 2);
-    assert_eq!(first["tool_id"], "file.read");
-    assert_eq!(first["lease"], "lease-file");
-    for entry in results {
-        assert!(entry.get("tool_id").and_then(Value::as_str).is_some());
-        assert!(entry.get("summary").and_then(Value::as_str).is_some());
-        assert!(entry.get("argument_hint").and_then(Value::as_str).is_some());
-        assert!(
-            entry
-                .get("required_fields")
-                .and_then(Value::as_array)
-                .is_some()
-        );
-        assert!(
-            entry
-                .get("required_field_groups")
-                .and_then(Value::as_array)
-                .is_some()
-        );
-        assert!(entry.get("lease").and_then(Value::as_str).is_some());
-        assert!(entry.get("tags").is_none());
-        assert!(entry.get("why").is_none());
-    }
 }

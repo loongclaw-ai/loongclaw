@@ -6734,9 +6734,9 @@ mod tests {
             .upsert_session_tool_policy(NewSessionToolPolicyRecord {
                 session_id: "root-session".to_owned(),
                 requested_tool_ids: vec![
-                    "tool.search".to_owned(),
-                    "file.read".to_owned(),
-                    "tool.search".to_owned(),
+                    "read".to_owned(),
+                    "session_status".to_owned(),
+                    "read".to_owned(),
                 ],
                 runtime_narrowing: ToolRuntimeNarrowing {
                     browser: crate::tools::runtime_config::BrowserRuntimeNarrowing {
@@ -6759,7 +6759,7 @@ mod tests {
         assert_eq!(created.session_id, "root-session");
         assert_eq!(
             created.requested_tool_ids,
-            vec!["file.read".to_owned(), "tool.search".to_owned()]
+            vec!["read".to_owned(), "session_status".to_owned()]
         );
         assert_eq!(created.runtime_narrowing.browser.max_sessions, Some(1));
         assert_eq!(

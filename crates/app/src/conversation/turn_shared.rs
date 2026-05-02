@@ -93,8 +93,8 @@ pub use reply::{ToolDrivenReplyKernel, compose_assistant_reply};
 #[cfg(test)]
 pub(crate) use request::summarize_failed_provider_lane_tool_request;
 pub(crate) use request::{
-    effective_followup_tool_name, effective_followup_visible_tool_name,
-    summarize_provider_lane_tool_request, summarize_single_tool_followup_request,
+    effective_followup_visible_tool_name, summarize_provider_lane_tool_request,
+    summarize_single_tool_followup_request,
 };
 pub use runtime_support::{
     ProviderTurnRequestAction, decide_provider_turn_request_action,

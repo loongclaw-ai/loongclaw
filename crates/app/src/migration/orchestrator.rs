@@ -543,7 +543,7 @@ fn bridge_installable_external_skills(
     for skill_root in installable_roots {
         let install_outcome = crate::tools::execute_tool_core_with_config(
             ToolCoreRequest {
-                tool_name: "external_skills.install".to_owned(),
+                tool_name: "skills.install".to_owned(),
                 payload: json!({
                     "path": skill_root.display().to_string(),
                 }),
@@ -863,7 +863,7 @@ fn rollback_bridged_external_skill_ids(
     for skill_id in skill_ids.iter().rev() {
         crate::tools::execute_tool_core_with_config(
             ToolCoreRequest {
-                tool_name: "external_skills.remove".to_owned(),
+                tool_name: "skills.remove".to_owned(),
                 payload: json!({
                     "skill_id": skill_id,
                 }),

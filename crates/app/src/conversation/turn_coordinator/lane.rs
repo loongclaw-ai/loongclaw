@@ -16,16 +16,11 @@ pub(super) async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
     followup_chain_active: bool,
 ) -> ProviderTurnLaneExecution {
     let had_tool_intents = !turn.tool_intents.is_empty();
-    let search_tool_intents = turn
-        .tool_intents
-        .iter()
-        .filter(|intent| effective_followup_tool_name(intent) == "tool.search")
-        .count();
-    let discovery_search_turn = search_tool_intents > 0;
+    let search_tool_intents = 0usize;
+    let discovery_search_turn = false;
     let malformed_parse_followup_turn =
         provider_turn_has_malformed_parse_followup_signal(&turn.raw_meta);
-    let supports_provider_turn_followup =
-        followup_chain_active || discovery_search_turn || malformed_parse_followup_turn;
+    let supports_provider_turn_followup = followup_chain_active || malformed_parse_followup_turn;
     let assistant_preface = turn.assistant_text.clone();
     let lane = preparation.lane_plan.decision.lane;
     let session_context = match runtime.session_context(config, session_id, binding) {

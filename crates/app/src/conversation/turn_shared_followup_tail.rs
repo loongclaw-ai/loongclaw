@@ -394,16 +394,48 @@ fn render_direct_routing_failure_repair_guidance(
 ) -> Option<String> {
     let normalized_reason = tool_failure_reason
         .strip_prefix("tool execution failed: ")
+        .or_else(|| {
+            tool_failure_reason.strip_prefix("tool_preflight_denied: tool input needs repair: ")
+        })
+        .or_else(|| tool_failure_reason.strip_prefix("tool input needs repair: "))
         .unwrap_or(tool_failure_reason);
 
     let guidance = if normalized_reason.starts_with("hidden_agent_requires_operation:") {
-        "Add `operation` for grouped agent/runtime control requests such as session archive, cancel, recover, or approval workflows.".to_owned()
+        "Add `operation` for runtime-control requests such as session archive, cancel, recover, or approval workflows.".to_owned()
     } else if normalized_reason.starts_with("hidden_agent_requires_actionable_fields:") {
-        "Add the concrete session / approval / delegate / provider / config fields needed for the request, or set `operation` when the grouped `tool.invoke` request is ambiguous.".to_owned()
+        "Add the concrete session / approval / delegate / provider / config fields needed for the request, or set `operation` when the legacy control wrapper request is ambiguous.".to_owned()
     } else if normalized_reason.starts_with("hidden_skills_requires_actionable_fields:") {
-        "Add search, inspect, install, run, or list fields for the grouped `skills` surface, or provide `operation` to make the request explicit.".to_owned()
+        "Add search, inspect, install, run, or list fields for the legacy skills-management request, or provide `operation` to make the request explicit.".to_owned()
     } else if normalized_reason.starts_with("hidden_channel_requires_operation:") {
-        "Add `operation` for the grouped channel surface, for example `messages.send`, `messages.reply`, `card.update`, or `feishu.whoami`.".to_owned()
+        "Add `operation` for the channel request, for example `messages.send`, `messages.reply`, `card.update`, or `feishu.whoami`.".to_owned()
+    } else if normalized_reason.starts_with("direct_read_requires_one_of:") {
+        "Provide exactly one read mode: `path` for a file, `query` for content search, or `pattern` for glob-style path matching.".to_owned()
+    } else if normalized_reason.starts_with("direct_read_ambiguous:") {
+        "Use only one read mode at a time. Do not mix `path`, `query`, and `pattern` in the same direct read request.".to_owned()
+    } else if normalized_reason.starts_with("direct_write_requires_path:") {
+        "Add `path` to tell the direct write surface which file to replace.".to_owned()
+    } else if normalized_reason.starts_with("direct_write_requires_content:") {
+        "Add `content` with the full replacement text for the direct write request.".to_owned()
+    } else if normalized_reason.starts_with("direct_edit_requires_one_mode:") {
+        "Use either `edits`, or the legacy `old_string` plus `new_string` pair, and include `path`."
+            .to_owned()
+    } else if normalized_reason.starts_with("direct_edit_ambiguous:") {
+        "Do not mix `edits` with legacy `old_string` / `new_string` fields in the same direct edit request.".to_owned()
+    } else if normalized_reason.starts_with("direct_edit_requires_path:") {
+        "Add `path` so the direct edit surface knows which file to patch.".to_owned()
+    } else if normalized_reason.starts_with("direct_edit_requires_complete_legacy_fields:") {
+        "When using legacy edit mode, provide both `old_string` and `new_string` together."
+            .to_owned()
+    } else if normalized_reason.starts_with("direct_bash_requires_command:") {
+        "Add `command` with the bash command string to execute.".to_owned()
+    } else if normalized_reason.starts_with("direct_web_requires_query_or_url:") {
+        "Provide `query` for search mode, or `url` for fetch/request mode.".to_owned()
+    } else if normalized_reason.starts_with("direct_web_ambiguous:") {
+        "Do not mix `query` with `url` or low-level request fields in the same direct web call."
+            .to_owned()
+    } else if normalized_reason.starts_with("direct_browser_page_click_requires_session_id:") {
+        "Add `session_id` before issuing page click actions through the direct browser surface."
+            .to_owned()
     } else {
         return None;
     };
@@ -441,7 +473,7 @@ fn render_shell_failure_repair_guidance(
     request_summary_request: Option<&Value>,
     tool_failure_reason: &str,
 ) -> Option<String> {
-    if crate::tools::user_visible_tool_name(tool_name) != "exec" {
+    if crate::tools::user_visible_tool_name(tool_name) != "bash" {
         return None;
     }
 

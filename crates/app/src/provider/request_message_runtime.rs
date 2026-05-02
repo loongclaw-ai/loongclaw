@@ -9,9 +9,8 @@ use crate::CliResult;
 use crate::KernelContext;
 use crate::config::LoongConfig;
 use crate::conversation::{
-    ContextArtifactDescriptor, ContextArtifactKind, PromptCompiler, PromptFragment, PromptLane,
-    PromptRenderPolicy, ToolOutputStreamingPolicy,
-    latest_tool_discovery_state_from_assistant_contents,
+    ContextArtifactDescriptor, ContextArtifactKind, PromptCompiler, PromptFragment,
+    ToolOutputStreamingPolicy,
 };
 use crate::runtime_identity;
 use crate::runtime_self;
@@ -795,47 +794,12 @@ fn append_hydrated_memory_messages(
 
 #[cfg(feature = "memory-sqlite")]
 fn append_hydrated_tool_discovery_prompt_fragment(
-    prompt_fragments: &mut Vec<PromptFragment>,
-    tool_view: &ToolView,
-    hydrated: &memory::HydratedMemoryContext,
-    session_path_projection: Option<&SessionPathProjection>,
+    _prompt_fragments: &mut Vec<PromptFragment>,
+    _tool_view: &ToolView,
+    _hydrated: &memory::HydratedMemoryContext,
+    _session_path_projection: Option<&SessionPathProjection>,
 ) {
-    let assistant_contents = session_path_projection
-        .map(|projection| projection.assistant_contents.clone())
-        .unwrap_or_else(|| {
-            hydrated
-                .recent_window
-                .iter()
-                .filter(|turn| turn.role == "assistant")
-                .map(|turn| turn.content.trim())
-                .filter(|content| !content.is_empty())
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        });
-    let discovery_state =
-        latest_tool_discovery_state_from_assistant_contents(assistant_contents.as_slice());
-    let filtered_state = discovery_state
-        .as_ref()
-        .and_then(|discovery_state| discovery_state.filtered_for_tool_view(tool_view));
-    let Some(discovery_state) = filtered_state else {
-        return;
-    };
-
-    let content = discovery_state.render_delta_prompt();
-    let fragment = PromptFragment::new(
-        "tool-discovery-delta",
-        PromptLane::ToolDiscoveryDelta,
-        "tool-discovery-delta",
-        content,
-        ContextArtifactKind::ToolHint,
-    )
-    .with_dedupe_key("tool-discovery-delta")
-    .with_render_policy(PromptRenderPolicy::GovernedAdvisory {
-        allowed_root_headings: &[],
-    })
-    .with_tool_discovery_state(discovery_state);
-
-    prompt_fragments.push(fragment);
+    // Discovery-first prompt deltas are no longer part of the provider-facing tool contract.
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -1441,10 +1405,9 @@ mod tests {
 
         assert!(system_content.contains("## Tool Access"));
         assert!(system_content.contains("`web { query }` uses web-search providers"));
-        assert!(system_content.contains("\"name\": \"tool_search\""));
-        assert!(system_content.contains("\"name\": \"tool_invoke\""));
-        assert!(system_content.contains("invalid_tool_lease"));
-        assert!(system_content.contains("exact_tool_id"));
+        assert!(system_content.contains("\"name\": \"read\""));
+        assert!(!system_content.contains("\"name\": \"tool_search\""));
+        assert!(!system_content.contains("\"name\": \"tool_invoke\""));
     }
 
     #[test]

@@ -2,7 +2,6 @@ use std::borrow::Cow;
 
 use serde_json::Value;
 
-use super::super::tool_result_compaction::compact_tool_search_payload_summary_str;
 use super::{
     FILE_READ_FOLLOWUP_CONTENT_PREVIEW_CHARS, SHELL_FOLLOWUP_STDIO_OMISSION_MARKER,
     SHELL_FOLLOWUP_STDIO_PREVIEW_CHARS, ToolResultLine, ToolResultPayloadSemantics,
@@ -38,18 +37,6 @@ pub(super) fn followup_prompt_needs_truncation_hint(
         .unwrap_or(false)
         || rendered_tool_result_text
             .map(tool_result_contains_truncation_signal)
-            .unwrap_or(false)
-}
-
-pub(super) fn followup_prompt_uses_discovery_guidance(
-    tool_result_text: Option<&str>,
-    rendered_tool_result_text: Option<&str>,
-) -> bool {
-    tool_result_text
-        .map(tool_result_contains_discovery_payload)
-        .unwrap_or(false)
-        || rendered_tool_result_text
-            .map(tool_result_contains_discovery_payload)
             .unwrap_or(false)
 }
 
@@ -224,22 +211,6 @@ fn reduce_tool_result_text_for_model(text: &str) -> Option<String> {
     Some(reduced)
 }
 
-fn tool_result_contains_discovery_payload(tool_result_text: &str) -> bool {
-    tool_result_text
-        .lines()
-        .filter_map(parse_tool_result_envelope)
-        .any(|envelope| envelope_uses_discovery_semantics(&envelope))
-}
-
-fn envelope_uses_discovery_semantics(envelope: &Value) -> bool {
-    let uses_explicit_semantics =
-        envelope_has_payload_semantics(envelope, ToolResultPayloadSemantics::DiscoveryResult);
-    if uses_explicit_semantics {
-        return true;
-    }
-    envelope_contains_discovery_payload(envelope)
-}
-
 pub(super) fn envelope_uses_external_skill_context(envelope: &Value) -> bool {
     let uses_explicit_semantics =
         envelope_has_payload_semantics(envelope, ToolResultPayloadSemantics::ExternalSkillContext);
@@ -252,41 +223,7 @@ pub(super) fn envelope_uses_external_skill_context(envelope: &Value) -> bool {
 
 fn envelope_uses_legacy_external_skill_tool(envelope: &Value) -> bool {
     let tool_name = envelope.get("tool").and_then(Value::as_str);
-    tool_name == Some("external_skills.invoke")
-}
-
-fn envelope_contains_discovery_payload(envelope: &Value) -> bool {
-    let Some(payload_summary) = envelope.get("payload_summary").and_then(Value::as_str) else {
-        return false;
-    };
-    let Ok(payload_json) = serde_json::from_str::<Value>(payload_summary) else {
-        return false;
-    };
-    payload_summary_looks_like_discovery_result(&payload_json)
-}
-
-fn payload_summary_looks_like_discovery_result(payload: &Value) -> bool {
-    let Some(payload_object) = payload.as_object() else {
-        return false;
-    };
-    let Some(results) = payload_object.get("results").and_then(Value::as_array) else {
-        return false;
-    };
-
-    if results.is_empty() {
-        return payload_object.contains_key("query");
-    }
-
-    results.iter().any(|result| {
-        let Some(result_object) = result.as_object() else {
-            return false;
-        };
-        result_object
-            .get("tool_id")
-            .and_then(Value::as_str)
-            .is_some()
-            && result_object.get("lease").and_then(Value::as_str).is_some()
-    })
+    tool_name == Some("skills.invoke")
 }
 
 fn envelope_payload_semantics(envelope: &Value) -> Option<ToolResultPayloadSemantics> {
@@ -307,7 +244,6 @@ fn reduce_tool_result_line_for_model(line: &str) -> String {
     };
     let canonical_tool_name = crate::tools::canonical_tool_name(tool_result_line.tool_name());
     let visible_tool_name = crate::tools::user_visible_tool_name(canonical_tool_name);
-    let payload_truncated = tool_result_line.payload_truncated();
     let payload_summary = tool_result_line.payload_summary_str();
 
     let reduction = if payload_summary.is_empty() {
@@ -326,8 +262,6 @@ fn reduce_tool_result_line_for_model(line: &str) -> String {
                 };
                 reduce_shell_payload_summary(&mut payload_json).map(|summary| (summary, true))
             }
-            _ if !payload_truncated => compact_tool_search_payload_summary_str(payload_summary)
-                .map(|summary| (summary, false)),
             _ => None,
         }
     };

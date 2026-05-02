@@ -72,6 +72,15 @@ pub(crate) fn render_tool_input_repair_guidance_from_reason(
     tool_name: &str,
     tool_failure_reason: &str,
 ) -> Option<String> {
+    let canonical_tool_name = tools::canonical_tool_name(tool_name);
+    if canonical_tool_name == "tool.invoke"
+        && tool_failure_reason
+            .trim()
+            .starts_with("invalid_tool_lease:")
+    {
+        return Some(render_legacy_tool_invoke_lease_repair_guidance());
+    }
+
     let catalog = tools::tool_catalog();
     let descriptor = catalog.resolve(tool_name)?;
     render_tool_input_repair_guidance_from_reason_with_descriptor(
@@ -97,34 +106,22 @@ fn effective_payload_for_descriptor(
     descriptor: &tools::ToolDescriptor,
     request: &ToolCoreRequest,
 ) -> Option<Value> {
-    let descriptor_tool_name = descriptor.name;
     let request_tool_name = tools::canonical_tool_name(request.tool_name.as_str());
-
-    if request_tool_name == descriptor_tool_name {
-        let payload = request.payload.clone();
-        return Some(payload);
+    if request_tool_name == "tool.invoke" {
+        let peeked_request = tools::peek_tool_invoke_request(request)?;
+        if peeked_request.tool_name != descriptor.name {
+            return None;
+        }
+        return Some(peeked_request.arguments.clone());
     }
 
-    if request_tool_name != "tool.invoke" {
-        return None;
+    if request_tool_name == descriptor.name {
+        return Some(request.payload.clone());
     }
 
-    let request_object = request.payload.as_object()?;
-    let inner_tool_name = request_object
-        .get("tool_id")
-        .or_else(|| request_object.get("tool_name"))
-        .and_then(Value::as_str)
-        .map(tools::canonical_tool_name)?;
-
-    if inner_tool_name != descriptor_tool_name {
-        return None;
-    }
-
-    let payload = request_object
-        .get("arguments")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-    Some(payload)
+    let routed_direct_tool_name =
+        tools::route_direct_tool_name(request_tool_name, &request.payload).ok()?;
+    (routed_direct_tool_name == descriptor.name).then(|| request.payload.clone())
 }
 
 fn render_tool_input_repair_guidance_from_reason_with_descriptor(
@@ -132,15 +129,50 @@ fn render_tool_input_repair_guidance_from_reason_with_descriptor(
     descriptor: &tools::ToolDescriptor,
     tool_failure_reason: &str,
 ) -> Option<String> {
-    if let Some(guidance) =
-        render_invalid_tool_lease_repair_guidance(tool_name, tool_failure_reason)
+    if tool_failure_reason
+        .trim()
+        .starts_with("invalid_tool_lease:")
     {
-        return Some(guidance);
+        return Some(render_invalid_tool_lease_repair_guidance(
+            tool_name, descriptor,
+        ));
     }
 
     let issue = parse_tool_input_contract_issue_from_reason(descriptor, tool_failure_reason)?;
     let guidance = render_tool_input_repair_guidance_for_issue(tool_name, descriptor, &issue);
     Some(guidance)
+}
+
+fn render_invalid_tool_lease_repair_guidance(
+    tool_name: &str,
+    descriptor: &tools::ToolDescriptor,
+) -> String {
+    let visible_tool_name = repair_guidance_visible_tool_name(tool_name);
+    let mut lines = Vec::new();
+    lines.push(format!("Repair guidance for {visible_tool_name}:"));
+    lines.push(
+        "The previous hidden-tool lease is stale. Refresh the visible tool request and continue with a fresh lease."
+            .to_owned(),
+    );
+    lines.push(
+        "Do not reuse older leases or wrapper-style tool ids from previous rounds.".to_owned(),
+    );
+    let argument_hint = descriptor.argument_hint();
+    let trimmed_hint = argument_hint.trim();
+    if !trimmed_hint.is_empty() {
+        lines.push(format!("Expected payload shape: {trimmed_hint}."));
+    }
+    lines.join("\n")
+}
+
+fn render_legacy_tool_invoke_lease_repair_guidance() -> String {
+    [
+        "Repair guidance for tool.invoke:",
+        "The previous hidden-tool lease is stale. Refresh the visible tool request and continue with a fresh lease.",
+        "Do not reuse older leases or wrapper-style tool ids from previous rounds.",
+        "Expected payload shape: tool_id:string,lease:string,arguments:object.",
+    ]
+    .join("\n")
 }
 
 fn strip_tool_input_reason_prefix(reason: &str) -> &str {
@@ -154,31 +186,6 @@ fn strip_tool_input_reason_prefix(reason: &str) -> &str {
     let followup_prefix = "tool input needs repair: ";
     let stripped_followup_reason = trimmed_reason.strip_prefix(followup_prefix);
     stripped_followup_reason.unwrap_or(trimmed_reason)
-}
-
-fn render_invalid_tool_lease_repair_guidance(
-    tool_name: &str,
-    tool_failure_reason: &str,
-) -> Option<String> {
-    if tool_name != "tool.invoke" {
-        return None;
-    }
-
-    let stripped_reason = tool_failure_reason.trim();
-    let mentions_invalid_tool_lease = stripped_reason.contains("invalid_tool_lease:");
-    if !mentions_invalid_tool_lease {
-        return None;
-    }
-
-    Some([
-        "Repair guidance for tool.invoke:".to_owned(),
-        "The lease is invalid, expired, or scoped to a different turn/session.".to_owned(),
-        "Refresh the tool card with `tool.search` before retrying `tool.invoke`.".to_owned(),
-        "If you already know the tool id, call `tool.search` with `exact_tool_id` to fetch a fresh lease.".to_owned(),
-        "Do not reuse older leases from earlier search results.".to_owned(),
-        "Expected payload shape: tool_id:string,lease:string,arguments:object.".to_owned(),
-    ]
-    .join("\n"))
 }
 
 fn parse_tool_input_contract_issue_from_reason(
@@ -454,16 +461,17 @@ mod tests {
 
     #[test]
     fn detect_repairable_tool_request_issue_unwraps_tool_invoke_for_core_tools() {
-        let (tool_name, payload) = tools::synthesize_test_provider_tool_call_with_scope(
-            "file.read",
-            json!({}),
-            Some("session-a"),
-            Some("turn-a"),
-        );
         let descriptor = tools::tool_catalog()
             .resolve("file.read")
             .expect("file.read descriptor");
-        let request = ToolCoreRequest { tool_name, payload };
+        let request = ToolCoreRequest {
+            tool_name: "tool.invoke".to_owned(),
+            payload: json!({
+                "tool_id": "file.read",
+                "lease": "lease-a",
+                "arguments": {}
+            }),
+        };
 
         let issue = detect_repairable_tool_request_issue(descriptor, &request);
 
@@ -548,9 +556,9 @@ mod tests {
         )
         .expect("guidance");
 
-        assert!(guidance.contains("Repair guidance for exec:"));
+        assert!(guidance.contains("Repair guidance for bash:"));
         assert!(guidance.contains(
-            "Prefer the direct `exec` surface instead of hidden `shell.exec` when possible."
+            "Prefer the direct `bash` surface instead of hidden `shell.exec` when possible."
         ));
         assert!(guidance.contains("Set `payload.args` to an array value."));
         assert!(guidance.contains(
@@ -567,8 +575,8 @@ mod tests {
         .expect("guidance");
 
         assert!(guidance.contains("Repair guidance for tool.invoke:"));
-        assert!(guidance.contains("tool.search"));
-        assert!(guidance.contains("exact_tool_id"));
+        assert!(guidance.contains("stale"));
+        assert!(guidance.contains("fresh lease"));
         assert!(guidance.contains("Do not reuse older leases"));
         assert!(
             guidance

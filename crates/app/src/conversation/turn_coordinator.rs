@@ -212,8 +212,7 @@ use self::support::{
     emit_discovery_first_event, emit_prompt_frame_event, estimate_tokens_for_messages,
     failed_task_progress_record, inject_delegate_workspace_metadata,
     persist_task_progress_event_best_effort, split_delegate_workspace_cleanup,
-    summarize_discovery_first_followup_turn, verifying_task_progress_record,
-    waiting_task_progress_record,
+    summarize_followup_turn, verifying_task_progress_record, waiting_task_progress_record,
 };
 use super::turn_checkpoint::{
     ContextCompactionOutcome, TurnCheckpointDiagnostics, TurnCheckpointFailure,
@@ -247,9 +246,8 @@ pub(super) use super::turn_shared::{
     ToolDrivenFollowupPayload, ToolDrivenReplyBaseDecision, ToolDrivenReplyPhase,
     build_tool_driven_followup_tail_with_request_summary_and_contract,
     build_tool_followup_user_prompt_with_context, build_tool_loop_guard_tail,
-    decide_provider_turn_request_action, effective_followup_tool_name,
-    effective_followup_visible_tool_name, format_approval_required_reply,
-    missing_tool_call_followup_payload, next_conversation_turn_id,
+    decide_provider_turn_request_action, effective_followup_visible_tool_name,
+    format_approval_required_reply, missing_tool_call_followup_payload, next_conversation_turn_id,
     parse_tool_driven_continuation_reply, reduce_followup_payload_for_model,
     render_tool_followup_continuation_contract, request_completion_with_raw_fallback,
     request_completion_with_raw_fallback_detailed, summarize_provider_lane_tool_request,

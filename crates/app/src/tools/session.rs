@@ -5120,12 +5120,18 @@ fn resolve_session_tool_policy_tool_ids(
 
     for raw_tool_id in raw_tool_ids {
         let canonical_tool_id = crate::tools::canonical_tool_name(&raw_tool_id).to_owned();
-        if !base_tool_view.contains(&canonical_tool_id) {
+        if matches!(canonical_tool_id.as_str(), "tool.search" | "tool.invoke") {
+            return Err(format!(
+                "session_tool_policy_set_invalid_tool_id: `{raw_tool_id}` is a legacy discovery wrapper and is not allowed in session tool policy"
+            ));
+        }
+        let visible_tool_id = crate::tools::model_visible_tool_name(canonical_tool_id.as_str());
+        if !base_tool_view.contains(&visible_tool_id) {
             return Err(format!(
                 "session_tool_policy_set_invalid_tool_id: `{raw_tool_id}` is not available in session `{session_id}`"
             ));
         }
-        normalized_tool_ids.insert(canonical_tool_id.clone(), canonical_tool_id);
+        normalized_tool_ids.insert(visible_tool_id.clone(), visible_tool_id);
     }
 
     Ok(normalized_tool_ids.into_values().collect())
@@ -9153,7 +9159,7 @@ mod tests {
             ToolCoreRequest {
                 tool_name: "session_tool_policy_set".to_owned(),
                 payload: json!({
-                    "tool_ids": ["tool.search", "session_status"],
+                    "tool_ids": ["read", "session_status"],
                     "runtime_narrowing": {
                         "browser": {
                             "max_sessions": 2,
@@ -9175,19 +9181,19 @@ mod tests {
         assert_eq!(set.payload["policy"]["has_policy"], true);
         assert_eq!(
             set.payload["policy"]["requested_tool_ids"],
-            json!(["session_status", "tool.search"])
+            json!(["read", "session_status"])
         );
         assert_eq!(
             set.payload["policy"]["visible_requested_tool_ids"],
-            json!(["agent", "tool.search"])
+            json!(["read", "session_status"])
         );
         assert_eq!(
             set.payload["policy"]["effective_tool_ids"],
-            json!(["session_status", "tool.search"])
+            json!(["read", "session_status"])
         );
         assert_eq!(
             set.payload["policy"]["visible_effective_tool_ids"],
-            json!(["agent", "tool.search"])
+            json!(["read", "session_status"])
         );
         assert_eq!(
             set.payload["policy"]["requested_runtime_narrowing"]["browser"]["max_sessions"],
@@ -9211,11 +9217,11 @@ mod tests {
         assert_eq!(status.payload["policy"]["has_policy"], true);
         assert_eq!(
             status.payload["policy"]["requested_tool_ids"],
-            json!(["session_status", "tool.search"])
+            json!(["read", "session_status"])
         );
         assert_eq!(
             status.payload["policy"]["visible_requested_tool_ids"],
-            json!(["agent", "tool.search"])
+            json!(["read", "session_status"])
         );
         assert_eq!(
             status.payload["policy"]["requested_runtime_narrowing"]["web_fetch"]["blocked_domains"],
@@ -9253,7 +9259,7 @@ mod tests {
             ToolCoreRequest {
                 tool_name: "session_tool_policy_set".to_owned(),
                 payload: json!({
-                    "tool_ids": ["tool.search", "session_status"]
+                    "tool_ids": ["read", "session_status"]
                 }),
             },
             "fresh-root-session",
@@ -9275,8 +9281,36 @@ mod tests {
             .expect("bootstrapped session tool policy");
         assert_eq!(
             policy.requested_tool_ids,
-            vec!["session_status".to_owned(), "tool.search".to_owned()]
+            vec!["read".to_owned(), "session_status".to_owned()]
         );
+    }
+
+    #[test]
+    fn session_tool_policy_set_rejects_legacy_discovery_wrappers() {
+        let config = isolated_memory_config("session-tool-policy-legacy-wrapper");
+        let repo = SessionRepository::new(&config).expect("repository");
+        repo.create_session(NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: SessionState::Ready,
+        })
+        .expect("create root session");
+
+        let error = execute_session_mutation_tool_with_config(
+            ToolCoreRequest {
+                tool_name: "session_tool_policy_set".to_owned(),
+                payload: json!({
+                    "tool_ids": ["tool.search", "session_status"]
+                }),
+            },
+            "root-session",
+            &config,
+        )
+        .expect_err("legacy discovery wrappers should be rejected");
+
+        assert!(error.contains("legacy discovery wrapper"), "error: {error}");
     }
 
     #[cfg(feature = "feishu-integration")]

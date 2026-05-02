@@ -13,10 +13,9 @@ pub(crate) use tool_internal_context::{
     reset_runtime_home_state_for_tests, with_trusted_internal_tool_payload,
 };
 pub(crate) use tool_lease::merge_trusted_internal_tool_context_into_arguments;
+use tool_search::SearchableToolEntry;
 #[cfg(test)]
 use tool_search::searchable_entry_from_provider_definition;
-pub(crate) use tool_search::tool_id_visible_in_view;
-use tool_search::{SearchableToolEntry, execute_tool_search_tool_with_config};
 #[cfg(test)]
 use tool_search::{
     runtime_discoverable_tool_entries, runtime_tool_search_entries,
@@ -127,19 +126,15 @@ pub(crate) use tool_dispatch::{
     is_expected_tool_request_error, run_blocking_with_timeout, tool_uses_dedicated_timeout,
 };
 pub(crate) use tool_identity::{
-    ResolvedToolExecution, direct_tool_name_for_hidden_tool,
-    hidden_facade_tool_name_for_hidden_tool, invoked_discoverable_tool_request,
-    is_provider_exposed_tool_name, is_tool_surface_id, model_visible_tool_name,
-    required_capabilities_for_request, required_capabilities_for_tool_name_and_payload,
-    resolve_tool_execution,
+    ResolvedToolExecution, direct_tool_name_for_hidden_tool, is_provider_exposed_tool_name,
+    model_visible_tool_name, required_capabilities_for_request,
+    required_capabilities_for_tool_name_and_payload, resolve_tool_execution,
 };
 pub use tool_identity::{
     canonical_tool_name, is_known_tool_name, is_known_tool_name_in_view, user_visible_tool_name,
 };
-pub(crate) use tool_lease::{
-    bridge_provider_tool_call_with_scope, execute_tool_invoke_tool_with_config, issue_tool_lease,
-    resolve_tool_invoke_request,
-};
+pub(crate) use tool_lease::{bridge_provider_tool_call_with_scope, issue_tool_lease};
+pub(crate) use tool_lease::{peek_tool_invoke_request, resolve_tool_invoke_request};
 #[cfg(test)]
 pub(crate) use tool_lease::{
     synthesize_test_provider_tool_call, synthesize_test_provider_tool_call_with_scope,
@@ -178,8 +173,6 @@ pub(crate) use provider_schema::provider_tool_definitions_with_config;
 pub use provider_schema::{
     provider_tool_definitions, tool_parameter_schema_types, try_provider_tool_definitions_for_view,
 };
-pub(crate) use routing::hidden_operation_for_tool_name;
-#[cfg(all(test, unix, feature = "tool-shell"))]
 pub(crate) use routing::route_direct_tool_name;
 pub use tool_snapshot::{
     capability_snapshot, capability_snapshot_for_view, capability_snapshot_with_config,
@@ -188,14 +181,14 @@ pub use tool_snapshot::{
 pub use tool_surface::ToolSurfaceState;
 pub(crate) use tool_surface::visible_direct_tool_states_for_view;
 
+#[cfg(test)]
+pub(crate) fn tool_id_visible_in_view(tool_id: &str, view: &ToolView) -> bool {
+    tool_search::tool_id_visible_in_view(tool_id, view)
+}
+
 const BROWSER_COMPANION_TOOL_PREFIX: &str = "browser.companion.";
 const DELEGATE_ASYNC_TOOL_NAME: &str = "delegate_async";
 const DELEGATE_TOOL_NAME: &str = "delegate";
-// Grouped hidden façade ids keep the model-facing vocabulary small.
-// `channel` stays separate from `agent`/`skills` so addon boundaries remain explicit.
-const HIDDEN_AGENT_TOOL_NAME: &str = "agent";
-const HIDDEN_SKILLS_TOOL_NAME: &str = "skills";
-const HIDDEN_CHANNEL_TOOL_NAME: &str = "channel";
 pub(crate) const SHELL_EXEC_TOOL_NAME: &str = "shell.exec";
 const BASH_EXEC_TOOL_NAME: &str = "bash.exec";
 const HTTP_REQUEST_TOOL_NAME: &str = "http.request";

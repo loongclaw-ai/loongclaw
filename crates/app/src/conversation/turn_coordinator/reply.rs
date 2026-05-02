@@ -552,7 +552,7 @@ async fn handle_followup_reply_decision<R: ConversationRuntime + ?Sized>(
                     followup_preparation.turn_id.as_str(),
                 );
                 let returned_tool_intent_count = turn.tool_intents.len();
-                let followup_result = summarize_discovery_first_followup_turn(&turn);
+                let followup_result = summarize_followup_turn(&turn);
                 if current_continue_phase.lane_execution.discovery_search_turn {
                     emit_discovery_first_event(
                         runtime,
@@ -563,7 +563,7 @@ async fn handle_followup_reply_decision<R: ConversationRuntime + ?Sized>(
                             "outcome": followup_result.outcome,
                             "followup_tool_name": followup_result.followup_tool_name,
                             "followup_target_tool_id": followup_result.followup_target_tool_id,
-                            "resolved_to_tool_invoke": followup_result.resolved_to_tool_invoke,
+                            "used_legacy_hidden_tool_wrapper": followup_result.used_legacy_hidden_tool_wrapper,
                             "raw_tool_output_requested": current_continue_phase
                                 .lane_execution
                                 .raw_tool_output_requested,
@@ -625,7 +625,7 @@ async fn handle_followup_reply_decision<R: ConversationRuntime + ?Sized>(
                             "outcome": "provider_error",
                             "followup_tool_name": Value::Null,
                             "followup_target_tool_id": Value::Null,
-                            "resolved_to_tool_invoke": false,
+                            "used_legacy_hidden_tool_wrapper": false,
                             "raw_tool_output_requested": current_continue_phase
                                 .lane_execution
                                 .raw_tool_output_requested,

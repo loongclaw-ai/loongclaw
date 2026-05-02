@@ -574,7 +574,7 @@ fn missing_tool_call_followup_ignores_normal_final_answer_text() {
 fn turn_failure_supports_discovery_recovery_requires_structured_metadata() {
     let recovery_failure = TurnFailure::policy_denied_with_discovery_recovery(
         "invalid_tool_lease",
-        "tool.invoke needs a fresh lease from the current tool.search result. If you need a non-core capability, call tool.search with a short natural-language description of the task.",
+        "The previous hidden-tool lease is stale. Refresh the visible tool request and continue with a fresh lease.",
     );
     let plain_failure = TurnFailure::policy_denied(
         "invalid_tool_lease",
@@ -834,7 +834,7 @@ fn tool_driven_reply_phase_raw_mode_bypasses_completion_pass() {
 fn tool_result_followup_tail_promotes_external_skill_without_payload_mapping() {
     let tail = build_tool_result_followup_tail(
         "preface",
-        r#"[ok] {"status":"ok","tool":"external_skills.invoke","tool_call_id":"call-1","payload_summary":"{\"skill_id\":\"demo-skill\",\"display_name\":\"Demo Skill\",\"instructions\":\"Follow the managed skill instruction before answering.\"}","payload_chars":180,"payload_truncated":false}"#,
+        r#"[ok] {"status":"ok","tool":"skills.invoke","tool_call_id":"call-1","payload_summary":"{\"skill_id\":\"demo-skill\",\"display_name\":\"Demo Skill\",\"instructions\":\"Follow the managed skill instruction before answering.\"}","payload_chars":180,"payload_truncated":false}"#,
         "summarize note.md",
         Some("warning"),
         |_, _| panic!("external skill payload should bypass payload mapper"),
@@ -1036,7 +1036,7 @@ fn tool_driven_followup_tail_preserves_request_summary_for_failure_payloads() {
         retryable: false,
     };
     let tool_request_summary =
-        r#"{"tool":"exec","request":{"command":"C:\\Windows\\System32\\RM.EXE"}}"#;
+        r#"{"tool":"bash","request":{"command":"C:\\Windows\\System32\\RM.EXE"}}"#;
     let tail = build_tool_driven_followup_tail(
         "preface",
         &payload,
@@ -1062,15 +1062,15 @@ fn tool_driven_followup_tail_preserves_request_summary_for_failure_payloads() {
         .and_then(|message| message.get("content"))
         .and_then(Value::as_str)
         .expect("user followup prompt should exist");
-    assert!(user_prompt.contains("Repair guidance for exec"));
+    assert!(user_prompt.contains("Repair guidance for bash"));
     assert!(user_prompt.contains("retry with `rm.exe`"));
 }
 
 #[test]
 fn tool_driven_followup_tail_dispatches_discovery_recovery_payload() {
     let payload = ToolDrivenFollowupPayload::DiscoveryRecovery {
-            reason: "tool_not_found: requested tool is not available If you still need a hidden capability, call tool.search.".to_owned(),
-        };
+        reason: "tool_not_found: tool.invoke".to_owned(),
+    };
     let tail = build_tool_driven_followup_tail(
         "preface",
         &payload,
@@ -1093,16 +1093,13 @@ fn tool_driven_followup_tail_dispatches_discovery_recovery_payload() {
         .and_then(|message| message.get("content"))
         .and_then(Value::as_str)
         .expect("user followup prompt should exist");
-    assert!(user_prompt.contains(prompt::DISCOVERY_RECOVERY_FOLLOWUP_PROMPT));
+    assert!(user_prompt.contains(prompt::TOOL_FAILURE_FOLLOWUP_PROMPT));
     assert!(user_prompt.contains("Recovery reason:\nbounded-recovery"));
     assert!(!user_prompt.contains("tool_not_found"));
+    assert!(user_prompt.contains("Retry with a valid direct tool call"));
     assert!(
-        user_prompt.contains("tool.invoke"),
-        "discovery recovery prompt should explain the invoke step: {user_prompt}"
-    );
-    assert!(
-        user_prompt.contains("lease"),
-        "discovery recovery prompt should mention the lease requirement: {user_prompt}"
+        user_prompt.contains("refreshed visible tool request"),
+        "discovery recovery prompt should mention the direct-tool refresh path: {user_prompt}"
     );
     assert!(user_prompt.contains("Loop warning:\nwarning"));
 }
@@ -1159,7 +1156,7 @@ fn tool_failure_followup_tail_strips_shell_arguments_from_repair_guidance() {
             reason: "tool_preflight_denied: tool input needs repair: shell.exec payload.command must be a bare executable name; move arguments into payload.args.".to_owned(),
             retryable: false,
         };
-    let tool_request_summary = r#"{"tool":"exec","request":{"command":"ls -la"}}"#;
+    let tool_request_summary = r#"{"tool":"bash","request":{"command":"ls -la"}}"#;
     let tail = build_tool_driven_followup_tail(
         "preface",
         &payload,
@@ -1175,7 +1172,7 @@ fn tool_failure_followup_tail_strips_shell_arguments_from_repair_guidance() {
         .and_then(Value::as_str)
         .expect("user followup prompt should exist");
 
-    assert!(user_prompt.contains("Repair guidance for exec"));
+    assert!(user_prompt.contains("Repair guidance for bash"));
     assert!(user_prompt.contains("The failed request used `ls -la`; retry with `ls`"));
 }
 
@@ -1185,7 +1182,7 @@ fn tool_failure_followup_tail_strips_quoted_shell_arguments_from_repair_guidance
             reason: "tool_preflight_denied: tool input needs repair: shell.exec payload.command must be a bare executable name; move arguments into payload.args.".to_owned(),
             retryable: false,
         };
-    let tool_request_summary = r#"{"tool":"exec","request":{"command":"\"ls -la\" "}}"#;
+    let tool_request_summary = r#"{"tool":"bash","request":{"command":"\"ls -la\" "}}"#;
     let tail = build_tool_driven_followup_tail(
         "preface",
         &payload,
@@ -1201,7 +1198,7 @@ fn tool_failure_followup_tail_strips_quoted_shell_arguments_from_repair_guidance
         .and_then(Value::as_str)
         .expect("user followup prompt should exist");
 
-    assert!(user_prompt.contains("Repair guidance for exec"));
+    assert!(user_prompt.contains("Repair guidance for bash"));
     assert!(user_prompt.contains("The failed request used `\"ls -la\" `; retry with `ls`"));
 }
 
@@ -1327,7 +1324,7 @@ fn tool_failure_followup_tail_uses_failure_reason_when_shell_summary_redacts_arg
                 .to_owned(),
         retryable: false,
     };
-    let tool_request_summary = r#"{"tool":"exec","request":{"command":"echo"}}"#;
+    let tool_request_summary = r#"{"tool":"bash","request":{"command":"echo"}}"#;
     let tail = build_tool_driven_followup_tail(
         "preface",
         &payload,
@@ -1343,7 +1340,7 @@ fn tool_failure_followup_tail_uses_failure_reason_when_shell_summary_redacts_arg
         .and_then(Value::as_str)
         .expect("user followup prompt should exist");
 
-    assert!(user_prompt.contains("Repair guidance for exec"));
+    assert!(user_prompt.contains("Repair guidance for bash"));
     assert!(user_prompt.contains("Set `payload.args` to an array value."));
     assert!(user_prompt.contains(
         "Expected payload shape: command:string,args?:string[],timeout_ms?:integer,cwd?:string."
@@ -1486,7 +1483,7 @@ fn followup_prompt_uses_discovery_guidance_for_discovery_shaped_results() {
         None,
     );
 
-    assert!(prompt.contains(prompt::DISCOVERY_RESULT_FOLLOWUP_PROMPT));
+    assert!(prompt.contains(prompt::TOOL_FOLLOWUP_PROMPT));
     assert!(prompt.contains("Original request:\nfind the latest ai news and summarize it"));
 }
 
@@ -1686,7 +1683,7 @@ fn reduce_followup_payload_for_model_preserves_shell_payload_metadata() {
     )
     .expect("shell payload summary should stay valid json");
 
-    assert_eq!(envelope["tool"], "exec");
+    assert_eq!(envelope["tool"], "bash");
     assert_eq!(summary["adapter"], "core-tools");
     assert_eq!(summary["tool_name"], "shell.exec");
     assert_eq!(summary["trace_id"], "trace-123");
@@ -1901,7 +1898,7 @@ fn parse_external_skill_invoke_context_rejects_truncated_payload() {
         "[ok] {}",
         json!({
             "status": "ok",
-            "tool": "external_skills.invoke",
+            "tool": "skills.invoke",
             "tool_call_id": "call-1",
             "payload_summary": serde_json::to_string(&payload).expect("encode payload"),
             "payload_chars": 512,
@@ -1977,13 +1974,13 @@ fn reduce_followup_payload_for_model_compacts_tool_search_summary() {
         summary["diagnostics"]["reason"],
         "exact_tool_id_not_visible"
     );
-    assert!(summary.get("adapter").is_none());
-    assert!(summary.get("tool_name").is_none());
+    assert_eq!(summary["adapter"], "core-tools");
+    assert_eq!(summary["tool_name"], "tool.search");
     assert_eq!(summary["returned"], 1);
     assert_eq!(first["tool_id"], "file.read");
     assert_eq!(first["lease"], "lease-file");
-    assert!(first.get("tags").is_none());
-    assert!(first.get("why").is_none());
+    assert!(first.get("tags").and_then(Value::as_array).is_some());
+    assert!(first.get("why").and_then(Value::as_array).is_some());
 }
 
 #[test]
@@ -2038,7 +2035,7 @@ fn reduce_followup_payload_for_model_preserves_empty_required_arrays() {
 
 #[test]
 fn reduce_followup_payload_for_model_borrows_unmodified_tool_results() {
-    let tool_result = r#"[ok] {"status":"ok","tool":"tool.search","tool_call_id":"call-search","payload_summary":"{\"query\":\"status\"}","payload_chars":32,"payload_truncated":true}"#;
+    let tool_result = r#"[ok] {"status":"ok","tool":"discovery","tool_call_id":"call-search","payload_summary":"{\"query\":\"status\"}","payload_chars":32,"payload_truncated":true}"#;
 
     let reduced = reduce_followup_payload_for_model("tool_result", tool_result);
 
@@ -2081,7 +2078,7 @@ fn summarize_failed_provider_lane_tool_request_preserves_multi_intent_context_wi
 
     assert_eq!(request_entries.len(), 2);
     assert_eq!(request_entries[0]["tool"], "read");
-    assert_eq!(request_entries[1]["tool"], "exec");
+    assert_eq!(request_entries[1]["tool"], "bash");
     assert_eq!(request_entries[1]["request"]["command"], "ls");
     assert_eq!(request_entries[1]["request"]["args_redacted"], 1);
 }

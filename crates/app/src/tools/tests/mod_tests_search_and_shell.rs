@@ -66,8 +66,8 @@ fn tool_search_includes_shell_exec_when_runtime_allowlist_is_empty() {
     let results = outcome.payload["results"].as_array().expect("results");
     let shell_entry = results
         .iter()
-        .find(|entry| entry["tool_id"] == "exec")
-        .expect("direct exec should remain discoverable");
+        .find(|entry| entry["tool_id"] == "bash")
+        .expect("direct bash should remain discoverable");
 
     assert!(shell_entry.get("lease").is_none());
 
@@ -871,9 +871,9 @@ fn tool_search_result_includes_compact_argument_hints() {
 
     let results = outcome.payload["results"].as_array().expect("results");
     assert!(results.iter().any(|entry| {
-        let is_exec = entry["tool_id"] == "exec";
+        let is_exec = entry["tool_id"] == "bash";
         let argument_hint = entry["argument_hint"].as_str().unwrap_or_default();
-        is_exec && argument_hint.contains("command?:string")
+        is_exec && argument_hint.contains("command:string")
     }));
 
     std::fs::remove_dir_all(&root).ok();
@@ -942,7 +942,7 @@ fn tool_search_exact_tool_id_not_visible_preserves_raw_request_and_diagnostics_w
     let diagnostics = &outcome.payload["diagnostics"];
 
     assert!(!results.is_empty());
-    assert_eq!(results[0]["tool_id"], "exec");
+    assert_eq!(results[0]["tool_id"], "bash");
     assert_eq!(outcome.payload["exact_tool_id"], "file_read");
     assert_eq!(diagnostics["reason"], "exact_tool_id_not_visible");
     assert_eq!(diagnostics["requested_tool_id"], "file_read");

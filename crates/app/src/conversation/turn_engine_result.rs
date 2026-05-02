@@ -1,13 +1,14 @@
-use loong_contracts::ToolCoreOutcome;
+use loong_contracts::{ToolCoreOutcome, ToolCoreRequest};
 use serde_json::json;
 
+use super::super::tool_result_compaction::compact_discovery_payload_summary;
 use super::super::turn_shared::effective_followup_visible_tool_name;
 use super::{
     MAX_TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS, MIN_TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS,
     TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS, ToolBatchExecutionIntentStatus,
     ToolBatchExecutionIntentTrace, ToolDecisionTelemetry, ToolDecisionTraceRecord, ToolIntent,
     ToolOutcomeTelemetry, ToolOutcomeTraceRecord, ToolResultEnvelope, ToolResultPayloadSemantics,
-    TurnFailure, TurnFailureKind, TurnResult, compact_tool_search_payload_summary,
+    TurnFailure, TurnFailureKind, TurnResult,
 };
 
 pub(crate) fn turn_result_from_tool_execution_failure(failure: TurnFailure) -> TurnResult {
@@ -49,8 +50,7 @@ pub(crate) fn build_tool_result_envelope(
         MIN_TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS,
         MAX_TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS,
     );
-    let compacted_payload =
-        compact_tool_result_payload_value(effective_tool_name.as_str(), &outcome.payload);
+    let compacted_payload = compact_tool_result_payload_value(payload_semantics, &outcome.payload);
     let payload_text = serde_json::to_string(&compacted_payload)
         .unwrap_or_else(|_| "[tool_payload_unserializable]".to_owned());
     let (payload_summary, payload_chars, payload_truncated) =
@@ -68,15 +68,15 @@ pub(crate) fn build_tool_result_envelope(
 }
 
 fn compact_tool_result_payload_value(
-    tool_name: &str,
+    payload_semantics: Option<ToolResultPayloadSemantics>,
     payload: &serde_json::Value,
 ) -> serde_json::Value {
     if let Some(compacted_payload) = compact_continuation_payload_summary(payload) {
         return compacted_payload;
     }
 
-    if tool_name == "tool.search"
-        && let Some(compacted_payload) = compact_tool_search_payload_summary(payload)
+    if payload_semantics == Some(ToolResultPayloadSemantics::DiscoveryResult)
+        && let Some(compacted_payload) = compact_discovery_payload_summary(payload)
     {
         return compacted_payload;
     }
@@ -194,23 +194,14 @@ fn payload_looks_like_external_skill_context(payload: &serde_json::Value) -> boo
 }
 
 pub(crate) fn effective_result_tool_name(intent: &ToolIntent) -> String {
-    let canonical_tool_name = crate::tools::canonical_tool_name(intent.tool_name.as_str());
-    let effective_canonical_tool_name = if canonical_tool_name != "tool.invoke" {
-        canonical_tool_name
-    } else if let Some((tool_name, _arguments)) =
-        crate::tools::invoked_discoverable_tool_request(&intent.args_json)
-    {
-        tool_name
-    } else {
-        intent
-            .args_json
-            .get("tool_id")
-            .and_then(serde_json::Value::as_str)
-            .map(crate::tools::canonical_tool_name)
-            .unwrap_or(canonical_tool_name)
+    let request = ToolCoreRequest {
+        tool_name: intent.tool_name.clone(),
+        payload: intent.args_json.clone(),
     };
-
-    crate::tools::user_visible_tool_name(effective_canonical_tool_name)
+    let canonical_tool_name = crate::tools::peek_tool_invoke_request(&request)
+        .map(|peeked| peeked.tool_name)
+        .unwrap_or_else(|| crate::tools::canonical_tool_name(intent.tool_name.as_str()));
+    crate::tools::user_visible_tool_name(canonical_tool_name)
 }
 
 pub(crate) fn effective_denied_tool_name(intent: &ToolIntent) -> String {
@@ -318,10 +309,13 @@ fn summarize_completed_tool_trace_detail(
         return Some(normalized_status.to_owned());
     }
 
-    match tool_name {
-        "tool.search" => summarize_tool_search_completed_trace_detail(&outcome.payload),
-        _ => None,
+    let payload_semantics = detect_tool_result_payload_semantics(&outcome.payload);
+    if payload_semantics == Some(ToolResultPayloadSemantics::DiscoveryResult) {
+        return summarize_tool_search_completed_trace_detail(&outcome.payload);
     }
+
+    let _ = tool_name;
+    None
 }
 
 fn summarize_tool_search_completed_trace_detail(payload: &serde_json::Value) -> Option<String> {
@@ -375,27 +369,4 @@ fn truncate_by_chars(value: &str, limit: usize) -> (String, usize, bool) {
     let omitted = total_chars.saturating_sub(limit);
     truncated.push_str(&format!("...(truncated {omitted} chars)"));
     (truncated, total_chars, true)
-}
-
-pub(crate) fn tool_search_recovery_hint() -> &'static str {
-    " If you need a non-core capability, call tool.search with a short natural-language description of the task. If tool.search returns a grouped hidden surface such as `skills`, `agent`, or `channel`, do not call that surface name directly; use tool.invoke with the fresh lease and put the requested operation inside payload.arguments."
-}
-
-pub(crate) fn tool_invoke_recovery_failure(reason: &str) -> Option<TurnFailure> {
-    let (code, message) = if reason.starts_with("invalid_tool_lease:") {
-        (
-            "invalid_tool_lease",
-            "tool.invoke needs a fresh lease from the current tool.search result.",
-        )
-    } else {
-        return None;
-    };
-
-    let mut recovery_reason = message.to_owned();
-    recovery_reason.push_str(tool_search_recovery_hint());
-
-    Some(TurnFailure::policy_denied_with_discovery_recovery(
-        code,
-        recovery_reason,
-    ))
 }

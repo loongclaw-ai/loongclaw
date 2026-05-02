@@ -109,42 +109,41 @@ pub(super) fn tool_argument_hint(name: &str) -> &'static str {
             "account_id?:string,open_id?:string,receive_id:string,receive_id_type?:string,text?:string,post?:object,image_key?:string,file_key?:string,card?:object,markdown?:string"
         }
         "feishu.whoami" => "account_id?:string,open_id?:string",
-        "tool.search" => "query?:string,exact_tool_id?:string,limit?:integer",
-        "tool.invoke" => "tool_id:string,lease:string,arguments:object",
         "read" => {
             "path?:string,offset?:integer,limit?:integer,max_bytes?:integer,query?:string,pattern?:string,root?:string,glob?:string,max_results?:integer,max_bytes_per_file?:integer,case_sensitive?:boolean,include_directories?:boolean"
         }
-        "write" => {
-            "path:string,content?:string,create_dirs?:boolean,overwrite?:boolean,edits?:array,old_string?:string,new_string?:string,replace_all?:boolean"
+        "write" => "path:string,content:string,create_dirs?:boolean,overwrite?:boolean",
+        "edit" => {
+            "path:string,edits?:array,old_string?:string,new_string?:string,replace_all?:boolean"
         }
-        "exec" => "command?:string,script?:string,args?:string[],timeout_ms?:integer,cwd?:string",
+        "bash" => "command:string,timeout_ms?:integer,cwd?:string",
         "web" => {
             "url?:string,mode?:string,max_bytes?:integer,query?:string,provider?:string,max_results?:integer"
         }
         "browser" => {
-            "url?:string,max_bytes?:integer,session_id?:string,mode?:string,selector?:string,limit?:integer,link_id?:integer"
+            "action?:string,url?:string,session_id?:string,mode?:string,selector?:string,text?:string,condition?:string,timeout_ms?:integer"
         }
         "memory" => "query?:string,max_results?:integer,path?:string,from?:integer,lines?:integer",
         "config.import" => {
             "input_path?:string,output_path?:string,mode?:string,source?:string,source_id?:string,primary_source_id?:string,safe_profile_merge?:boolean,apply_external_skills_plan?:boolean,force?:boolean"
         }
-        "external_skills.fetch" => {
+        "skills.fetch" => {
             "reference?:string,url?:string,approval_granted?:boolean,save_as?:string,max_bytes?:integer"
         }
-        "external_skills.resolve" => "reference:string",
-        "external_skills.search" => "query:string,limit:integer",
-        "external_skills.recommend" => "query:string,limit:integer",
-        "external_skills.source_search" => "query:string,max_results?:integer,sources?:string[]",
-        "external_skills.inspect" => "skill_id:string",
-        "external_skills.install" => {
+        "skills.resolve" => "reference:string",
+        "skills.search" => "query:string,limit:integer",
+        "skills.recommend" => "query:string,limit:integer",
+        "skills.source_search" => "query:string,max_results?:integer,sources?:string[]",
+        "skills.inspect" => "skill_id:string",
+        "skills.install" => {
             "path?:string,bundled_skill_id?:string,skill_id?:string,source_skill_id?:string,security_decision?:string,replace?:boolean"
         }
-        "external_skills.invoke" => "skill_id:string",
-        "external_skills.list" => "",
-        "external_skills.policy" => {
+        "skills.invoke" => "skill_id:string",
+        "skills.list" => "",
+        "skills.policy" => {
             "action?:string,enabled?:boolean,allowed_domains?:string[],blocked_domains?:string[]"
         }
-        "external_skills.remove" => "skill_id:string",
+        "skills.remove" => "skill_id:string",
         "browser.companion.session.start" => "url:string",
         "browser.companion.navigate" => "session_id:string,url:string",
         "browser.companion.snapshot" => "session_id:string,mode?:string",
@@ -207,10 +206,6 @@ pub(super) fn tool_search_hint(name: &str, fallback: &'static str) -> &'static s
     }
 
     match name {
-        "tool.search" => {
-            "discover a specialized tool when the visible direct tools do not fit, or refresh a known tool card"
-        }
-        "tool.invoke" => "run a discovered specialized tool with the lease returned by tool.search",
         "http.request" => {
             "send a bounded http request, inspect status and headers, fetch text or binary responses"
         }
@@ -536,16 +531,6 @@ pub(super) fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'sta
             ("markdown", "string"),
         ],
         "feishu.whoami" => &[("account_id", "string"), ("open_id", "string")],
-        "tool.search" => &[
-            ("query", "string"),
-            ("exact_tool_id", "string"),
-            ("limit", "integer"),
-        ],
-        "tool.invoke" => &[
-            ("tool_id", "string"),
-            ("lease", "string"),
-            ("arguments", "object"),
-        ],
         "config.import" => &[
             ("input_path", "string"),
             ("output_path", "string"),
@@ -557,25 +542,23 @@ pub(super) fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'sta
             ("apply_external_skills_plan", "boolean"),
             ("force", "boolean"),
         ],
-        "external_skills.fetch" => &[
+        "skills.fetch" => &[
             ("reference", "string"),
             ("url", "string"),
             ("approval_granted", "boolean"),
             ("save_as", "string"),
             ("max_bytes", "integer"),
         ],
-        "external_skills.resolve" => &[("reference", "string")],
-        "external_skills.search" => &[("query", "string"), ("limit", "integer")],
-        "external_skills.recommend" => &[("query", "string"), ("limit", "integer")],
-        "external_skills.source_search" => &[
+        "skills.resolve" => &[("reference", "string")],
+        "skills.search" => &[("query", "string"), ("limit", "integer")],
+        "skills.recommend" => &[("query", "string"), ("limit", "integer")],
+        "skills.source_search" => &[
             ("query", "string"),
             ("max_results", "integer"),
             ("sources", "array"),
         ],
-        "external_skills.inspect" | "external_skills.invoke" | "external_skills.remove" => {
-            &[("skill_id", "string")]
-        }
-        "external_skills.install" => &[
+        "skills.inspect" | "skills.invoke" | "skills.remove" => &[("skill_id", "string")],
+        "skills.install" => &[
             ("path", "string"),
             ("bundled_skill_id", "string"),
             ("skill_id", "string"),
@@ -583,7 +566,7 @@ pub(super) fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'sta
             ("security_decision", "string"),
             ("replace", "boolean"),
         ],
-        "external_skills.list" => &[],
+        "skills.list" => &[],
         "browser.companion.session.start" => &[("url", "string")],
         "browser.companion.navigate" => &[("session_id", "string"), ("url", "string")],
         "browser.companion.snapshot" => &[("session_id", "string"), ("mode", "string")],
@@ -607,7 +590,7 @@ pub(super) fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'sta
             ("content_type", "string"),
             ("max_bytes", "integer"),
         ],
-        "external_skills.policy" => &[
+        "skills.policy" => &[
             ("action", "string"),
             ("enabled", "boolean"),
             ("allowed_domains", "array"),
@@ -788,18 +771,14 @@ pub(super) fn tool_required_fields(name: &str) -> &'static [&'static str] {
         "feishu.messages.reply" => &["message_id"],
         "feishu.messages.search" => &["query"],
         "feishu.messages.send" => &["receive_id"],
-        "tool.search" => &[],
-        "tool.invoke" => &["tool_id", "lease", "arguments"],
-        "external_skills.fetch" => &[],
-        "external_skills.resolve" => &["reference"],
-        "external_skills.search" => &["query", "limit"],
-        "external_skills.recommend" => &["query", "limit"],
-        "external_skills.source_search" => &["query"],
-        "external_skills.inspect" | "external_skills.invoke" | "external_skills.remove" => {
-            &["skill_id"]
-        }
+        "skills.fetch" => &[],
+        "skills.resolve" => &["reference"],
+        "skills.search" => &["query", "limit"],
+        "skills.recommend" => &["query", "limit"],
+        "skills.source_search" => &["query"],
+        "skills.inspect" | "skills.invoke" | "skills.remove" => &["skill_id"],
         // Grouped requirements are the source of truth for this tool's anyOf shape.
-        "external_skills.install" => &[],
+        "skills.install" => &[],
         "browser.companion.session.start" => &["url"],
         "browser.companion.navigate" => &["session_id", "url"],
         "browser.companion.snapshot"
@@ -884,20 +863,18 @@ pub(super) fn tool_tags(name: &str) -> &'static [&'static str] {
         "feishu.messages.resource.get" => &["feishu", "messages", "resource", "file"],
         "feishu.messages.send" | "feishu.messages.reply" => &["feishu", "messages", "write"],
         "feishu.whoami" => &["feishu", "identity", "read"],
-        "tool.search" => &["core", "discover", "search"],
-        "tool.invoke" => &["core", "dispatch", "invoke"],
         "config.import" => &["config", "import", "migration", "workspace", "legacy"],
-        "external_skills.fetch" => &["skills", "download", "external", "fetch"],
-        "external_skills.resolve" => &["skills", "resolve", "normalize", "external"],
-        "external_skills.search" => &["skills", "search", "inventory", "discover"],
-        "external_skills.recommend" => &["skills", "recommend", "inventory", "discover"],
-        "external_skills.source_search" => &["skills", "search", "discover", "external"],
-        "external_skills.inspect" => &["skills", "inspect", "metadata"],
-        "external_skills.install" => &["skills", "install", "package"],
-        "external_skills.invoke" => &["skills", "invoke", "instructions"],
-        "external_skills.list" => &["skills", "list", "discover"],
-        "external_skills.policy" => &["skills", "policy", "security"],
-        "external_skills.remove" => &["skills", "remove", "uninstall"],
+        "skills.fetch" => &["skills", "download", "external", "fetch"],
+        "skills.resolve" => &["skills", "resolve", "normalize", "external"],
+        "skills.search" => &["skills", "search", "inventory", "discover"],
+        "skills.recommend" => &["skills", "recommend", "inventory", "discover"],
+        "skills.source_search" => &["skills", "search", "discover", "external"],
+        "skills.inspect" => &["skills", "inspect", "metadata"],
+        "skills.install" => &["skills", "install", "package"],
+        "skills.invoke" => &["skills", "invoke", "instructions"],
+        "skills.list" => &["skills", "list", "discover"],
+        "skills.policy" => &["skills", "policy", "security"],
+        "skills.remove" => &["skills", "remove", "uninstall"],
         "browser.companion.session.start"
         | "browser.companion.navigate"
         | "browser.companion.snapshot"

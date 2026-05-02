@@ -117,7 +117,7 @@ impl ToolDiscoveryState {
         sections.push("[tool_discovery_delta]".to_owned());
         sections.push("Recent discovery state is advisory context only.".to_owned());
         sections.push(
-            "Use direct tools first; use tool.invoke only for a currently discovered hidden surface."
+            "Use direct tools first. Treat this discovery state as read-only context, not as a command surface."
                 .to_owned(),
         );
 
@@ -189,7 +189,7 @@ impl ToolDiscoveryState {
         if total_entries > MAX_RENDERED_TOOL_DISCOVERY_ENTRIES {
             let omitted_entry_count = total_entries - MAX_RENDERED_TOOL_DISCOVERY_ENTRIES;
             let omitted_entries_line = format!(
-                "... {omitted_entry_count} additional tools omitted. Re-run tool.search with a narrower query or exact_tool_id."
+                "... {omitted_entry_count} additional tools omitted. Refresh discovery with a narrower query or exact tool id if you need more detail."
             );
 
             entry_lines.push(omitted_entries_line);
@@ -604,7 +604,7 @@ mod state_recovery_tests {
             .filtered_for_tool_view(&tool_view)
             .expect("visible channel surface should keep grouped discovery state");
 
-        assert_eq!(filtered.exact_tool_id.as_deref(), Some("channel"));
+        assert_eq!(filtered.exact_tool_id, None);
         assert_eq!(filtered.entries.len(), 1);
         assert_eq!(filtered.entries[0].tool_id, "feishu.messages.send");
     }
@@ -873,7 +873,7 @@ mod tests {
         let line_count = rendered.lines().count();
         let omitted_entry_count = 50 - EXPECTED_MAX_RENDERED_TOOL_DISCOVERY_ENTRIES;
         let omitted_entries_line = format!(
-            "... {omitted_entry_count} additional tools omitted. Re-run tool.search with a narrower query or exact_tool_id."
+            "... {omitted_entry_count} additional tools omitted. Refresh discovery with a narrower query or exact tool id if you need more detail."
         );
 
         assert_eq!(

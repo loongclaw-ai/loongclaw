@@ -1,5 +1,10 @@
-use super::routing::route_hidden_discoverable_tool_name;
 use super::*;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PeekedToolInvokeRequest<'a> {
+    pub(crate) tool_name: &'a str,
+    pub(crate) arguments: &'a Value,
+}
 
 pub(crate) fn merge_trusted_internal_tool_context_into_arguments(
     arguments: &mut serde_json::Map<String, Value>,
@@ -18,25 +23,48 @@ pub(crate) fn merge_trusted_internal_tool_context_into_arguments(
     Ok(())
 }
 
+pub(crate) fn peek_tool_invoke_request(
+    request: &ToolCoreRequest,
+) -> Option<PeekedToolInvokeRequest<'_>> {
+    if canonical_tool_name(request.tool_name.as_str()) != "tool.invoke" {
+        return None;
+    }
+
+    let payload = request.payload.as_object()?;
+    let raw_tool_name = payload
+        .get("tool_id")
+        .and_then(Value::as_str)
+        .map(canonical_tool_name)?;
+    let arguments = payload.get("arguments").unwrap_or(&Value::Null);
+    let tool_name = if raw_tool_name == "agent" {
+        super::routing::route_hidden_agent_tool_name(arguments)
+            .ok()
+            .unwrap_or(raw_tool_name)
+    } else {
+        raw_tool_name
+    };
+
+    Some(PeekedToolInvokeRequest {
+        tool_name,
+        arguments,
+    })
+}
+
 pub(crate) fn resolve_tool_invoke_request(
     request: &ToolCoreRequest,
 ) -> Result<(ResolvedToolExecution, ToolCoreRequest), String> {
-    if canonical_tool_name(request.tool_name.as_str()) != "tool.invoke" {
+    let Some(peeked_request) = peek_tool_invoke_request(request) else {
         return Err(format!(
             "tool_invoke_required: expected `tool.invoke`, got `{}`",
             request.tool_name
         ));
-    }
+    };
 
     let payload = request
         .payload
         .as_object()
         .ok_or_else(|| "tool.invoke payload must be an object".to_owned())?;
-    let tool_id = payload
-        .get("tool_id")
-        .and_then(Value::as_str)
-        .map(canonical_tool_name)
-        .ok_or_else(|| "tool.invoke requires payload.tool_id".to_owned())?;
+    let tool_id = peeked_request.tool_name;
     let lease = payload
         .get("lease")
         .and_then(Value::as_str)
@@ -57,35 +85,10 @@ pub(crate) fn resolve_tool_invoke_request(
         }
     }
 
-    let routed_hidden_tool_name = route_hidden_discoverable_tool_name(tool_id, &arguments);
-    let tool_lease_id = match routed_hidden_tool_name {
-        Ok(_resolved_hidden_tool_name)
-            if matches!(
-                tool_id,
-                super::HIDDEN_AGENT_TOOL_NAME
-                    | super::HIDDEN_SKILLS_TOOL_NAME
-                    | super::HIDDEN_CHANNEL_TOOL_NAME
-            ) =>
-        {
-            tool_id
-        }
-        _ => tool_id,
-    };
-    tool_lease_authority::validate_tool_lease(tool_lease_id, lease, payload)?;
+    tool_lease_authority::validate_tool_lease(tool_id, lease, payload)?;
 
-    if matches!(
-        tool_id,
-        super::HIDDEN_AGENT_TOOL_NAME
-            | super::HIDDEN_SKILLS_TOOL_NAME
-            | super::HIDDEN_CHANNEL_TOOL_NAME
-    ) && let Some(arguments_object) = arguments.as_object_mut()
-    {
-        arguments_object.remove("operation");
-    }
-
-    let resolved_tool_name = routed_hidden_tool_name.unwrap_or(tool_id);
-    let resolved = resolve_tool_execution(resolved_tool_name)
-        .ok_or_else(|| format!("tool_not_found: unknown tool `{resolved_tool_name}`"))?;
+    let resolved = resolve_tool_execution(tool_id)
+        .ok_or_else(|| format!("tool_not_found: unknown tool `{tool_id}`"))?;
     let resolved_tool_name = resolved.canonical_name;
     if is_provider_exposed_tool_name(resolved_tool_name) {
         return Err(format!(
@@ -132,7 +135,6 @@ pub(crate) fn issue_tool_lease(
     tool_lease_authority::issue_tool_lease(tool_id, payload)
 }
 
-#[allow(dead_code)]
 pub(crate) fn bridge_provider_tool_call_with_scope(
     tool_name: &str,
     args_json: Value,
@@ -140,6 +142,9 @@ pub(crate) fn bridge_provider_tool_call_with_scope(
     turn_id: Option<&str>,
 ) -> (String, Value) {
     let canonical_name = canonical_tool_name(tool_name).to_owned();
+    if let Some(direct_tool_name) = direct_tool_name_for_hidden_tool(canonical_name.as_str()) {
+        return (direct_tool_name.to_owned(), args_json);
+    }
     let Some(entry) = catalog::find_tool_catalog_entry(canonical_name.as_str()) else {
         return (canonical_name, args_json);
     };
@@ -149,20 +154,12 @@ pub(crate) fn bridge_provider_tool_call_with_scope(
 
     let mut lease_payload = serde_json::Map::new();
     inject_tool_lease_binding(&mut lease_payload, None, session_id, turn_id);
-    let grouped_hidden_tool_name = hidden_facade_tool_name_for_hidden_tool(entry.canonical_name);
-    let tool_id = grouped_hidden_tool_name.unwrap_or(entry.canonical_name);
+    let tool_id = entry.canonical_name;
     let lease = match tool_lease_authority::issue_tool_lease(tool_id, &lease_payload) {
         Ok(lease) => lease,
         Err(error) => format!("tool-lease-error:{error}"),
     };
-    let mut arguments = args_json;
-    if let Some(operation) = hidden_operation_for_tool_name(entry.canonical_name)
-        && let Some(arguments_object) = arguments.as_object_mut()
-    {
-        arguments_object
-            .entry("operation".to_owned())
-            .or_insert_with(|| json!(operation));
-    }
+    let arguments = args_json;
 
     let mut outer_payload = serde_json::Map::new();
     outer_payload.insert("tool_id".to_owned(), json!(tool_id));

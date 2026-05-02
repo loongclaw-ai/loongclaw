@@ -94,7 +94,7 @@ fn build_provider_turn_tool_terminal_events_attach_visible_shell_request_summary
     assert_eq!(
         request_summary_json,
         json!({
-            "tool": "exec",
+            "tool": "bash",
             "request": {"command": "ls", "args_redacted": 1}
         })
     );
@@ -139,7 +139,7 @@ fn summarize_failed_provider_lane_tool_request_preserves_multi_intent_context_wi
 
     assert_eq!(request_entries.len(), 2);
     assert_eq!(request_entries[0]["tool"], "read");
-    assert_eq!(request_entries[1]["tool"], "exec");
+    assert_eq!(request_entries[1]["tool"], "bash");
     assert_eq!(request_entries[1]["request"]["command"], "ls");
     assert_eq!(request_entries[1]["request"]["args_redacted"], 1);
 }

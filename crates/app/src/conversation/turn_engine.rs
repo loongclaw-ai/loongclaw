@@ -32,7 +32,6 @@ use super::autonomy_policy::{
 };
 use super::runtime::{SessionContext, load_default_conversation_runtime};
 use super::runtime_binding::ConversationRuntimeBinding;
-use super::tool_result_compaction::compact_tool_search_payload_summary;
 use super::turn_observer::{ConversationTurnObserverHandle, ConversationTurnRuntimeEvent};
 
 use super::ingress::ConversationIngressContext;
@@ -87,8 +86,7 @@ pub(crate) use result::{
     build_failure_tool_outcome_trace_record, build_success_tool_outcome_trace_record,
     build_tool_decision_trace_record, build_tool_intent_completed_trace,
     build_tool_intent_failure_trace, effective_denied_tool_name, effective_result_tool_name,
-    format_tool_result_line_with_limit, tool_invoke_recovery_failure, tool_search_recovery_hint,
-    turn_result_from_tool_execution_failure,
+    format_tool_result_line_with_limit, turn_result_from_tool_execution_failure,
 };
 pub(crate) use support::classify_kernel_error;
 use support::{
@@ -171,10 +169,6 @@ fn tool_intent_skips_provider_exposed_gate(
     intent: &ToolIntent,
     descriptor: &crate::tools::ToolDescriptor,
 ) -> bool {
-    if descriptor.name == "tool.invoke" {
-        return true;
-    }
-
     intent.source == "approval_control" && tool_is_session_consent_exempt(descriptor.name)
 }
 
@@ -235,6 +229,47 @@ impl TurnEngine {
             parallel_tool_execution_enabled,
             parallel_tool_execution_max_in_flight: parallel_tool_execution_max_in_flight.max(1),
         }
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    #[test]
+    fn tool_invoke_no_longer_skips_provider_exposed_gate() {
+        let descriptor = crate::tools::tool_catalog()
+            .resolve("file.read")
+            .expect("file.read descriptor should exist");
+        let intent = ToolIntent {
+            tool_name: "tool.invoke".to_owned(),
+            args_json: json!({}),
+            source: "provider_tool_call".to_owned(),
+            session_id: "session".to_owned(),
+            turn_id: "turn".to_owned(),
+            tool_call_id: "call".to_owned(),
+        };
+
+        assert!(!tool_intent_skips_provider_exposed_gate(
+            &intent, descriptor
+        ));
+    }
+
+    #[test]
+    fn approval_control_consent_exempt_tools_still_skip_provider_exposed_gate() {
+        let descriptor = crate::tools::tool_catalog()
+            .resolve("approval_request_status")
+            .expect("approval_request_status descriptor should exist");
+        let intent = ToolIntent {
+            tool_name: "approval_request_status".to_owned(),
+            args_json: json!({}),
+            source: "approval_control".to_owned(),
+            session_id: "session".to_owned(),
+            turn_id: "turn".to_owned(),
+            tool_call_id: "call".to_owned(),
+        };
+
+        assert!(tool_intent_skips_provider_exposed_gate(&intent, descriptor));
     }
 }
 

@@ -201,94 +201,55 @@ fn direct_browser_provider_definition_for_view(mut definition: Value, view: &Too
         return definition;
     };
 
-    if let Some(function) = definition
-        .get_mut("function")
-        .and_then(Value::as_object_mut)
-    {
-        function.insert(
-            "description".to_owned(),
-            Value::String(description.to_owned()),
+    let function_value = definition.get_mut("function");
+    let Some(function) = function_value.and_then(Value::as_object_mut) else {
+        return definition;
+    };
+
+    function.insert(
+        "description".to_owned(),
+        Value::String(description.to_owned()),
+    );
+
+    let parameters_value = function.get_mut("parameters");
+    let Some(parameters) = parameters_value.and_then(Value::as_object_mut) else {
+        return definition;
+    };
+
+    let properties_value = parameters.get_mut("properties");
+    let Some(properties) = properties_value.and_then(Value::as_object_mut) else {
+        return definition;
+    };
+
+    let action_value = properties.get_mut("action");
+    if let Some(action_property) = action_value.and_then(Value::as_object_mut) {
+        action_property.insert(
+            "enum".to_owned(),
+            json!([
+                "start", "navigate", "snapshot", "wait", "click", "type", "stop"
+            ]),
         );
-
-        let Some(parameters) = function
-            .get_mut("parameters")
-            .and_then(Value::as_object_mut)
-        else {
-            return definition;
-        };
-        let Some(properties) = parameters
-            .get_mut("properties")
-            .and_then(Value::as_object_mut)
-        else {
-            return definition;
-        };
-
-        let mut action_enum = Vec::new();
-        if browser_runtime_modes.page_inspection_available {
-            action_enum.extend(
-                ["open", "extract", "click"]
-                    .into_iter()
-                    .map(|value| Value::String(value.to_owned())),
-            );
-        }
-        if browser_runtime_modes.managed_session_available {
-            action_enum.extend(
-                ["start", "navigate", "snapshot", "wait", "stop", "type"]
-                    .into_iter()
-                    .map(|value| Value::String(value.to_owned())),
-            );
-            if !browser_runtime_modes.page_inspection_available {
-                action_enum.push(Value::String("click".to_owned()));
-            }
-        }
-
-        if action_enum.is_empty() {
-            properties.remove("action");
-        } else if let Some(action_property) =
-            properties.get_mut("action").and_then(Value::as_object_mut)
-        {
-            action_property.insert("enum".to_owned(), Value::Array(action_enum));
-            action_property.insert(
-                "description".to_owned(),
-                Value::String(
-                    "Optional browser action override. Leave it unset for the default route in this runtime."
-                        .to_owned(),
-                ),
-            );
-        }
-
-        if !browser_runtime_modes.page_inspection_available {
-            for key in ["max_bytes", "link_id"] {
-                properties.remove(key);
-            }
-            if let Some(mode_property) = properties.get_mut("mode").and_then(Value::as_object_mut) {
-                mode_property.insert("enum".to_owned(), json!(["summary", "html", "links"]));
-                mode_property.insert(
-                    "description".to_owned(),
-                    Value::String(
-                        "Managed-session snapshot mode. Defaults to `summary` when omitted."
-                            .to_owned(),
-                    ),
-                );
-            }
-        } else if !browser_runtime_modes.managed_session_available {
-            for key in ["text", "condition", "timeout_ms"] {
-                properties.remove(key);
-            }
-            if let Some(mode_property) = properties.get_mut("mode").and_then(Value::as_object_mut) {
-                mode_property.insert(
-                    "enum".to_owned(),
-                    json!(["page_text", "title", "links", "selector_text"]),
-                );
-                mode_property.insert(
-                    "description".to_owned(),
-                    Value::String("Read mode for browser inspection.".to_owned()),
-                );
-            }
-        }
-
-        parameters.remove("required");
+        action_property.insert(
+            "description".to_owned(),
+            Value::String("Managed browser session action to perform.".to_owned()),
+        );
     }
+
+    let removable_keys = ["max_bytes", "limit", "link_id"];
+    for key in removable_keys {
+        properties.remove(key);
+    }
+
+    let mode_value = properties.get_mut("mode");
+    if let Some(mode_property) = mode_value.and_then(Value::as_object_mut) {
+        mode_property.insert("enum".to_owned(), json!(["summary", "html"]));
+        mode_property.insert(
+            "description".to_owned(),
+            Value::String("Snapshot mode for the managed browser session.".to_owned()),
+        );
+    }
+
+    parameters.remove("required");
 
     definition
 }

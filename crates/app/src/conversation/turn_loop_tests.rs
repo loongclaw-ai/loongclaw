@@ -163,7 +163,7 @@ fn append_tool_driven_followup_messages_includes_request_summary_guidance() {
         .and_then(Value::as_str)
         .expect("user followup prompt should exist");
 
-    assert!(user_prompt.contains("Repair guidance for exec:"));
+    assert!(user_prompt.contains("Repair guidance for bash:"));
     assert!(user_prompt.contains("CMD.EXE"));
     assert!(user_prompt.contains("cmd.exe"));
 }
@@ -177,7 +177,7 @@ fn append_tool_driven_followup_messages_promotes_external_skill_invoke_into_syst
             &mut messages,
             "preface",
             &ToolDrivenFollowupPayload::ToolResult {
-                text: r#"[ok] {"status":"ok","tool":"external_skills.invoke","tool_call_id":"call-1","payload_summary":"{\"skill_id\":\"demo-skill\",\"display_name\":\"Demo Skill\",\"instructions\":\"Follow the managed skill instruction before answering.\"}","payload_chars":180,"payload_truncated":false}"#.to_owned(),
+                text: r#"[ok] {"status":"ok","tool":"skills.invoke","tool_call_id":"call-1","payload_summary":"{\"skill_id\":\"demo-skill\",\"display_name\":\"Demo Skill\",\"instructions\":\"Follow the managed skill instruction before answering.\"}","payload_chars":180,"payload_truncated":false}"#.to_owned(),
             },
             "summarize note.md",
             &mut budget,
@@ -219,7 +219,7 @@ fn append_tool_driven_followup_messages_keeps_large_external_skill_instructions_
         "[ok] {}",
         serde_json::json!({
             "status": "ok",
-            "tool": "external_skills.invoke",
+            "tool": "skills.invoke",
             "tool_call_id": "call-2",
             "payload_summary": payload_summary,
             "payload_chars": 2048,
@@ -237,8 +237,11 @@ fn append_tool_driven_followup_messages_keeps_large_external_skill_instructions_
         None,
     );
 
-    let system_content = messages[0]["content"]
-        .as_str()
+    let system_content = messages
+        .iter()
+        .find(|message| message.get("role") == Some(&Value::String("system".to_owned())))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
         .expect("system content should exist");
     assert!(
         system_content.contains("suffix-marker"),
@@ -314,7 +317,7 @@ fn append_tool_driven_followup_messages_reduces_shell_exec_payload_summary() {
     let (envelope, summary) =
         crate::conversation::turn_shared::parse_tool_result_followup_for_test(&messages);
 
-    assert_eq!(envelope["tool"], "exec");
+    assert_eq!(envelope["tool"], "bash");
     assert_eq!(envelope["payload_truncated"], true);
     assert_eq!(summary["command"], "cargo");
     assert_eq!(summary["exit_code"], 0);
@@ -432,7 +435,7 @@ fn append_tool_driven_followup_messages_compacts_tool_search_payload_summary() {
         .and_then(|results| results.first())
         .expect("compacted results should contain the first entry");
 
-    assert_eq!(envelope["tool"], "tool.search");
+    assert_eq!(envelope["tool"], "discovery");
     assert_eq!(envelope["payload_truncated"], false);
     assert_eq!(summary["query"], "read repo file");
     assert_eq!(summary["exact_tool_id"], "file.read");
@@ -440,8 +443,8 @@ fn append_tool_driven_followup_messages_compacts_tool_search_payload_summary() {
         summary["diagnostics"]["reason"],
         "exact_tool_id_not_visible"
     );
-    assert!(summary.get("adapter").is_none());
-    assert!(summary.get("tool_name").is_none());
+    assert_eq!(summary["adapter"], "core-tools");
+    assert_eq!(summary["tool_name"], "tool.search");
     assert_eq!(summary["returned"], 2);
     assert_eq!(first["tool_id"], "file.read");
     assert_eq!(first["lease"], "lease-file");
@@ -465,8 +468,8 @@ fn append_tool_driven_followup_messages_compacts_tool_search_payload_summary() {
                 .is_some()
         );
         assert!(entry.get("lease").and_then(Value::as_str).is_some());
-        assert!(entry.get("tags").is_none());
-        assert!(entry.get("why").is_none());
+        assert!(entry.get("tags").and_then(Value::as_array).is_some());
+        assert!(entry.get("why").and_then(Value::as_array).is_some());
     }
 }
 
@@ -512,7 +515,7 @@ fn append_repeated_tool_guard_followup_messages_reduces_shell_exec_payload_summa
     let (envelope, summary) =
         crate::conversation::turn_shared::parse_tool_result_followup_for_test(&messages);
 
-    assert_eq!(envelope["tool"], "exec");
+    assert_eq!(envelope["tool"], "bash");
     assert_eq!(envelope["payload_truncated"], true);
     assert_eq!(summary["command"], "cargo");
     assert_eq!(summary["exit_code"], 0);
@@ -583,7 +586,7 @@ fn append_repeated_tool_guard_followup_messages_compacts_tool_search_payload_sum
         .and_then(|results| results.first())
         .expect("compacted results should contain the first entry");
 
-    assert_eq!(envelope["tool"], "tool.search");
+    assert_eq!(envelope["tool"], "discovery");
     assert_eq!(envelope["payload_truncated"], false);
     assert_eq!(summary["query"], "read repo file");
     assert_eq!(summary["exact_tool_id"], "file.read");
@@ -591,13 +594,13 @@ fn append_repeated_tool_guard_followup_messages_compacts_tool_search_payload_sum
         summary["diagnostics"]["reason"],
         "exact_tool_id_not_visible"
     );
-    assert!(summary.get("adapter").is_none());
-    assert!(summary.get("tool_name").is_none());
+    assert_eq!(summary["adapter"], "core-tools");
+    assert_eq!(summary["tool_name"], "tool.search");
     assert_eq!(summary["returned"], 1);
     assert_eq!(first["tool_id"], "file.read");
     assert_eq!(first["lease"], "lease-file");
-    assert!(first.get("tags").is_none());
-    assert!(first.get("why").is_none());
+    assert!(first.get("tags").and_then(Value::as_array).is_some());
+    assert!(first.get("why").and_then(Value::as_array).is_some());
 }
 
 #[test]

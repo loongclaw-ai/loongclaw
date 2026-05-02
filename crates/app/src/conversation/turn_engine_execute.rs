@@ -34,17 +34,9 @@ async fn execute_tool_intent_via_kernel(
     kernel_ctx: &KernelContext,
     trusted_internal_context: bool,
 ) -> Result<ToolCoreOutcome, TurnFailure> {
-    let requested_tool_name =
-        crate::tools::canonical_tool_name(request.tool_name.as_str()).to_owned();
     crate::tools::execute_kernel_tool_request(kernel_ctx, request, trusted_internal_context)
         .await
         .map_err(|error| {
-            if requested_tool_name == "tool.invoke"
-                && let KernelError::ToolPlane(ToolPlaneError::Execution(reason)) = &error
-                && let Some(recovery_failure) = tool_invoke_recovery_failure(reason)
-            {
-                return recovery_failure;
-            }
             if let KernelError::ToolPlane(ToolPlaneError::Execution(reason)) = &error
                 && let Some(stripped) = RepairableToolPreflight::parse(reason.as_str())
             {
@@ -300,14 +292,7 @@ impl TurnEngine {
                         reason.as_str(),
                         prepared_intent.intent.source.as_str(),
                     );
-                    let failure = if prepared_intent.intent.source.starts_with("provider_") {
-                        TurnFailure::policy_denied_with_discovery_recovery(
-                            "tool_not_found",
-                            policy_reason,
-                        )
-                    } else {
-                        TurnFailure::policy_denied("tool_not_found", policy_reason)
-                    };
+                    let failure = TurnFailure::policy_denied("tool_not_found", policy_reason);
                     Err(TurnResult::ToolDenied(failure))
                 }
                 Err(reason) if reason.starts_with("app_tool_disabled:") => {
@@ -323,5 +308,77 @@ impl TurnEngine {
                 )),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod execution_tests {
+    use super::*;
+    use serde_json::json;
+
+    struct MissingProviderAppToolDispatcher;
+
+    #[async_trait::async_trait]
+    impl AppToolDispatcher for MissingProviderAppToolDispatcher {
+        async fn execute_app_tool(
+            &self,
+            _session_context: &SessionContext,
+            request: ToolCoreRequest,
+            _binding: ConversationRuntimeBinding<'_>,
+        ) -> Result<ToolCoreOutcome, String> {
+            Err(format!("app_tool_not_found: {}", request.tool_name))
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_app_tool_not_found_is_plain_policy_denial() {
+        let session_id = "provider-app-tool-not-found";
+        let turn_id = "turn-provider-app-tool-not-found";
+        let prepared_intent = PreparedToolIntent {
+            intent_sequence: 0,
+            intent: ToolIntent {
+                tool_name: "sessions_list".to_owned(),
+                args_json: json!({}),
+                source: "provider_tool_call".to_owned(),
+                session_id: session_id.to_owned(),
+                turn_id: turn_id.to_owned(),
+                tool_call_id: "call-provider-app-tool-not-found".to_owned(),
+            },
+            request: ToolCoreRequest {
+                tool_name: "sessions_list".to_owned(),
+                payload: json!({}),
+            },
+            execution_kind: ToolExecutionKind::App,
+            capability_action_class: crate::tools::CapabilityActionClass::ExecuteExisting,
+            scheduling_class: crate::tools::ToolSchedulingClass::SerialOnly,
+            trusted_internal_context: false,
+            decision: ToolDecisionTelemetry::allow(
+                "sessions_list",
+                "prepared for execution",
+                "test_allow",
+            ),
+        };
+        let session_context = SessionContext::root_with_tool_view(session_id, runtime_tool_view());
+
+        let result = TurnEngine::new(4)
+            .execute_prepared_tool_intent(
+                &prepared_intent,
+                &session_context,
+                &MissingProviderAppToolDispatcher,
+                ConversationRuntimeBinding::direct(),
+                None,
+            )
+            .await;
+
+        let Err(TurnResult::ToolDenied(failure)) = result else {
+            panic!("expected tool denial");
+        };
+        assert_eq!(failure.code, "tool_not_found");
+        assert!(!failure.supports_discovery_recovery);
+        assert!(
+            failure.reason.starts_with("app_tool_not_found:"),
+            "unexpected reason: {}",
+            failure.reason
+        );
     }
 }

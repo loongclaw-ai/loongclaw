@@ -159,7 +159,7 @@ impl ConversationTurnCoordinator {
             crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None);
         let activation_outcome = crate::tools::execute_tool_core_with_config(
             loong_contracts::ToolCoreRequest {
-                tool_name: "external_skills.invoke".to_owned(),
+                tool_name: "skills.invoke".to_owned(),
                 payload: json!({
                     "skill_id": explicit_activation.skill_id,
                 }),
@@ -197,7 +197,7 @@ impl ConversationTurnCoordinator {
             "[ok] {}",
             json!({
                 "status": activation_outcome.status,
-                "tool": "external_skills.invoke",
+                "tool": "skills.invoke",
                 "tool_call_id": explicit_skill_activation_tool_call_id(
                     explicit_activation.skill_id.as_str(),
                 ),
@@ -250,16 +250,18 @@ impl ConversationTurnCoordinator {
         turn: &ProviderTurn,
     ) -> LoongConfig {
         let config_path_from_tool = turn.tool_intents.iter().rev().find_map(|intent| {
-            let canonical_tool_name = crate::tools::canonical_tool_name(intent.tool_name.as_str());
-            let payload = if canonical_tool_name == "provider.switch" {
-                intent.args_json.as_object()
-            } else if canonical_tool_name == "tool.invoke" {
-                crate::tools::invoked_discoverable_tool_request(&intent.args_json)
-                    .filter(|(tool_name, _arguments)| *tool_name == "provider.switch")
-                    .and_then(|(_tool_name, arguments)| arguments.as_object())
-            } else {
-                None
+            let request = loong_contracts::ToolCoreRequest {
+                tool_name: intent.tool_name.clone(),
+                payload: intent.args_json.clone(),
             };
+            let direct_payload = crate::tools::canonical_tool_name(intent.tool_name.as_str())
+                .eq("provider.switch")
+                .then(|| intent.args_json.as_object())
+                .flatten();
+            let wrapped_payload = crate::tools::peek_tool_invoke_request(&request)
+                .filter(|peeked| peeked.tool_name == "provider.switch")
+                .and_then(|peeked| peeked.arguments.as_object());
+            let payload = direct_payload.or(wrapped_payload);
 
             payload
                 .and_then(|payload| payload.get("config_path"))

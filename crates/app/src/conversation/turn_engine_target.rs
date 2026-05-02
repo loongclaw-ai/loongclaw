@@ -29,55 +29,33 @@ pub(super) struct EffectiveToolMetadataError {
 
 fn resolve_effective_tool_target(
     resolved_tool: ResolvedToolExecution,
-    request: ToolCoreRequest,
-    normalized_intent: ToolIntent,
-    original_intent: &ToolIntent,
+    mut request: ToolCoreRequest,
+    mut normalized_intent: ToolIntent,
+    _original_intent: &ToolIntent,
 ) -> EffectiveToolTarget {
-    if resolved_tool.canonical_name != "tool.invoke" {
-        return EffectiveToolTarget {
-            execution_kind: resolved_tool.execution_kind,
-            request,
-            intent: normalized_intent,
-            tool_name: resolved_tool.canonical_name.to_owned(),
-        };
-    }
+    let mut execution_kind = resolved_tool.execution_kind;
+    let mut tool_name = resolved_tool.canonical_name.to_owned();
 
-    let Ok((inner_resolved, inner_request)) = crate::tools::resolve_tool_invoke_request(&request)
-    else {
-        return EffectiveToolTarget {
-            execution_kind: resolved_tool.execution_kind,
-            request,
-            intent: normalized_intent,
-            tool_name: resolved_tool.canonical_name.to_owned(),
-        };
-    };
-
-    let inner_intent = ToolIntent {
-        tool_name: inner_resolved.canonical_name.to_owned(),
-        args_json: inner_request.payload.clone(),
-        source: original_intent.source.clone(),
-        session_id: original_intent.session_id.clone(),
-        turn_id: original_intent.turn_id.clone(),
-        tool_call_id: original_intent.tool_call_id.clone(),
-    };
-
-    let should_rebind_request = inner_resolved.execution_kind == ToolExecutionKind::App
-        || inner_resolved.canonical_name == crate::tools::SHELL_EXEC_TOOL_NAME;
-
-    if should_rebind_request {
-        return EffectiveToolTarget {
-            execution_kind: inner_resolved.execution_kind,
-            request: inner_request,
-            intent: inner_intent,
-            tool_name: inner_resolved.canonical_name.to_owned(),
-        };
+    if resolved_tool.canonical_name == "browser"
+        && let Ok(routed_tool_name) =
+            crate::tools::route_direct_tool_name("browser", &request.payload)
+        && matches!(
+            routed_tool_name,
+            "browser.companion.click" | "browser.companion.type"
+        )
+        && let Some(routed_tool) = crate::tools::resolve_tool_execution(routed_tool_name)
+    {
+        execution_kind = routed_tool.execution_kind;
+        tool_name = routed_tool.canonical_name.to_owned();
+        request.tool_name = tool_name.clone();
+        normalized_intent.tool_name = tool_name.clone();
     }
 
     EffectiveToolTarget {
-        execution_kind: resolved_tool.execution_kind,
+        execution_kind,
         request,
-        intent: inner_intent,
-        tool_name: inner_resolved.canonical_name.to_owned(),
+        intent: normalized_intent,
+        tool_name,
     }
 }
 
@@ -113,22 +91,8 @@ pub(super) fn resolve_effective_tool_metadata(
 
 pub(super) fn prepare_conversation_kernel_tool_request(
     request: ToolCoreRequest,
-    binding: ConversationRuntimeBinding<'_>,
+    _binding: ConversationRuntimeBinding<'_>,
     _intent: &ToolIntent,
 ) -> ToolCoreRequest {
-    let Some(kernel_ctx) = binding.kernel_context() else {
-        return request;
-    };
-
-    if crate::tools::canonical_tool_name(request.tool_name.as_str()) != "tool.search" {
-        return request;
-    }
-
-    crate::tools::prepare_kernel_tool_request(
-        request,
-        &kernel_ctx.token.allowed_capabilities,
-        None,
-        None,
-        None,
-    )
+    request
 }

@@ -1,15 +1,13 @@
 use serde_json::Value;
 
 use super::tool_result::{
-    followup_prompt_needs_truncation_hint, followup_prompt_uses_discovery_guidance,
-    proactive_followup_continuation_context,
+    followup_prompt_needs_truncation_hint, proactive_followup_continuation_context,
 };
 
 pub const TOOL_FOLLOWUP_PROMPT: &str = "Use the tool result above to continue satisfying the original user request. Prefer the next bounded tool call or completion step over narrating intermediate status. Only stop to answer in natural language when the request is actually complete, blocked on a real approval or input gate, or the available evidence is already sufficient. Do not include raw JSON, payload wrappers, or status markers unless the user explicitly asks for raw output.";
-pub const DISCOVERY_RESULT_FOLLOWUP_PROMPT: &str = "The tool result above is a discovery result, not the final evidence. Choose the best matching discovered tool, reuse its lease when invoking it, continue with the next tool call needed to satisfy the original user request, and only answer directly if the discovery results already contain the final user-facing information.";
 pub const TOOL_TRUNCATION_HINT_PROMPT: &str = "One or more tool results were truncated for context safety. If exact missing details are needed, explicitly state the truncation and request a narrower rerun.";
 pub const EXTERNAL_SKILL_FOLLOWUP_PROMPT: &str = "An external skill has been loaded into runtime context. Follow its instructions while answering the original user request. Do not restate the skill verbatim unless the user explicitly asks for it.";
-pub const DISCOVERY_RECOVERY_FOLLOWUP_PROMPT: &str = "The previous tool call could not be executed as requested. If you still need a hidden or discoverable capability, call tool.search with a short natural-language description of the missing capability. If tool.search returns a grouped hidden surface such as `skills`, `agent`, or `channel`, do not call that surface name directly; reuse its fresh lease through tool.invoke and place the requested operation inside payload.arguments. Otherwise, provide the best possible answer with the currently available evidence.";
+pub const TOOL_FAILURE_FOLLOWUP_PROMPT: &str = "The previous tool call could not be executed as requested. Retry with a valid direct tool call, a corrected payload, or answer with the best available evidence if the missing tool action is no longer necessary.";
 pub const TOOL_LOOP_GUARD_PROMPT: &str = "Detected tool-loop behavior across rounds. Do not repeat identical or cyclical tool calls without new evidence. Adjust strategy (different tool, arguments, or decomposition) or provide the best possible final answer and clearly state remaining gaps.";
 
 #[cfg(test)]
@@ -37,14 +35,7 @@ pub fn build_tool_followup_user_prompt_with_context(
     rendered_tool_result_text: Option<&str>,
     extra_context: Option<&str>,
 ) -> String {
-    let prompt =
-        if followup_prompt_uses_discovery_guidance(tool_result_text, rendered_tool_result_text) {
-            DISCOVERY_RESULT_FOLLOWUP_PROMPT
-        } else {
-            TOOL_FOLLOWUP_PROMPT
-        };
-
-    let mut sections = vec![prompt.to_owned()];
+    let mut sections = vec![TOOL_FOLLOWUP_PROMPT.to_owned()];
     if let Some(reason) = loop_warning_reason {
         sections.push(format!(
             "Loop warning:\n{reason}\nAvoid repeating the same tool call with unchanged results. Try a different tool, adjust arguments, or provide a best-effort final answer if evidence is sufficient."
@@ -80,11 +71,15 @@ pub fn build_discovery_recovery_followup_user_prompt(
     loop_warning_reason: Option<&str>,
     recovery_reason: &str,
 ) -> String {
-    let mut sections = vec![DISCOVERY_RECOVERY_FOLLOWUP_PROMPT.to_owned()];
+    let mut sections = vec![TOOL_FAILURE_FOLLOWUP_PROMPT.to_owned()];
     sections.push(format!("Recovery reason:\n{recovery_reason}"));
+    sections.push(
+        "Prefer a valid direct tool call or a refreshed visible tool request. Do not fall back to hidden discovery-first wrapper syntax."
+            .to_owned(),
+    );
     if let Some(reason) = loop_warning_reason {
         sections.push(format!(
-            "Loop warning:\n{reason}\nAvoid repeating identical unavailable tool calls. Search for the missing capability or change strategy."
+            "Loop warning:\n{reason}\nAvoid repeating identical unavailable tool calls. Refresh the visible tool request or change strategy."
         ));
     }
     sections.push(format!("Original request:\n{user_input}"));

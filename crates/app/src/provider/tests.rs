@@ -1260,9 +1260,8 @@ fn build_messages_includes_capability_snapshot_block() {
         "system prompt should advertise the direct read surface"
     );
     assert!(system_content.contains("- write:"));
-    assert!(system_content.contains("- exec:"));
-    assert!(system_content.contains("- tool.search: Discover hidden specialized tools"));
-    assert!(system_content.contains("- tool.invoke: Invoke a discovered hidden specialized tool"));
+    assert!(system_content.contains("- edit:"));
+    assert!(system_content.contains("- bash:"));
     assert!(!system_content.contains("shell.exec"));
     assert!(!system_content.contains("file.read"));
     assert!(!system_content.contains("file.write"));
@@ -1673,15 +1672,7 @@ fn turn_body_includes_tool_schema_and_auto_choice() {
         .filter_map(Value::as_str)
         .collect();
 
-    let expected = vec![
-        "browser",
-        "exec",
-        "read",
-        "tool_invoke",
-        "tool_search",
-        "web",
-        "write",
-    ];
+    let expected = vec!["bash", "edit", "read", "web", "write"];
 
     for expected_name in expected {
         assert!(

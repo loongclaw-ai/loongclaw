@@ -3432,7 +3432,7 @@ Plan within these child-session runtime limits:\n\
 - subagent depth budget: 1/2\n\
 - subagent active-child budget snapshot: 0/3\n\
 - child timeout seconds: 60\n\
-- child exec: denied\n\
+- child bash: denied\n\
 - child tool allowlist: web\n\
 - child runtime binding: direct\n\
 - subagent role: orchestrator\n\

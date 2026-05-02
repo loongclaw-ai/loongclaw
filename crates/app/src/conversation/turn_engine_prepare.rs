@@ -65,7 +65,15 @@ impl<'a, 'b, D: AppToolDispatcher + ?Sized> ToolIntentPreparationHarness<'a, 'b,
         intent: &ToolIntent,
         intent_sequence: usize,
     ) -> Result<PreparedToolIntent, PreparedToolIntentFailure> {
-        let Some(resolved_tool) = crate::tools::resolve_tool_execution(&intent.tool_name) else {
+        let outer_request = ToolCoreRequest {
+            tool_name: intent.tool_name.clone(),
+            payload: intent.args_json.clone(),
+        };
+        let peeked_tool_invoke = crate::tools::peek_tool_invoke_request(&outer_request);
+        let Some(resolved_tool) = peeked_tool_invoke
+            .and_then(|peeked| crate::tools::resolve_tool_execution(peeked.tool_name))
+            .or_else(|| crate::tools::resolve_tool_execution(&intent.tool_name))
+        else {
             let denied_tool_name = effective_denied_tool_name(intent);
             let raw_reason = format!("tool_not_found: {denied_tool_name}");
             let reason = provider_tool_denial_reason(raw_reason.as_str(), intent.source.as_str());
@@ -88,17 +96,94 @@ impl<'a, 'b, D: AppToolDispatcher + ?Sized> ToolIntentPreparationHarness<'a, 'b,
             });
         };
 
-        let injected = inject_internal_tool_ingress(
-            resolved_tool.canonical_name,
-            intent.args_json.clone(),
-            self.ingress,
-        );
-        let normalized_payload = crate::tools::normalize_shell_payload_for_request(
-            resolved_tool.canonical_name,
-            injected.payload,
-        );
+        let (normalized_payload, injected_trusted_internal_context) = match peeked_tool_invoke {
+            Some(_) => match crate::tools::resolve_tool_invoke_request(&outer_request) {
+                Ok((_resolved_inner, inner_request)) => {
+                    let injected = inject_internal_tool_ingress(
+                        resolved_tool.canonical_name,
+                        inner_request.payload,
+                        self.ingress,
+                    );
+                    (
+                        crate::tools::normalize_shell_payload_for_request(
+                            resolved_tool.canonical_name,
+                            injected.payload,
+                        ),
+                        injected.trusted_internal_context,
+                    )
+                }
+                Err(reason) => {
+                    let turn_result = if reason.starts_with("invalid_tool_lease:") {
+                        TurnResult::retryable_tool_error("invalid_tool_lease", reason.clone())
+                    } else if reason.starts_with("tool_not_provider_exposed:")
+                        || reason.starts_with("tool_not_found:")
+                    {
+                        let recovery_reason = provider_tool_denial_reason(
+                            "tool_not_found: tool.invoke",
+                            intent.source.as_str(),
+                        );
+                        TurnResult::ToolDenied(
+                            super::TurnFailure::policy_denied_with_discovery_recovery(
+                                "tool_not_found",
+                                recovery_reason,
+                            ),
+                        )
+                    } else {
+                        TurnResult::non_retryable_tool_error(
+                            "tool_invoke_resolution_failed",
+                            reason.clone(),
+                        )
+                    };
+                    let decision = ToolDecisionTelemetry::deny(
+                        resolved_tool.canonical_name,
+                        reason,
+                        "tool_invoke_resolution_failed",
+                    );
+
+                    return Err(PreparedToolIntentFailure {
+                        intent: intent.clone(),
+                        turn_result,
+                        decision,
+                    });
+                }
+            },
+            None => {
+                let injected = inject_internal_tool_ingress(
+                    resolved_tool.canonical_name,
+                    intent.args_json.clone(),
+                    self.ingress,
+                );
+                (
+                    crate::tools::normalize_shell_payload_for_request(
+                        resolved_tool.canonical_name,
+                        injected.payload,
+                    ),
+                    injected.trusted_internal_context,
+                )
+            }
+        };
         let injected_payload_uses_reserved_internal_context =
             crate::tools::payload_uses_reserved_internal_tool_context(&normalized_payload);
+        if matches!(
+            resolved_tool.canonical_name,
+            "read" | "write" | "edit" | "bash" | "web" | "browser" | "memory"
+        ) && let Err(reason) =
+            crate::tools::route_direct_tool_name(resolved_tool.canonical_name, &normalized_payload)
+        {
+            let human_reason = RepairableToolPreflight::render(reason.as_str());
+            let turn_result =
+                TurnResult::retryable_tool_error("tool_preflight_denied", human_reason.clone());
+            let decision = ToolDecisionTelemetry::deny(
+                resolved_tool.canonical_name,
+                human_reason,
+                "tool_preflight_denied",
+            );
+            return Err(PreparedToolIntentFailure {
+                intent: intent.clone(),
+                turn_result,
+                decision,
+            });
+        }
         let augmented_payload = augment_tool_payload_for_kernel(
             resolved_tool.canonical_name,
             normalized_payload.clone(),
@@ -333,7 +418,7 @@ impl<'a, 'b, D: AppToolDispatcher + ?Sized> ToolIntentPreparationHarness<'a, 'b,
             }
         };
 
-        let injected_trusted_internal_context = injected.trusted_internal_context
+        let injected_trusted_internal_context = injected_trusted_internal_context
             || augmented_payload.trusted_internal_context
             || (!injected_payload_uses_reserved_internal_context
                 && augmented_payload_uses_reserved_internal_context);

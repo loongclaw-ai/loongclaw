@@ -12,7 +12,7 @@ pub fn execute_tool_core_with_config(
     config: &runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
     let requested_tool_name = request.tool_name.clone();
-    let canonical_name = canonical_tool_name(request.tool_name.as_str());
+    let canonical_name = canonical_tool_name(request.tool_name.as_str()).to_owned();
     let payload = request.payload;
     let workspace_root = trusted_workspace_root_from_payload(&payload)?;
     let runtime_narrowing = trusted_runtime_narrowing_from_payload(&payload)?;
@@ -38,7 +38,7 @@ pub fn execute_tool_core_with_config(
         payload_keys = crate::observability::top_level_json_keys(&payload);
     }
     let inner_tool_name =
-        super::routing::resolved_inner_tool_name_for_logs(canonical_name, &payload);
+        super::routing::resolved_inner_tool_name_for_logs(canonical_name.as_str(), &payload);
     let started_at = std::time::Instant::now();
     let execute_request = || {
         ensure_untrusted_payload_does_not_use_reserved_internal_tool_context(
@@ -47,7 +47,7 @@ pub fn execute_tool_core_with_config(
             "payload",
         )?;
         let request = ToolCoreRequest {
-            tool_name: canonical_name.to_owned(),
+            tool_name: canonical_name.clone(),
             payload,
         };
         let request = normalize_shell_request_for_execution(request);
@@ -55,10 +55,10 @@ pub fn execute_tool_core_with_config(
         let effective_config = effective_config.map(|narrowing| config.narrowed(&narrowing));
         let config = effective_config.as_ref().unwrap_or(config);
 
-        match canonical_name {
-            "tool.search" => execute_tool_search_tool_with_config(request, config),
-            "tool.invoke" => execute_tool_invoke_tool_with_config(request, config),
-            "read" | "write" | "exec" | "web" | "browser" | "memory" => {
+        match canonical_name.as_str() {
+            "tool.search" => tool_search::execute_tool_search_tool_with_config(request, config),
+            "tool.invoke" => tool_lease::execute_tool_invoke_tool_with_config(request, config),
+            "read" | "write" | "edit" | "bash" | "web" | "browser" | "memory" => {
                 super::routing::execute_direct_tool_core_with_config(request, config)
             }
             _ => execute_discoverable_tool_core_with_config(request, config),
@@ -252,37 +252,37 @@ fn dispatch_tool_request(
         config_import::CONFIG_IMPORT_TOOL_NAME => {
             config_import::execute_config_import_tool_with_config(request, config)
         }
-        "external_skills.resolve" => {
+        "skills.resolve" => {
             external_skills::execute_external_skills_resolve_tool_with_config(request, config)
         }
-        "external_skills.search" => {
+        "skills.search" => {
             external_skills::execute_external_skills_search_tool_with_config(request, config)
         }
-        "external_skills.recommend" => {
+        "skills.recommend" => {
             external_skills::execute_external_skills_recommend_tool_with_config(request, config)
         }
-        "external_skills.source_search" => {
+        "skills.source_search" => {
             external_skills::execute_external_skills_source_search_tool_with_config(request, config)
         }
-        "external_skills.inspect" => {
+        "skills.inspect" => {
             external_skills::execute_external_skills_inspect_tool_with_config(request, config)
         }
-        "external_skills.install" => {
+        "skills.install" => {
             external_skills::execute_external_skills_install_tool_with_config(request, config)
         }
-        "external_skills.invoke" => {
+        "skills.invoke" => {
             external_skills::execute_external_skills_invoke_tool_with_config(request, config)
         }
-        "external_skills.list" => {
+        "skills.list" => {
             external_skills::execute_external_skills_list_tool_with_config(request, config)
         }
-        "external_skills.policy" => {
+        "skills.policy" => {
             external_skills::execute_external_skills_policy_tool_with_config(request, config)
         }
-        "external_skills.fetch" => {
+        "skills.fetch" => {
             external_skills::execute_external_skills_fetch_tool_with_config(request, config)
         }
-        "external_skills.remove" => {
+        "skills.remove" => {
             external_skills::execute_external_skills_remove_tool_with_config(request, config)
         }
         #[cfg(feature = "tool-browser")]

@@ -20,28 +20,24 @@ mod query_support;
 mod rank;
 #[path = "tool_search_result.rs"]
 mod result;
-#[path = "tool_search_skill.rs"]
-mod skill;
 #[path = "tool_search_view.rs"]
 mod view;
 #[cfg(test)]
 use entry::schema_required_field_groups;
 pub(crate) use entry::{
-    SearchableToolEntry, build_argument_fragments, collapse_hidden_surface_search_entries,
-    searchable_entry_from_manual_definition, searchable_entry_from_provider_definition,
+    SearchableToolEntry, searchable_entry_from_manual_definition,
+    searchable_entry_from_provider_definition,
 };
 #[cfg(test)]
 use query_support::*;
 pub(crate) use rank::rank_searchable_entries;
 use result::{tool_search_diagnostics_json, tool_search_result_entry_json};
-use skill::enrich_searchable_entries_for_skill_hints;
-use skill::enrich_skills_surface_entry;
+#[cfg(test)]
+pub(crate) use view::runtime_discoverable_tool_entries;
+pub(crate) use view::runtime_tool_search_entries;
 use view::searchable_entry_from_descriptor_for_view;
+#[cfg(test)]
 pub(crate) use view::tool_id_visible_in_view;
-pub(crate) use view::{
-    provider_visible_collapsible_hidden_surface_ids, runtime_discoverable_tool_entries,
-    runtime_tool_search_entries,
-};
 
 #[derive(Debug, Clone)]
 pub(super) struct RankedSearchableToolEntry {
@@ -85,7 +81,7 @@ pub(super) fn execute_tool_search_tool_with_config(
         .cloned()
         .and_then(|value| serde_json::from_value::<BTreeSet<Capability>>(value).ok());
     let visible_tool_view = search_tool_view_from_payload(payload, config);
-    let exact_match_entries = runtime_tool_search_entries(config, Some(&visible_tool_view), false)
+    let searchable_entries = runtime_tool_search_entries(config, Some(&visible_tool_view), false)
         .into_iter()
         .filter(|entry| {
             tool_search_entry_is_capability_usable(
@@ -94,75 +90,22 @@ pub(super) fn execute_tool_search_tool_with_config(
             )
         })
         .collect::<Vec<_>>();
-    let collapsible_surface_ids =
-        provider_visible_collapsible_hidden_surface_ids(config, &visible_tool_view);
-    let skill_query_hints = query
-        .as_deref()
-        .map(|value| super::external_skills::ranked_model_visible_skill_hints(config, value, 3))
-        .transpose()?
-        .unwrap_or_default();
-    let exact_skill_hint = requested_exact_tool_id
-        .as_deref()
-        .map(|value| super::external_skills::exact_model_visible_skill_hint(config, value))
-        .transpose()?
-        .flatten();
-    let searchable_entries = collapse_hidden_surface_search_entries(
-        exact_match_entries.clone(),
-        &collapsible_surface_ids,
-    );
-    let searchable_entries = enrich_searchable_entries_for_skill_hints(
-        searchable_entries,
-        skill_query_hints.as_slice(),
-        exact_skill_hint.as_ref(),
-    );
-    let exact_match_entry = exact_tool_id
-        .as_ref()
-        .and_then(|exact_tool_id| {
-            let direct_tool_id = super::direct_tool_name_for_hidden_tool(exact_tool_id);
-            let direct_tool_id = direct_tool_id.map(str::to_owned);
+    let exact_match_entry = exact_tool_id.as_ref().and_then(|exact_tool_id| {
+        let direct_tool_id = super::direct_tool_name_for_hidden_tool(exact_tool_id);
+        let direct_tool_id = direct_tool_id.map(str::to_owned);
 
-            searchable_entries
-                .iter()
-                .find(|entry| {
-                    let canonical_match = entry.canonical_name == *exact_tool_id;
-                    let tool_id_match = entry.tool_id == *exact_tool_id;
-                    let direct_match = direct_tool_id.as_ref().is_some_and(|direct_tool_id| {
-                        entry.canonical_name == *direct_tool_id || entry.tool_id == *direct_tool_id
-                    });
-                    canonical_match || tool_id_match || direct_match
-                })
-                .cloned()
-                .or_else(|| {
-                    exact_match_entries
-                        .iter()
-                        .find(|entry| {
-                            let canonical_match = entry.canonical_name == *exact_tool_id;
-                            let tool_id_match = entry.tool_id == *exact_tool_id;
-                            let direct_match =
-                                direct_tool_id.as_ref().is_some_and(|direct_tool_id| {
-                                    entry.canonical_name == *direct_tool_id
-                                });
-                            canonical_match || tool_id_match || direct_match
-                        })
-                        .cloned()
-                })
-        })
-        .or_else(|| {
-            exact_skill_hint.as_ref().and_then(|hint| {
-                searchable_entries
-                    .iter()
-                    .find(|entry| entry.tool_id == "skills")
-                    .cloned()
-                    .map(|mut entry| {
-                        enrich_skills_surface_entry(
-                            &mut entry,
-                            std::slice::from_ref(hint),
-                            Some(hint),
-                        );
-                        entry
-                    })
+        searchable_entries
+            .iter()
+            .find(|entry| {
+                let canonical_match = entry.canonical_name == *exact_tool_id;
+                let tool_id_match = entry.tool_id == *exact_tool_id;
+                let direct_match = direct_tool_id.as_ref().is_some_and(|direct_tool_id| {
+                    entry.canonical_name == *direct_tool_id || entry.tool_id == *direct_tool_id
+                });
+                canonical_match || tool_id_match || direct_match
             })
-        });
+            .cloned()
+    });
     let exact_match_found = exact_match_entry.is_some();
     let mut diagnostics_reason = None;
     let results: Vec<Value> = if let Some(entry) = exact_match_entry {
@@ -220,24 +163,6 @@ pub(super) fn execute_tool_search_tool_with_config(
             "diagnostics": diagnostics,
         }),
     })
-}
-
-fn append_unique_sentence(base: &str, addition: &str) -> String {
-    let trimmed_addition = addition.trim();
-    if trimmed_addition.is_empty() {
-        return base.trim().to_owned();
-    }
-
-    let trimmed_base = base.trim();
-    if trimmed_base.is_empty() {
-        return trimmed_addition.to_owned();
-    }
-
-    if trimmed_base.contains(trimmed_addition) {
-        return trimmed_base.to_owned();
-    }
-
-    format!("{trimmed_base} {trimmed_addition}")
 }
 
 fn tool_search_query_from_payload(
@@ -313,12 +238,8 @@ pub(super) fn tool_search_entry_is_runtime_usable(
                 )
         }
         "bash.exec" => config.bash_exec.is_discoverable(),
-        "external_skills.fetch"
-        | "external_skills.install"
-        | "external_skills.inspect"
-        | "external_skills.invoke"
-        | "external_skills.list"
-        | "external_skills.remove" => config.external_skills.enabled,
+        "skills.fetch" | "skills.install" | "skills.inspect" | "skills.invoke" | "skills.list"
+        | "skills.remove" => config.external_skills.enabled,
         #[cfg(feature = "tool-file")]
         "memory_search" => memory_tools::memory_corpus_available(config),
         #[cfg(feature = "tool-file")]

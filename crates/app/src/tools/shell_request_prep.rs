@@ -11,7 +11,6 @@ pub(crate) const TOOL_LEASE_TURN_ID_FIELD: &str = "_lease_turn_id";
 pub(crate) fn normalize_shell_payload_for_request(tool_name: &str, payload: Value) -> Value {
     match super::canonical_tool_name(tool_name) {
         "shell.exec" => normalize_shell_payload_object(payload),
-        "tool.invoke" => normalize_shell_invoke_payload(payload),
         _ => payload,
     }
 }
@@ -99,35 +98,6 @@ fn summarize_shell_request_for_display(request: Value) -> Value {
     }
 
     Value::Object(summarized_request)
-}
-
-fn normalize_shell_invoke_payload(payload: Value) -> Value {
-    let mut outer = match payload {
-        Value::Object(outer) => outer,
-        other @ Value::Null
-        | other @ Value::Bool(_)
-        | other @ Value::Number(_)
-        | other @ Value::String(_)
-        | other @ Value::Array(_) => return other,
-    };
-
-    let tool_id = outer
-        .get("tool_id")
-        .and_then(Value::as_str)
-        .map(super::canonical_tool_name);
-    let Some(tool_id) = tool_id else {
-        return Value::Object(outer);
-    };
-    if tool_id != "shell.exec" {
-        return Value::Object(outer);
-    }
-
-    let arguments = outer
-        .remove("arguments")
-        .map(normalize_shell_payload_object)
-        .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-    outer.insert("arguments".to_owned(), arguments);
-    Value::Object(outer)
 }
 
 fn normalize_shell_payload_object(payload: Value) -> Value {

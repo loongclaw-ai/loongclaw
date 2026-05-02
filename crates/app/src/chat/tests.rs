@@ -1953,7 +1953,7 @@ fn cli_chat_live_surface_observer_renders_tool_lifecycle_updates() {
         delta: crate::acp::TokenDelta {
             text: None,
             tool_call: Some(crate::acp::ToolCallDelta {
-                name: Some("file.read".to_owned()),
+                name: Some("read".to_owned()),
                 args: None,
                 id: Some("call-tool-1".to_owned()),
             }),
@@ -1976,7 +1976,7 @@ fn cli_chat_live_surface_observer_renders_tool_lifecycle_updates() {
     });
     observer.on_tool(ConversationTurnToolEvent::completed(
         "call-tool-1",
-        "file.read",
+        "read",
         Some("ok".to_owned()),
     ));
 
@@ -2038,7 +2038,7 @@ fn cli_chat_live_surface_observer_renders_runtime_output_and_file_change_updates
         1,
     ));
     observer.on_tool(
-        ConversationTurnToolEvent::running("call-tool-2", "shell.exec")
+        ConversationTurnToolEvent::running("call-tool-2", "bash")
             .with_request_summary(Some("{\"command\":\"printf\"}".to_owned())),
     );
     observer.on_runtime(ConversationTurnRuntimeEvent::new(
@@ -2070,7 +2070,7 @@ fn cli_chat_live_surface_observer_renders_runtime_output_and_file_change_updates
     ));
     observer.on_tool(ConversationTurnToolEvent::completed(
         "call-tool-2",
-        "shell.exec",
+        "bash",
         Some("ok".to_owned()),
     ));
 
@@ -2082,7 +2082,7 @@ fn cli_chat_live_surface_observer_renders_runtime_output_and_file_change_updates
     assert!(
         final_batch
             .iter()
-            .any(|line| line.contains("[completed] exec (id=call-tool-2) - ok")),
+            .any(|line| line.contains("[completed] bash (id=call-tool-2) - ok")),
         "runtime output should surface the visible tool name: {final_batch:#?}"
     );
     assert!(
@@ -2122,7 +2122,7 @@ fn build_cli_chat_live_surface_snapshot_preserves_structured_tool_state() {
     };
 
     let tool_state = ensure_cli_chat_live_tool_state(&mut state, "call-structured");
-    tool_state.name = Some("shell.exec".to_owned());
+    tool_state.name = Some("bash".to_owned());
     tool_state.request_summary = Some("{\"command\":\"printf\"}".to_owned());
     tool_state.args = "{\"command\":\"printf\"}".to_owned();
     tool_state.stdout = CliChatLiveOutputView {
@@ -2143,7 +2143,7 @@ fn build_cli_chat_live_surface_snapshot_preserves_structured_tool_state() {
 
     assert_eq!(snapshot.tools.len(), 1);
     assert_eq!(tool.tool_call_id, "call-structured");
-    assert_eq!(tool.name.as_deref(), Some("exec"));
+    assert_eq!(tool.name.as_deref(), Some("bash"));
     assert_eq!(
         tool.request_summary.as_deref(),
         Some("{\"command\":\"printf\"}")

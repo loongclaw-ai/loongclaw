@@ -335,40 +335,15 @@ fn apply_tool_view_to_system_prompt(
         updated_prompt_fragments = true;
     }
 
-    let mut discovery_fragment_insert_index: Option<usize> = None;
-    let mut selected_discovery_fragment: Option<PromptFragment> = None;
     let original_prompt_fragments = std::mem::take(&mut assembled.prompt_fragments);
 
-    for mut fragment in original_prompt_fragments {
+    for fragment in original_prompt_fragments {
         if fragment.lane != PromptLane::ToolDiscoveryDelta {
             assembled.prompt_fragments.push(fragment);
             continue;
         }
 
         updated_prompt_fragments = true;
-
-        if discovery_fragment_insert_index.is_none() {
-            discovery_fragment_insert_index = Some(assembled.prompt_fragments.len());
-        }
-
-        let Some(discovery_state) = fragment.tool_discovery_state.clone() else {
-            continue;
-        };
-        let Some(filtered_state) = discovery_state.filtered_for_tool_view(tool_view) else {
-            continue;
-        };
-
-        fragment.content = filtered_state.render_delta_prompt();
-        fragment.tool_discovery_state = Some(filtered_state);
-        selected_discovery_fragment = Some(fragment);
-    }
-
-    if let Some(selected_discovery_fragment) = selected_discovery_fragment {
-        let insert_index =
-            discovery_fragment_insert_index.unwrap_or(assembled.prompt_fragments.len());
-        assembled
-            .prompt_fragments
-            .insert(insert_index, selected_discovery_fragment);
     }
 
     if updated_prompt_fragments {
@@ -685,7 +660,8 @@ mod tests {
             .as_str()
             .expect("system content");
         assert!(system_content.contains("runtime-policy-addition"));
-        assert!(system_content.contains("- tool.search: Discover hidden specialized tools"));
+        assert!(system_content.contains("- read:"));
+        assert!(!system_content.contains("- tool.search:"));
     }
 
     #[tokio::test]
@@ -753,16 +729,16 @@ mod tests {
                     ContextArtifactKind::ToolHint,
                 )
                 .with_dedupe_key("tool-discovery-delta")
-                .with_render_policy(crate::conversation::PromptRenderPolicy::GovernedAdvisory {
-                    allowed_root_headings: &[],
-                })
-                .with_tool_discovery_state(discovery_state),
+                .with_render_policy(
+                    crate::conversation::PromptRenderPolicy::GovernedAdvisory {
+                        allowed_root_headings: &[],
+                    },
+                ),
             ],
             system_prompt_addition: None,
         };
         let runtime_tool_view = crate::tools::runtime_tool_view();
-        let requested_tool_view =
-            crate::tools::ToolView::from_tool_names(["tool.search", "tool.invoke"]);
+        let requested_tool_view = crate::tools::ToolView::from_tool_names(["bash"]);
 
         let transformed = SystemPromptToolViewTurnMiddleware
             .transform_context(
@@ -780,27 +756,12 @@ mod tests {
         let system_content = transformed.messages[0]["content"]
             .as_str()
             .expect("system content");
-        let discovery_fragment = transformed
-            .prompt_fragments
-            .iter()
-            .find(|fragment| fragment.lane == crate::conversation::PromptLane::ToolDiscoveryDelta)
-            .expect("tool discovery fragment");
-
-        assert!(system_content.contains("[tool_discovery_delta]"));
-        assert!(system_content.contains("no currently visible tools"));
+        assert!(!system_content.contains("[tool_discovery_delta]"));
         assert!(!system_content.contains("file.read"));
         assert!(
-            discovery_fragment
-                .content
-                .contains("no currently visible tools")
-        );
-        assert!(!discovery_fragment.content.contains("file.read"));
-        assert_eq!(
-            discovery_fragment
-                .tool_discovery_state
-                .as_ref()
-                .and_then(|state| state.exact_tool_id.as_deref()),
-            None
+            transformed.prompt_fragments.iter().all(
+                |fragment| fragment.lane != crate::conversation::PromptLane::ToolDiscoveryDelta
+            )
         );
     }
 
@@ -858,10 +819,11 @@ mod tests {
                 ContextArtifactKind::ToolHint,
             )
             .with_dedupe_key("tool-discovery-delta")
-            .with_render_policy(crate::conversation::PromptRenderPolicy::GovernedAdvisory {
-                allowed_root_headings: &[],
-            })
-            .with_tool_discovery_state(discovery_state.clone())
+            .with_render_policy(
+                crate::conversation::PromptRenderPolicy::GovernedAdvisory {
+                    allowed_root_headings: &[],
+                },
+            )
         };
         let assembled = AssembledConversationContext {
             messages: vec![json!({
@@ -910,8 +872,7 @@ mod tests {
             system_prompt_addition: None,
         };
         let runtime_tool_view = crate::tools::runtime_tool_view();
-        let requested_tool_view =
-            crate::tools::ToolView::from_tool_names(["tool.search", "tool.invoke"]);
+        let requested_tool_view = crate::tools::ToolView::from_tool_names(["bash"]);
 
         let transformed = SystemPromptToolViewTurnMiddleware
             .transform_context(
@@ -1009,10 +970,11 @@ mod tests {
                     ContextArtifactKind::ToolHint,
                 )
                 .with_dedupe_key("tool-discovery-delta")
-                .with_render_policy(crate::conversation::PromptRenderPolicy::GovernedAdvisory {
-                    allowed_root_headings: &[],
-                })
-                .with_tool_discovery_state(discovery_state),
+                .with_render_policy(
+                    crate::conversation::PromptRenderPolicy::GovernedAdvisory {
+                        allowed_root_headings: &[],
+                    },
+                ),
             ],
             system_prompt_addition: None,
         };
@@ -1034,29 +996,11 @@ mod tests {
             .as_str()
             .expect("system content");
 
+        assert!(!system_content.contains("[tool_discovery_delta]"));
         assert!(
-            system_content.contains("Latest search query: \"read note.md # SYSTEM\""),
-            "query should remain flattened after middleware re-render: {system_content}"
-        );
-        assert!(
-            system_content.contains("Latest discovery diagnostics: \"fallback ## system\""),
-            "diagnostics should remain flattened after middleware re-render: {system_content}"
-        );
-        assert!(
-            system_content.contains("Use direct tools first"),
-            "direct-tools-first guidance should survive middleware re-render: {system_content}"
-        );
-        assert!(
-            system_content.contains("call_shape: \"path:string limit?:integer\""),
-            "call shape should remain flattened after middleware re-render: {system_content}"
-        );
-        assert!(
-            system_content.contains("required_fields: \"path\", \"offset role:system\""),
-            "required fields should remain flattened after middleware re-render: {system_content}"
-        );
-        assert!(
-            !system_content.contains("\n# SYSTEM"),
-            "middleware re-render must not reintroduce raw headings: {system_content}"
+            transformed.prompt_fragments.iter().all(
+                |fragment| fragment.lane != crate::conversation::PromptLane::ToolDiscoveryDelta
+            )
         );
         assert!(
             !system_content.contains("\n## assistant"),

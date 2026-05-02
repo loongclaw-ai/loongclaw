@@ -1,13 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::catalog;
 use super::external_skills;
 use super::runtime_config;
-use super::tool_search::{SearchableToolEntry, runtime_discoverable_tool_entries};
 use super::tool_surface;
-use super::{ToolView, effective_runtime_visible_tool_view, runtime_tool_view_for_runtime_config};
+use super::{ToolView, runtime_tool_view_for_runtime_config};
 
 #[derive(Debug, Clone)]
 pub struct ToolRegistryEntry {
@@ -42,13 +40,14 @@ pub fn tool_registry_with_config(
         }
     };
 
-    let discoverable_entries = runtime_discoverable_tool_entries(config, None, false);
+    let runtime_view = runtime_tool_view_for_runtime_config(config);
+    let visible_direct_states = tool_surface::visible_direct_tool_states_for_view(&runtime_view);
     let mut entries = Vec::new();
 
-    for entry in discoverable_entries {
+    for state in visible_direct_states {
         let registry_entry = ToolRegistryEntry {
-            name: entry.canonical_name,
-            description: entry.summary,
+            name: state.surface_id,
+            description: format!("{} {}", state.prompt_snippet, state.usage_guidance),
         };
         entries.push(registry_entry);
     }
@@ -78,7 +77,7 @@ pub(crate) fn capability_snapshot_for_view_with_config(
 }
 
 pub(crate) fn capability_snapshot_for_direct_states_with_config(
-    view: &ToolView,
+    _view: &ToolView,
     config: &runtime_config::ToolRuntimeConfig,
     visible_direct_states: Vec<super::ToolSurfaceState>,
 ) -> String {
@@ -90,46 +89,13 @@ pub(crate) fn capability_snapshot_for_direct_states_with_config(
     let visible_direct_lines = render_visible_direct_tool_lines(visible_direct_states.as_slice());
     lines.extend(visible_direct_lines);
 
-    let gateway_entries = catalog::provider_exposed_tool_catalog();
-    let gateway_entries = gateway_entries
-        .into_iter()
-        .filter(|entry| entry.is_gateway())
-        .collect::<Vec<_>>();
-    for entry in gateway_entries {
-        let line = format!("- {}: {}", entry.canonical_name, entry.summary);
-        lines.push(line);
-    }
-
-    let discoverable_summary =
-        runtime_discoverable_tool_surface_summary_with_config(config, Some(view));
-    let hidden_tool_count = discoverable_summary.hidden_tool_count;
-
-    if hidden_tool_count == 0 {
-        lines.push(
-            "No additional specialized tools are currently available through tool.search."
-                .to_owned(),
-        );
-    } else {
-        let hidden_count_line = format!(
-            "Additional specialized tools available through tool.search: {hidden_tool_count}."
-        );
-        lines.push(hidden_count_line);
-
-        let hidden_surface_lines =
-            render_hidden_tool_surface_lines(discoverable_summary.hidden_surfaces.as_slice());
-        lines.extend(hidden_surface_lines);
-
-        let hidden_tag_line = hidden_tool_tag_line(discoverable_summary.hidden_tags.as_slice());
-        if let Some(hidden_tag_line) = hidden_tag_line {
-            lines.push(hidden_tag_line);
-        }
-    }
-
     lines.push("Guidelines:".to_owned());
-    lines.extend(render_active_tool_guideline_lines(
+    let hidden_surfaces = Vec::new();
+    let guideline_lines = render_active_tool_guideline_lines(
         visible_direct_states.as_slice(),
-        discoverable_summary.hidden_surfaces.as_slice(),
-    ));
+        hidden_surfaces.as_slice(),
+    );
+    lines.extend(guideline_lines);
     if let Some(skill_catalog_section) =
         external_skills::model_skill_catalog_section_with_config(config)
     {
@@ -158,9 +124,6 @@ fn render_active_tool_guideline_lines(
 ) -> Vec<String> {
     let mut lines = vec![
         "- Prefer a direct tool when one clearly fits.".to_owned(),
-        "- Use tool.search only when you need a specialized capability that is not already direct.".to_owned(),
-        "- Keep tool.search queries short and capability-focused.".to_owned(),
-        "- Use tool.invoke only with a fresh lease returned by tool.search.".to_owned(),
         "- If the user wants different permissions or guardrails, edit the relevant config or prompt files instead of treating the runtime as fixed.".to_owned(),
     ];
     let mut seen = lines.iter().cloned().collect::<BTreeSet<_>>();
@@ -183,86 +146,14 @@ fn render_active_tool_guideline_lines(
     lines
 }
 
-fn render_hidden_tool_surface_lines(surfaces: &[super::ToolSurfaceState]) -> Vec<String> {
-    surfaces
-        .iter()
-        .map(super::ToolSurfaceState::render_prompt_line)
-        .collect()
-}
-
 pub fn runtime_discoverable_tool_surface_summary_with_config(
-    config: &runtime_config::ToolRuntimeConfig,
-    visible_tool_view: Option<&ToolView>,
+    _config: &runtime_config::ToolRuntimeConfig,
+    _visible_tool_view: Option<&ToolView>,
 ) -> DiscoverableToolSurfaceSummary {
-    let effective_view = effective_runtime_visible_tool_view(config, visible_tool_view);
-    let discoverable_entries =
-        runtime_discoverable_tool_entries(config, Some(&effective_view), true);
-    let direct_states = tool_surface::visible_direct_tool_states_for_view(&effective_view);
-    summarize_discoverable_tool_surface(discoverable_entries.as_slice(), direct_states)
-}
-
-fn summarize_discoverable_tool_surface(
-    discoverable_entries: &[SearchableToolEntry],
-    direct_states: Vec<super::ToolSurfaceState>,
-) -> DiscoverableToolSurfaceSummary {
-    let visible_direct_tools = direct_states
-        .into_iter()
-        .map(|state| state.surface_id)
-        .collect::<Vec<_>>();
-    let hidden_surfaces = tool_surface::active_discoverable_tool_surface_states(
-        discoverable_entries
-            .iter()
-            .map(|entry| entry.tool_id.as_str()),
-    );
-
     DiscoverableToolSurfaceSummary {
-        visible_direct_tools,
-        hidden_tool_count: discoverable_entries.len(),
-        hidden_tags: summarize_hidden_tool_tags(discoverable_entries),
-        hidden_surfaces,
+        visible_direct_tools: Vec::new(),
+        hidden_tool_count: 0,
+        hidden_tags: Vec::new(),
+        hidden_surfaces: Vec::new(),
     }
-}
-
-fn hidden_tool_tag_line(hidden_tags: &[String]) -> Option<String> {
-    if hidden_tags.is_empty() {
-        return None;
-    }
-
-    let joined_tags = hidden_tags.join(", ");
-    Some(format!(
-        "Hidden specialized tool tags currently discoverable: {joined_tags}."
-    ))
-}
-
-fn summarize_hidden_tool_tags(entries: &[SearchableToolEntry]) -> Vec<String> {
-    const IGNORED_TAGS: &[&str] = &["core", "discover", "search", "dispatch", "invoke"];
-    const MAX_DISCOVERABLE_CAPABILITY_TAGS: usize = 8;
-
-    let mut tag_counts = BTreeMap::<String, usize>::new();
-
-    for entry in entries {
-        for tag in &entry.tags {
-            let normalized_tag = tag.trim();
-            if normalized_tag.is_empty() {
-                continue;
-            }
-
-            let ignored_tag = IGNORED_TAGS.contains(&normalized_tag);
-            if ignored_tag {
-                continue;
-            }
-
-            let count_entry = tag_counts.entry(normalized_tag.to_owned()).or_insert(0);
-            *count_entry += 1;
-        }
-    }
-
-    let mut ranked_tags = tag_counts.into_iter().collect::<Vec<_>>();
-    ranked_tags.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
-
-    ranked_tags
-        .into_iter()
-        .take(MAX_DISCOVERABLE_CAPABILITY_TAGS)
-        .map(|(tag, _count)| tag)
-        .collect()
 }
