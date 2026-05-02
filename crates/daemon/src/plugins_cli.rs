@@ -5987,4 +5987,35 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn public_extension_docs_describe_conflict_review_loop() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("repo root");
+        for relative_path in [
+            "docs/sdk/quickstart-external.md",
+            "site/build-on-loong/extensions.mdx",
+        ] {
+            let doc = fs::read_to_string(repo_root.join(relative_path))
+                .unwrap_or_else(|error| panic!("read {relative_path}: {error}"));
+            assert!(
+                doc.contains("`.loong/extensions/` wins"),
+                "doc should state that project-local Loong extensions win precedence"
+            );
+            assert!(
+                doc.contains("loong status"),
+                "doc should mention status as an operator conflict review surface"
+            );
+            assert!(
+                doc.contains("doctor --json"),
+                "doc should mention doctor json as an operator conflict review surface"
+            );
+            assert!(
+                doc.contains("git diff --no-index"),
+                "doc should mention manifest comparison for shadowed extension conflicts"
+            );
+        }
+    }
 }
