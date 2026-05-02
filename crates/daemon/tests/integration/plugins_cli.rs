@@ -1,3 +1,4 @@
+#![allow(clippy::wildcard_enum_match_arm)]
 use super::*;
 
 #[test]
@@ -24,12 +25,7 @@ fn plugins_bridge_profiles_cli_parses_selected_profile_and_json_flag() {
                         ]
                     );
                 }
-                other @ loong_daemon::plugins_cli::PluginsCommands::Init(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Doctor(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Inventory(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::BridgeTemplate(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Preflight(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Actions(_) => {
+                other => {
                     panic!("unexpected plugins subcommand parsed: {other:?}");
                 }
             }
@@ -74,12 +70,7 @@ fn plugins_inventory_cli_parses_bridge_profile_and_examples_flag() {
                     assert!(command.include_deferred);
                     assert!(command.include_examples);
                 }
-                other @ loong_daemon::plugins_cli::PluginsCommands::Init(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Doctor(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::BridgeProfiles(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::BridgeTemplate(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Preflight(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Actions(_) => {
+                other => {
                     panic!("unexpected plugins subcommand parsed: {other:?}");
                 }
             }
@@ -127,12 +118,7 @@ fn plugins_doctor_cli_defaults_to_sdk_release_profile() {
                     assert!(command.include_blocked);
                     assert!(command.include_deferred);
                 }
-                other @ loong_daemon::plugins_cli::PluginsCommands::Init(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Inventory(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::BridgeProfiles(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::BridgeTemplate(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Preflight(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Actions(_) => {
+                other => {
                     panic!("unexpected plugins subcommand parsed: {other:?}");
                 }
             }
@@ -194,12 +180,7 @@ fn plugins_actions_cli_parses_filters_and_global_json_after_subcommand() {
                     );
                     assert_eq!(command.requires_reload, Some(true));
                 }
-                other @ loong_daemon::plugins_cli::PluginsCommands::Init(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Doctor(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Inventory(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::BridgeProfiles(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::BridgeTemplate(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Preflight(_) => {
+                other => {
                     panic!("unexpected plugins subcommand parsed: {other:?}");
                 }
             }
@@ -244,12 +225,7 @@ fn plugins_bridge_template_cli_parses_output_and_bridge_profile() {
                         Some("/tmp/bridge-support.delta.json")
                     );
                 }
-                other @ loong_daemon::plugins_cli::PluginsCommands::Init(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Doctor(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Inventory(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::BridgeProfiles(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Preflight(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Actions(_) => {
+                other => {
                     panic!("unexpected plugins subcommand parsed: {other:?}");
                 }
             }
@@ -288,12 +264,7 @@ fn plugins_preflight_cli_parses_bridge_support_delta_selector() {
                         Some("abc123")
                     );
                 }
-                other @ loong_daemon::plugins_cli::PluginsCommands::Init(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Doctor(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Inventory(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::BridgeProfiles(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::BridgeTemplate(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Actions(_) => {
+                other => {
                     panic!("unexpected plugins subcommand parsed: {other:?}");
                 }
             }
@@ -344,14 +315,120 @@ fn plugins_init_cli_parses_manifest_scaffold_request() {
                         Some("Tavily-backed search package")
                     );
                 }
-                other @ loong_daemon::plugins_cli::PluginsCommands::Doctor(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::BridgeProfiles(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Inventory(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::BridgeTemplate(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Preflight(_)
-                | other @ loong_daemon::plugins_cli::PluginsCommands::Actions(_) => {
+                other => {
                     panic!("unexpected plugins subcommand parsed: {other:?}");
                 }
+            }
+        }
+        other => panic!("unexpected parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn plugins_invoke_extension_cli_parses_native_smoke_request() {
+    let cli = try_parse_cli([
+        "loong",
+        "plugins",
+        "invoke-extension",
+        "--root",
+        "/tmp/weather-python",
+        "--plugin-id",
+        "weather-python",
+        "--method",
+        "extension/event",
+        "--payload",
+        "{\"event\":\"session_start\"}",
+        "--allow-command",
+        "python3",
+    ])
+    .expect("plugins invoke-extension CLI should parse");
+
+    match cli.command {
+        Some(Commands::Plugins { json, command }) => {
+            assert!(!json);
+            match command {
+                loong_daemon::plugins_cli::PluginsCommands::InvokeExtension(command) => {
+                    assert_eq!(command.root, "/tmp/weather-python");
+                    assert_eq!(command.plugin_id, "weather-python");
+                    assert_eq!(command.method, "extension/event");
+                    assert_eq!(command.payload, "{\"event\":\"session_start\"}");
+                    assert_eq!(command.allow_commands, vec!["python3".to_owned()]);
+                }
+                other => panic!("unexpected plugins subcommand parsed: {other:?}"),
+            }
+        }
+        other => panic!("unexpected parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn plugins_invoke_host_hook_cli_parses_trusted_host_probe_request() {
+    let cli = try_parse_cli([
+        "loong",
+        "plugins",
+        "invoke-host-hook",
+        "--root",
+        "/tmp/weather-host",
+        "--plugin-id",
+        "weather-host",
+        "--hook",
+        "turn_start",
+        "--payload",
+        "{\"turn_id\":\"demo-turn\"}",
+        "--allow-command",
+        "node",
+    ])
+    .expect("plugins invoke-host-hook CLI should parse");
+
+    match cli.command {
+        Some(Commands::Plugins { json, command }) => {
+            assert!(!json);
+            match command {
+                loong_daemon::plugins_cli::PluginsCommands::InvokeHostHook(command) => {
+                    assert_eq!(command.root, "/tmp/weather-host");
+                    assert_eq!(command.plugin_id, "weather-host");
+                    assert_eq!(command.hook, "turn_start");
+                    assert_eq!(command.payload, "{\"turn_id\":\"demo-turn\"}");
+                    assert_eq!(command.allow_commands, vec!["node".to_owned()]);
+                }
+                other => panic!("unexpected plugins subcommand parsed: {other:?}"),
+            }
+        }
+        other => panic!("unexpected parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn plugins_invoke_tui_surface_cli_parses_trusted_host_probe_request() {
+    let cli = try_parse_cli([
+        "loong",
+        "plugins",
+        "invoke-tui-surface",
+        "--root",
+        "/tmp/weather-host",
+        "--plugin-id",
+        "weather-host",
+        "--tui-surface",
+        "command_palette",
+        "--payload",
+        "{\"query\":\":ext\"}",
+        "--allow-command",
+        "node",
+    ])
+    .expect("plugins invoke-tui-surface CLI should parse");
+
+    match cli.command {
+        Some(Commands::Plugins { json, command }) => {
+            assert!(!json);
+            match command {
+                loong_daemon::plugins_cli::PluginsCommands::InvokeTuiSurface(command) => {
+                    assert_eq!(command.root, "/tmp/weather-host");
+                    assert_eq!(command.plugin_id, "weather-host");
+                    assert_eq!(command.tui_surface, "command_palette");
+                    assert_eq!(command.payload, "{\"query\":\":ext\"}");
+                    assert_eq!(command.allow_commands, vec!["node".to_owned()]);
+                }
+                other => panic!("unexpected plugins subcommand parsed: {other:?}"),
             }
         }
         other => panic!("unexpected parse result: {other:?}"),
@@ -370,6 +447,9 @@ fn plugins_help_mentions_preflight_and_action_plan() {
     assert!(help.contains("plugin preflight"), "help: {help}");
     assert!(help.contains("doctor"), "help: {help}");
     assert!(help_lists_init_subcommand, "help: {help}");
+    assert!(help.contains("invoke-extension"), "help: {help}");
+    assert!(help.contains("invoke-host-hook"), "help: {help}");
+    assert!(help.contains("invoke-tui-surface"), "help: {help}");
     assert!(help.contains("inventory"), "help: {help}");
     assert!(help.contains("bridge-profiles"), "help: {help}");
     assert!(help.contains("bridge-template"), "help: {help}");

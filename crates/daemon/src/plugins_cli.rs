@@ -3,6 +3,8 @@ use std::fs;
 use std::path::Path;
 
 use clap::{Args, Subcommand, ValueEnum};
+use loong_bridge_runtime::{BridgeExecutionPolicy, execute_process_stdio_bridge_call};
+use loong_contracts::ConnectorCommand;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -32,6 +34,22 @@ pub const PLUGINS_BRIDGE_TEMPLATE_SCHEMA_PURPOSE: &str = "bridge_support_materia
 pub const PLUGINS_PREFLIGHT_SCHEMA_PURPOSE: &str = "ecosystem_preflight_evaluation";
 pub const PLUGINS_ACTIONS_SCHEMA_PURPOSE: &str = "operator_action_plan";
 pub const PLUGINS_INIT_SCHEMA_PURPOSE: &str = "package_scaffold";
+pub const PLUGINS_INVOKE_EXTENSION_SCHEMA_PURPOSE: &str = "native_extension_smoke_probe";
+pub const PLUGINS_INVOKE_HOST_HOOK_SCHEMA_PURPOSE: &str = "trusted_host_hook_probe";
+pub const PLUGINS_INVOKE_TUI_SURFACE_SCHEMA_PURPOSE: &str = "trusted_host_tui_surface_probe";
+
+const TRUSTED_HOST_EXTENSION_FAMILY: &str = "trusted_host_extension";
+const TRUSTED_HOST_EXTENSION_TRUST_LANE: &str = "trusted_host";
+const TRUSTED_HOST_READ_ONLY_EXTENSION_HOOKS: &[&str] = &[
+    "session_start",
+    "session_shutdown",
+    "turn_start",
+    "turn_end",
+    "message_start",
+    "message_end",
+];
+const TRUSTED_HOST_TUI_EXTENSION_SURFACES: &[&str] =
+    &["command_palette", "settings_flow", "startup_onboarding"];
 
 fn plugins_command_schema(purpose: &str) -> JsonSchemaDescriptor {
     let version = PLUGINS_COMMAND_SCHEMA_VERSION;
@@ -44,6 +62,12 @@ fn plugins_command_schema(purpose: &str) -> JsonSchemaDescriptor {
 pub enum PluginsCommands {
     /// Scaffold a new manifest-first plugin package root for external authors
     Init(PluginInitCommand),
+    /// Smoke-test a native process_stdio extension entrypoint through the governed bridge
+    InvokeExtension(PluginInvokeExtensionCommand),
+    /// Probe a declared trusted-host hook through the bounded process bridge
+    InvokeHostHook(PluginInvokeHostHookCommand),
+    /// Probe a declared trusted-host TUI surface through the bounded process bridge
+    InvokeTuiSurface(PluginInvokeTuiSurfaceCommand),
     /// Inspect manifest-first package truth across one or more plugin roots
     Inventory(PluginInventoryCommand),
     /// Diagnose manifest-first plugin packages with author-facing remediation
@@ -309,6 +333,60 @@ pub struct PluginInitCommand {
     /// Optional one-line summary written to the manifest
     #[arg(long)]
     pub summary: Option<String>,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[command(
+    about = "Smoke-test a native process_stdio extension entrypoint through the governed bridge",
+    long_about = "Smoke-test a native process_stdio extension entrypoint through the governed bridge.\n\nThis command scans a package root, selects the named plugin package, and invokes one host-facing extension method through the same bounded process bridge used by runtime execution. It is intended for external authoring and local validation, not for widening trust policy."
+)]
+pub struct PluginInvokeExtensionCommand {
+    #[arg(long = "root", value_name = "ROOT")]
+    pub root: String,
+    #[arg(long)]
+    pub plugin_id: String,
+    #[arg(long)]
+    pub method: String,
+    #[arg(long, default_value = "{}")]
+    pub payload: String,
+    #[arg(long = "allow-command")]
+    pub allow_commands: Vec<String>,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[command(
+    about = "Probe a declared trusted-host hook through the bounded process bridge",
+    long_about = "Probe a declared trusted-host hook through the bounded process bridge.\n\nThis command scans a package root, selects the named plugin package, verifies that it declares the trusted host extension family and trust lane, and invokes the hook through the existing process_stdio bridge with a read-only host-hook envelope. It is a bounded authoring probe, not an automatic host runtime."
+)]
+pub struct PluginInvokeHostHookCommand {
+    #[arg(long = "root", value_name = "ROOT")]
+    pub root: String,
+    #[arg(long)]
+    pub plugin_id: String,
+    #[arg(long)]
+    pub hook: String,
+    #[arg(long, default_value = "{}")]
+    pub payload: String,
+    #[arg(long = "allow-command")]
+    pub allow_commands: Vec<String>,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[command(
+    about = "Probe a declared trusted-host TUI surface through the bounded process bridge",
+    long_about = "Probe a declared trusted-host TUI surface through the bounded process bridge.\n\nThis command scans a package root, selects the named plugin package, verifies that it declares the trusted host extension family and trust lane plus the named shell-first TUI surface, and invokes the surface through the existing process_stdio bridge with a read-only TUI envelope. It is a bounded authoring probe, not live shell dispatch."
+)]
+pub struct PluginInvokeTuiSurfaceCommand {
+    #[arg(long = "root", value_name = "ROOT")]
+    pub root: String,
+    #[arg(long)]
+    pub plugin_id: String,
+    #[arg(long = "tui-surface")]
+    pub tui_surface: String,
+    #[arg(long, default_value = "{}")]
+    pub payload: String,
+    #[arg(long = "allow-command")]
+    pub allow_commands: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -725,9 +803,60 @@ pub struct PluginsInitExecution {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct PluginsInvokeExtensionExecution {
+    pub schema_version: u32,
+    pub schema: JsonSchemaDescriptor,
+    pub package_root: String,
+    pub plugin_id: String,
+    pub bridge_kind: String,
+    pub source_language: Option<String>,
+    pub method: String,
+    pub payload: Value,
+    pub response_payload: Value,
+    pub runtime_evidence: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginsInvokeHostHookExecution {
+    pub schema_version: u32,
+    pub schema: JsonSchemaDescriptor,
+    pub package_root: String,
+    pub plugin_id: String,
+    pub extension_family: Option<String>,
+    pub extension_trust_lane: Option<String>,
+    pub bridge_kind: String,
+    pub source_language: Option<String>,
+    pub hook: String,
+    pub payload: Value,
+    pub dispatched_method: String,
+    pub response_payload: Value,
+    pub runtime_evidence: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginsInvokeTuiSurfaceExecution {
+    pub schema_version: u32,
+    pub schema: JsonSchemaDescriptor,
+    pub package_root: String,
+    pub plugin_id: String,
+    pub extension_family: Option<String>,
+    pub extension_trust_lane: Option<String>,
+    pub bridge_kind: String,
+    pub source_language: Option<String>,
+    pub tui_surface: String,
+    pub payload: Value,
+    pub dispatched_method: String,
+    pub response_payload: Value,
+    pub runtime_evidence: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum PluginsCommandExecution {
     Init(Box<PluginsInitExecution>),
+    InvokeExtension(Box<PluginsInvokeExtensionExecution>),
+    InvokeHostHook(Box<PluginsInvokeHostHookExecution>),
+    InvokeTuiSurface(Box<PluginsInvokeTuiSurfaceExecution>),
     Inventory(Box<PluginsInventoryExecution>),
     Doctor(Box<PluginsDoctorExecution>),
     BridgeProfiles(Box<PluginsBridgeProfilesExecution>),
@@ -757,6 +886,22 @@ pub async fn execute_plugins_command(
         PluginsCommands::Init(command) => {
             let execution = execute_plugins_init(command)?;
             Ok(PluginsCommandExecution::Init(Box::new(execution)))
+        }
+        PluginsCommands::InvokeExtension(command) => {
+            let execution = execute_plugins_invoke_extension(command).await?;
+            Ok(PluginsCommandExecution::InvokeExtension(Box::new(
+                execution,
+            )))
+        }
+        PluginsCommands::InvokeHostHook(command) => {
+            let execution = execute_plugins_invoke_host_hook(command).await?;
+            Ok(PluginsCommandExecution::InvokeHostHook(Box::new(execution)))
+        }
+        PluginsCommands::InvokeTuiSurface(command) => {
+            let execution = execute_plugins_invoke_tui_surface(command).await?;
+            Ok(PluginsCommandExecution::InvokeTuiSurface(Box::new(
+                execution,
+            )))
         }
         PluginsCommands::Inventory(command) => {
             let context = build_plugin_inventory_context(
@@ -1119,6 +1264,221 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
     })
 }
 
+async fn execute_plugins_invoke_extension(
+    command: PluginInvokeExtensionCommand,
+) -> CliResult<PluginsInvokeExtensionExecution> {
+    let package_root = normalize_required_cli_value("--root", &command.root)?;
+    let plugin_id = normalize_required_cli_value("--plugin-id", &command.plugin_id)?;
+    let method = normalize_required_cli_value("--method", &command.method)?;
+    let payload = serde_json::from_str::<Value>(command.payload.as_str()).map_err(|error| {
+        format!("plugins invoke-extension requires --payload to be valid JSON: {error}")
+    })?;
+    let plugin = scan_single_plugin_from_root(
+        package_root.as_str(),
+        plugin_id.as_str(),
+        "plugins invoke-extension",
+    )?;
+    ensure_process_stdio_invocable_plugin(
+        &plugin,
+        plugin_id.as_str(),
+        "plugins invoke-extension",
+        "native extensions",
+    )?;
+    let bridge_policy = build_process_stdio_bridge_policy_from_allow_commands(
+        command.allow_commands,
+        "plugins invoke-extension requires at least one --allow-command for process_stdio smoke probes",
+    )?;
+    let outcome = invoke_process_stdio_extension_operation(
+        &plugin,
+        method.as_str(),
+        payload.clone(),
+        &bridge_policy,
+    )
+    .await
+    .map_err(|error| format!("plugins invoke-extension failed: {error}"))?;
+
+    Ok(PluginsInvokeExtensionExecution {
+        schema_version: PLUGINS_COMMAND_SCHEMA_VERSION,
+        schema: plugins_command_schema(PLUGINS_INVOKE_EXTENSION_SCHEMA_PURPOSE),
+        package_root,
+        plugin_id,
+        bridge_kind: plugin.runtime.bridge_kind.as_str().to_owned(),
+        source_language: Some(plugin.runtime.source_language.clone()),
+        method,
+        payload,
+        response_payload: outcome.response_payload,
+        runtime_evidence: outcome.runtime_evidence,
+    })
+}
+
+async fn execute_plugins_invoke_host_hook(
+    command: PluginInvokeHostHookCommand,
+) -> CliResult<PluginsInvokeHostHookExecution> {
+    let package_root = normalize_required_cli_value("--root", &command.root)?;
+    let plugin_id = normalize_required_cli_value("--plugin-id", &command.plugin_id)?;
+    let hook = normalize_required_cli_value("--hook", &command.hook)?;
+    let payload = serde_json::from_str::<Value>(command.payload.as_str()).map_err(|error| {
+        format!("plugins invoke-host-hook requires --payload to be valid JSON: {error}")
+    })?;
+    let plugin = scan_single_plugin_from_root(
+        package_root.as_str(),
+        plugin_id.as_str(),
+        "plugins invoke-host-hook",
+    )?;
+    ensure_process_stdio_invocable_plugin(
+        &plugin,
+        plugin_id.as_str(),
+        "plugins invoke-host-hook",
+        "trusted host extensions",
+    )?;
+    let declarations = parse_native_extension_declarations(&plugin.metadata)?;
+    if declarations.family.as_deref() != Some(TRUSTED_HOST_EXTENSION_FAMILY)
+        || declarations.trust_lane.as_deref() != Some(TRUSTED_HOST_EXTENSION_TRUST_LANE)
+    {
+        return Err(format!(
+            "plugins invoke-host-hook requires plugin `{plugin_id}` to declare loong_extension_family=`{TRUSTED_HOST_EXTENSION_FAMILY}` and loong_extension_trust_lane=`{TRUSTED_HOST_EXTENSION_TRUST_LANE}`"
+        ));
+    }
+    if !declarations
+        .methods
+        .iter()
+        .any(|method| method == "extension/event")
+    {
+        return Err(format!(
+            "plugins invoke-host-hook requires plugin `{plugin_id}` to declare extension/event in loong_extension_methods_json"
+        ));
+    }
+    if !declarations
+        .host_hooks
+        .iter()
+        .any(|value| value == hook.as_str())
+    {
+        return Err(format!(
+            "plugins invoke-host-hook requires plugin `{plugin_id}` to declare host hook `{hook}` in loong_extension_host_hooks_json"
+        ));
+    }
+    if !TRUSTED_HOST_READ_ONLY_EXTENSION_HOOKS.contains(&hook.as_str()) {
+        return Err(format!(
+            "plugins invoke-host-hook requires supported read-only hook `{hook}`; supported hooks are {}",
+            TRUSTED_HOST_READ_ONLY_EXTENSION_HOOKS.join(", ")
+        ));
+    }
+    let bridge_policy = build_process_stdio_bridge_policy_from_allow_commands(
+        command.allow_commands,
+        "plugins invoke-host-hook requires at least one --allow-command for process_stdio host-hook probes",
+    )?;
+    let hook_payload = build_read_only_trusted_host_hook_payload(hook.as_str(), payload.clone());
+    let dispatched_method = "extension/event".to_owned();
+    let outcome = invoke_process_stdio_extension_operation(
+        &plugin,
+        dispatched_method.as_str(),
+        hook_payload,
+        &bridge_policy,
+    )
+    .await
+    .map_err(|error| format!("plugins invoke-host-hook failed: {error}"))?;
+
+    Ok(PluginsInvokeHostHookExecution {
+        schema_version: PLUGINS_COMMAND_SCHEMA_VERSION,
+        schema: plugins_command_schema(PLUGINS_INVOKE_HOST_HOOK_SCHEMA_PURPOSE),
+        package_root,
+        plugin_id,
+        extension_family: declarations.family,
+        extension_trust_lane: declarations.trust_lane,
+        bridge_kind: plugin.runtime.bridge_kind.as_str().to_owned(),
+        source_language: Some(plugin.runtime.source_language.clone()),
+        hook,
+        payload,
+        dispatched_method,
+        response_payload: outcome.response_payload,
+        runtime_evidence: outcome.runtime_evidence,
+    })
+}
+
+async fn execute_plugins_invoke_tui_surface(
+    command: PluginInvokeTuiSurfaceCommand,
+) -> CliResult<PluginsInvokeTuiSurfaceExecution> {
+    let package_root = normalize_required_cli_value("--root", &command.root)?;
+    let plugin_id = normalize_required_cli_value("--plugin-id", &command.plugin_id)?;
+    let tui_surface = normalize_required_cli_value("--tui-surface", &command.tui_surface)?;
+    let payload = serde_json::from_str::<Value>(command.payload.as_str()).map_err(|error| {
+        format!("plugins invoke-tui-surface requires --payload to be valid JSON: {error}")
+    })?;
+    let plugin = scan_single_plugin_from_root(
+        package_root.as_str(),
+        plugin_id.as_str(),
+        "plugins invoke-tui-surface",
+    )?;
+    ensure_process_stdio_invocable_plugin(
+        &plugin,
+        plugin_id.as_str(),
+        "plugins invoke-tui-surface",
+        "trusted-host TUI surfaces",
+    )?;
+    let declarations = parse_native_extension_declarations(&plugin.metadata)?;
+    if declarations.family.as_deref() != Some(TRUSTED_HOST_EXTENSION_FAMILY)
+        || declarations.trust_lane.as_deref() != Some(TRUSTED_HOST_EXTENSION_TRUST_LANE)
+    {
+        return Err(format!(
+            "plugins invoke-tui-surface requires plugin `{plugin_id}` to declare loong_extension_family=`{TRUSTED_HOST_EXTENSION_FAMILY}` and loong_extension_trust_lane=`{TRUSTED_HOST_EXTENSION_TRUST_LANE}`"
+        ));
+    }
+    if !declarations
+        .methods
+        .iter()
+        .any(|method| method == "extension/event")
+    {
+        return Err(format!(
+            "plugins invoke-tui-surface requires plugin `{plugin_id}` to declare extension/event in loong_extension_methods_json"
+        ));
+    }
+    if !declarations
+        .tui_surfaces
+        .iter()
+        .any(|surface| surface == &tui_surface)
+    {
+        return Err(format!(
+            "plugins invoke-tui-surface requires plugin `{plugin_id}` to declare TUI surface `{tui_surface}` in loong_extension_tui_surfaces_json"
+        ));
+    }
+    if !TRUSTED_HOST_TUI_EXTENSION_SURFACES.contains(&tui_surface.as_str()) {
+        return Err(format!(
+            "plugins invoke-tui-surface requires supported surface `{tui_surface}`; supported surfaces are {}",
+            TRUSTED_HOST_TUI_EXTENSION_SURFACES.join(", ")
+        ));
+    }
+    let bridge_policy = build_process_stdio_bridge_policy_from_allow_commands(
+        command.allow_commands,
+        "plugins invoke-tui-surface requires at least one --allow-command for process_stdio TUI-surface probes",
+    )?;
+    let surface_payload =
+        build_read_only_trusted_host_tui_surface_payload(tui_surface.as_str(), payload.clone());
+    let outcome = invoke_process_stdio_extension_operation(
+        &plugin,
+        "extension/event",
+        surface_payload,
+        &bridge_policy,
+    )
+    .await
+    .map_err(|error| format!("plugins invoke-tui-surface failed: {error}"))?;
+
+    Ok(PluginsInvokeTuiSurfaceExecution {
+        schema_version: PLUGINS_COMMAND_SCHEMA_VERSION,
+        schema: plugins_command_schema(PLUGINS_INVOKE_TUI_SURFACE_SCHEMA_PURPOSE),
+        package_root,
+        plugin_id,
+        extension_family: declarations.family,
+        extension_trust_lane: declarations.trust_lane,
+        bridge_kind: plugin.runtime.bridge_kind.as_str().to_owned(),
+        source_language: Some(plugin.runtime.source_language.clone()),
+        tui_surface,
+        payload,
+        dispatched_method: "extension/event".to_owned(),
+        response_payload: outcome.response_payload,
+        runtime_evidence: outcome.runtime_evidence,
+    })
+}
+
 fn normalize_required_cli_value(field_name: &str, raw: &str) -> CliResult<String> {
     let trimmed = raw.trim();
 
@@ -1127,6 +1487,219 @@ fn normalize_required_cli_value(field_name: &str, raw: &str) -> CliResult<String
     }
 
     Ok(trimmed.to_owned())
+}
+
+#[derive(Debug, Clone, Default)]
+struct NativeExtensionDeclarations {
+    family: Option<String>,
+    trust_lane: Option<String>,
+    methods: Vec<String>,
+    host_hooks: Vec<String>,
+    tui_surfaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+struct ProcessStdioExtensionInvocationOutcome {
+    response_payload: Value,
+    runtime_evidence: Value,
+}
+
+fn parse_native_extension_declarations(
+    metadata: &BTreeMap<String, String>,
+) -> CliResult<NativeExtensionDeclarations> {
+    Ok(NativeExtensionDeclarations {
+        family: normalized_optional_metadata_value(metadata, "loong_extension_family"),
+        trust_lane: normalized_optional_metadata_value(metadata, "loong_extension_trust_lane"),
+        methods: parse_metadata_string_list(metadata, "loong_extension_methods_json")?,
+        host_hooks: parse_metadata_string_list(metadata, "loong_extension_host_hooks_json")?,
+        tui_surfaces: parse_metadata_string_list(metadata, "loong_extension_tui_surfaces_json")?,
+    })
+}
+
+fn normalized_optional_metadata_value(
+    metadata: &BTreeMap<String, String>,
+    key: &str,
+) -> Option<String> {
+    let value = metadata.get(key)?;
+    let trimmed_value = value.trim();
+    if trimmed_value.is_empty() {
+        return None;
+    }
+    Some(trimmed_value.to_owned())
+}
+
+fn parse_metadata_string_list(
+    metadata: &BTreeMap<String, String>,
+    key: &str,
+) -> CliResult<Vec<String>> {
+    let Some(raw_value) = metadata.get(key) else {
+        return Ok(Vec::new());
+    };
+    if raw_value.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    serde_json::from_str::<Vec<String>>(raw_value)
+        .map(|values| {
+            values
+                .into_iter()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+                .collect()
+        })
+        .map_err(|error| format!("metadata `{key}` must be a JSON string array: {error}"))
+}
+
+fn build_process_stdio_bridge_policy_from_allow_commands(
+    allow_commands: Vec<String>,
+    empty_error_message: &str,
+) -> CliResult<BridgeExecutionPolicy> {
+    if allow_commands.is_empty() {
+        return Err(empty_error_message.to_owned());
+    }
+
+    Ok(BridgeExecutionPolicy {
+        execute_process_stdio: true,
+        execute_http_json: false,
+        allowed_process_commands: allow_commands
+            .into_iter()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect::<BTreeSet<_>>(),
+    })
+}
+
+fn build_read_only_trusted_host_hook_payload(hook: &str, payload: Value) -> Value {
+    serde_json::json!({
+        "event": hook,
+        "host_hook": hook,
+        "hook_kind": "read_only",
+        "hook_payload": payload,
+    })
+}
+
+fn build_read_only_trusted_host_tui_surface_payload(surface: &str, payload: Value) -> Value {
+    serde_json::json!({
+        "event": "tui_surface",
+        "host_tui_surface": surface,
+        "surface_kind": "read_only",
+        "surface_payload": payload,
+    })
+}
+
+fn extension_provider_config(plugin: &crate::kernel::PluginIR) -> crate::kernel::ProviderConfig {
+    let mut metadata = plugin.metadata.clone();
+    metadata.insert(
+        "plugin_package_root".to_owned(),
+        plugin.package_root.clone(),
+    );
+    metadata.insert("plugin_id".to_owned(), plugin.plugin_id.clone());
+    metadata.insert("plugin_source_path".to_owned(), plugin.source_path.clone());
+    metadata.insert(
+        "bridge_kind".to_owned(),
+        plugin.runtime.bridge_kind.as_str().to_owned(),
+    );
+    metadata.insert(
+        "adapter_family".to_owned(),
+        plugin.runtime.adapter_family.clone(),
+    );
+    metadata.insert(
+        "entrypoint_hint".to_owned(),
+        plugin.runtime.entrypoint_hint.clone(),
+    );
+    metadata.insert(
+        "source_language".to_owned(),
+        plugin.runtime.source_language.clone(),
+    );
+
+    crate::kernel::ProviderConfig {
+        provider_id: plugin.provider_id.clone(),
+        connector_name: plugin.connector_name.clone(),
+        version: plugin
+            .plugin_version
+            .clone()
+            .unwrap_or_else(|| "0.0.0".to_owned()),
+        metadata,
+    }
+}
+
+async fn invoke_process_stdio_extension_operation(
+    plugin: &crate::kernel::PluginIR,
+    operation: &str,
+    payload: Value,
+    bridge_policy: &BridgeExecutionPolicy,
+) -> CliResult<ProcessStdioExtensionInvocationOutcome> {
+    let provider = extension_provider_config(plugin);
+    let channel = crate::kernel::ChannelConfig {
+        channel_id: "native_extension".to_owned(),
+        provider_id: provider.provider_id.clone(),
+        endpoint: "local://native-extension".to_owned(),
+        enabled: true,
+        metadata: BTreeMap::new(),
+    };
+    let connector_command = ConnectorCommand {
+        connector_name: provider.connector_name.clone(),
+        operation: operation.to_owned(),
+        required_capabilities: BTreeSet::from([Capability::InvokeConnector]),
+        payload,
+    };
+
+    let outcome =
+        execute_process_stdio_bridge_call(&provider, &channel, &connector_command, bridge_policy)
+            .await
+            .map_err(|failure| failure.reason)?;
+
+    Ok(ProcessStdioExtensionInvocationOutcome {
+        response_payload: outcome.response_payload,
+        runtime_evidence: outcome.runtime_evidence,
+    })
+}
+
+fn scan_single_plugin_from_root(
+    package_root: &str,
+    plugin_id: &str,
+    command_name: &str,
+) -> CliResult<crate::kernel::PluginIR> {
+    let scanner = crate::kernel::PluginScanner::new();
+    let scan_report = scanner
+        .scan_path(package_root)
+        .map_err(|error| format!("scan extension package failed: {error}"))?;
+    let translator = crate::kernel::PluginTranslator::new();
+    let translation_report = translator.translate_scan_report(&scan_report);
+    let matching_entries = translation_report
+        .entries
+        .iter()
+        .filter(|entry| entry.plugin_id == plugin_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    if matching_entries.is_empty() {
+        return Err(format!(
+            "{command_name} could not find plugin_id `{plugin_id}` under root `{package_root}`"
+        ));
+    }
+    if matching_entries.len() > 1 {
+        return Err(format!(
+            "{command_name} found multiple plugin entries named `{plugin_id}` under root `{package_root}`"
+        ));
+    }
+    matching_entries.into_iter().next().ok_or_else(|| {
+        format!("{command_name} could not find plugin_id `{plugin_id}` under root `{package_root}`")
+    })
+}
+
+fn ensure_process_stdio_invocable_plugin(
+    plugin: &crate::kernel::PluginIR,
+    plugin_id: &str,
+    command_name: &str,
+    plugin_surface: &str,
+) -> CliResult<()> {
+    if plugin.runtime.bridge_kind != PluginBridgeKind::ProcessStdio {
+        return Err(format!(
+            "{command_name} currently supports only process_stdio {plugin_surface}; plugin `{plugin_id}` declares bridge_kind `{}`",
+            plugin.runtime.bridge_kind.as_str()
+        ));
+    }
+    Ok(())
 }
 
 fn write_plugin_scaffold_files(
@@ -1349,6 +1922,18 @@ fn render_plugins_cli_text(execution: &PluginsCommandExecution) -> String {
         PluginsCommandExecution::Init(execution) => {
             ("plugins init", render_plugins_init_text(execution))
         }
+        PluginsCommandExecution::InvokeExtension(execution) => (
+            "plugins invoke-extension",
+            render_plugins_invoke_extension_text(execution),
+        ),
+        PluginsCommandExecution::InvokeHostHook(execution) => (
+            "plugins invoke-host-hook",
+            render_plugins_invoke_host_hook_text(execution),
+        ),
+        PluginsCommandExecution::InvokeTuiSurface(execution) => (
+            "plugins invoke-tui-surface",
+            render_plugins_invoke_tui_surface_text(execution),
+        ),
         PluginsCommandExecution::Inventory(execution) => (
             "plugins inventory",
             render_plugins_inventory_text(execution),
@@ -1377,6 +1962,90 @@ fn render_plugins_cli_text(execution: &PluginsCommandExecution) -> String {
 
 fn wrap_plugins_surface_text(title: &str, body: String) -> String {
     crate::render_operator_shell_surface_from_body(title, "operator plugins", body)
+}
+
+fn render_plugins_invoke_extension_text(execution: &PluginsInvokeExtensionExecution) -> String {
+    let source_language = execution.source_language.as_deref().unwrap_or("-");
+    let response_payload = serde_json::to_string_pretty(&execution.response_payload)
+        .unwrap_or_else(|_| execution.response_payload.to_string());
+    let runtime_evidence = serde_json::to_string_pretty(&execution.runtime_evidence)
+        .unwrap_or_else(|_| execution.runtime_evidence.to_string());
+
+    [
+        format!(
+            "plugins invoke-extension package_root={} plugin_id={} bridge_kind={} source_language={} method={}",
+            execution.package_root,
+            execution.plugin_id,
+            execution.bridge_kind,
+            source_language,
+            execution.method
+        ),
+        "payload:".to_owned(),
+        execution.payload.to_string(),
+        "response_payload:".to_owned(),
+        response_payload,
+        "runtime_evidence:".to_owned(),
+        runtime_evidence,
+    ]
+    .join("\n")
+}
+
+fn render_plugins_invoke_host_hook_text(execution: &PluginsInvokeHostHookExecution) -> String {
+    let source_language = execution.source_language.as_deref().unwrap_or("-");
+    let response_payload = serde_json::to_string_pretty(&execution.response_payload)
+        .unwrap_or_else(|_| execution.response_payload.to_string());
+    let runtime_evidence = serde_json::to_string_pretty(&execution.runtime_evidence)
+        .unwrap_or_else(|_| execution.runtime_evidence.to_string());
+
+    [
+        format!(
+            "plugins invoke-host-hook package_root={} plugin_id={} extension_family={} extension_trust_lane={} bridge_kind={} source_language={} hook={} dispatched_method={}",
+            execution.package_root,
+            execution.plugin_id,
+            display_text_or_dash(execution.extension_family.as_deref()),
+            display_text_or_dash(execution.extension_trust_lane.as_deref()),
+            execution.bridge_kind,
+            source_language,
+            execution.hook,
+            execution.dispatched_method
+        ),
+        "payload:".to_owned(),
+        execution.payload.to_string(),
+        "response_payload:".to_owned(),
+        response_payload,
+        "runtime_evidence:".to_owned(),
+        runtime_evidence,
+    ]
+    .join("\n")
+}
+
+fn render_plugins_invoke_tui_surface_text(execution: &PluginsInvokeTuiSurfaceExecution) -> String {
+    let source_language = execution.source_language.as_deref().unwrap_or("-");
+    let response_payload = serde_json::to_string_pretty(&execution.response_payload)
+        .unwrap_or_else(|_| execution.response_payload.to_string());
+    let runtime_evidence = serde_json::to_string_pretty(&execution.runtime_evidence)
+        .unwrap_or_else(|_| execution.runtime_evidence.to_string());
+
+    [
+        format!(
+            "plugins invoke-tui-surface package_root={} plugin_id={} extension_family={} extension_trust_lane={} bridge_kind={} source_language={} tui_surface={} dispatched_method={}",
+            execution.package_root,
+            execution.plugin_id,
+            display_text_or_dash(execution.extension_family.as_deref()),
+            display_text_or_dash(execution.extension_trust_lane.as_deref()),
+            execution.bridge_kind,
+            source_language,
+            execution.tui_surface,
+            execution.dispatched_method
+        ),
+        "payload:".to_owned(),
+        execution.payload.to_string(),
+        "response_payload:".to_owned(),
+        response_payload,
+        "runtime_evidence:".to_owned(),
+        runtime_evidence,
+    ]
+    .join("\n")
 }
 
 fn render_plugins_init_text(execution: &PluginsInitExecution) -> String {
@@ -2965,6 +3634,7 @@ mod tests {
         PLUGIN_PREFLIGHT_SUMMARY_SCHEMA_PURPOSE, PLUGIN_PREFLIGHT_SUMMARY_SCHEMA_SURFACE,
         PLUGIN_PREFLIGHT_SUMMARY_SCHEMA_VERSION,
     };
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(prefix: &str) -> String {
@@ -3087,6 +3757,83 @@ mod tests {
             "def setup():\n    return {}\n",
         )
         .expect("write setup entry");
+    }
+
+    fn write_host_hook_declared_native_extension_package(package_root: &str) {
+        fs::create_dir_all(package_root).expect("create host-hook package root");
+        let args_json = serde_json::to_string(&vec![format!("{package_root}/index.js")])
+            .expect("serialize host-hook args");
+        let manifest = serde_json::json!({
+            "api_version": "v1alpha1",
+            "version": "0.1.0",
+            "plugin_id": "host-hook-extension",
+            "provider_id": "host-hook-extension",
+            "connector_name": "host-hook-extension",
+            "capabilities": ["InvokeConnector"],
+            "metadata": {
+                "bridge_kind": "process_stdio",
+                "adapter_family": "javascript-stdio-adapter",
+                "entrypoint": "stdin/stdout::invoke",
+                "source_language": "javascript",
+                "command": "node",
+                "args_json": args_json,
+                "process_timeout_ms": "15000",
+                "loong_extension_contract": "process_stdio_json_line_v1",
+                "loong_extension_family": "governed_native_runtime_extension",
+                "loong_extension_trust_lane": "governed_sidecar",
+                "loong_extension_methods_json": "[\"extension/event\"]",
+                "loong_extension_host_hooks_json": "[\"turn_start\",\"turn_end\"]"
+            },
+            "summary": "Reserved host hook declaration example"
+        });
+        fs::write(
+            format!("{package_root}/loong.plugin.json"),
+            serde_json::to_string_pretty(&manifest).expect("serialize host-hook manifest"),
+        )
+        .expect("write host-hook package manifest");
+        crate::test_support::write_executable_script_atomically(
+            Path::new(&format!("{package_root}/index.js")),
+            "#!/usr/bin/env node\nprocess.stdin.resume();\n",
+        );
+    }
+
+    fn write_trusted_host_extension_package(package_root: &str) {
+        fs::create_dir_all(package_root).expect("create trusted-host package root");
+        let args_json = serde_json::to_string(&vec![format!("{package_root}/index.js")])
+            .expect("serialize trusted-host args");
+        let manifest = serde_json::json!({
+            "api_version": "v1alpha1",
+            "version": "0.1.0",
+            "plugin_id": "trusted-host-extension",
+            "provider_id": "trusted-host-extension",
+            "connector_name": "trusted-host-extension",
+            "capabilities": ["InvokeConnector"],
+            "metadata": {
+                "bridge_kind": "process_stdio",
+                "adapter_family": "javascript-stdio-adapter",
+                "entrypoint": "stdin/stdout::invoke",
+                "source_language": "javascript",
+                "command": "node",
+                "args_json": args_json,
+                "process_timeout_ms": "15000",
+                "loong_extension_contract": "process_stdio_json_line_v1",
+                "loong_extension_family": "trusted_host_extension",
+                "loong_extension_trust_lane": "trusted_host",
+                "loong_extension_methods_json": "[\"extension/event\"]",
+                "loong_extension_host_hooks_json": "[\"turn_start\",\"turn_end\"]",
+                "loong_extension_tui_surfaces_json": "[\"command_palette\"]"
+            },
+            "summary": "Trusted host read-only hook probe example"
+        });
+        fs::write(
+            format!("{package_root}/loong.plugin.json"),
+            serde_json::to_string_pretty(&manifest).expect("serialize trusted-host manifest"),
+        )
+        .expect("write trusted-host package manifest");
+        crate::test_support::write_executable_script_atomically(
+            Path::new(&format!("{package_root}/index.js")),
+            "#!/usr/bin/env node\nfunction buildExtensionPayload(operation, payload) {\n  if (operation === 'extension/event') {\n    return { ok: true, handled_event: payload.event ?? 'unknown', handled_hook: payload.host_hook ?? 'unknown', handled_tui_surface: payload.host_tui_surface ?? 'unknown', received_hook_payload: payload.hook_payload ?? null, received_surface_payload: payload.surface_payload ?? null };\n  }\n  return { error: `unsupported method: ${operation}` };\n}\nfunction emitResponse(line) {\n  const trimmed = line.trim();\n  if (!trimmed) return;\n  const request = JSON.parse(trimmed);\n  const payload = request.payload ?? {};\n  const response = { method: request.method ?? '', id: request.id ?? null, payload: buildExtensionPayload(payload.operation ?? '', payload.payload ?? {}) };\n  process.stdout.write(`${JSON.stringify(response)}\\n`);\n}\nprocess.stdin.setEncoding('utf8');\nlet buffered = '';\nprocess.stdin.on('data', (chunk) => { buffered += chunk; let newlineIndex = buffered.indexOf('\\n'); while (newlineIndex !== -1) { const line = buffered.slice(0, newlineIndex); buffered = buffered.slice(newlineIndex + 1); emitResponse(line); newlineIndex = buffered.indexOf('\\n'); } });\nprocess.stdin.on('end', () => { if (buffered.trim()) emitResponse(buffered); });\nprocess.stdin.resume();\n",
+        );
     }
 
     fn plugin_scan_source(plugin_root: &str, query: &str) -> PluginScanSourceArgs {
@@ -4382,5 +5129,143 @@ mod tests {
 
         assert!(error.contains("empty"));
         assert!(error.contains(&package_root));
+    }
+
+    #[tokio::test]
+    async fn execute_plugins_invoke_extension_runs_process_stdio_extension() {
+        let temp_root = unique_temp_dir("loong-plugins-cli-invoke-extension");
+        let package_root = format!("{temp_root}/trusted-host-extension");
+        write_trusted_host_extension_package(&package_root);
+
+        let invoke_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            command: PluginsCommands::InvokeExtension(PluginInvokeExtensionCommand {
+                root: package_root,
+                plugin_id: "trusted-host-extension".to_owned(),
+                method: "extension/event".to_owned(),
+                payload: "{\"event\":\"session_start\"}".to_owned(),
+                allow_commands: vec!["node".to_owned()],
+            }),
+        })
+        .await
+        .expect("invoke-extension should execute process_stdio extension");
+
+        let PluginsCommandExecution::InvokeExtension(invoke_execution) = invoke_execution else {
+            panic!("expected invoke-extension execution");
+        };
+        assert_eq!(
+            invoke_execution.response_payload["handled_event"],
+            serde_json::json!("session_start")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_plugins_invoke_host_hook_runs_trusted_host_extension_probe() {
+        let temp_root = unique_temp_dir("loong-plugins-cli-invoke-host-hook");
+        let package_root = format!("{temp_root}/trusted-host-extension");
+        write_trusted_host_extension_package(&package_root);
+
+        let hook_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            command: PluginsCommands::InvokeHostHook(PluginInvokeHostHookCommand {
+                root: package_root,
+                plugin_id: "trusted-host-extension".to_owned(),
+                hook: "turn_start".to_owned(),
+                payload: "{\"turn_id\":\"demo-turn\"}".to_owned(),
+                allow_commands: vec!["node".to_owned()],
+            }),
+        })
+        .await
+        .expect("invoke-host-hook should execute trusted host extension");
+
+        let PluginsCommandExecution::InvokeHostHook(hook_execution) = hook_execution else {
+            panic!("expected invoke-host-hook execution");
+        };
+        assert_eq!(
+            hook_execution.extension_family.as_deref(),
+            Some(TRUSTED_HOST_EXTENSION_FAMILY)
+        );
+        assert_eq!(
+            hook_execution.extension_trust_lane.as_deref(),
+            Some(TRUSTED_HOST_EXTENSION_TRUST_LANE)
+        );
+        assert_eq!(hook_execution.dispatched_method, "extension/event");
+        assert_eq!(hook_execution.hook, "turn_start");
+        assert_eq!(
+            hook_execution.response_payload["handled_event"],
+            serde_json::json!("turn_start")
+        );
+        assert_eq!(
+            hook_execution.response_payload["handled_hook"],
+            serde_json::json!("turn_start")
+        );
+        assert_eq!(
+            hook_execution.response_payload["received_hook_payload"]["turn_id"],
+            serde_json::json!("demo-turn")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_plugins_invoke_tui_surface_runs_trusted_host_extension_probe() {
+        let temp_root = unique_temp_dir("loong-plugins-cli-invoke-tui-surface");
+        let package_root = format!("{temp_root}/trusted-host-extension");
+        write_trusted_host_extension_package(&package_root);
+
+        let surface_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            command: PluginsCommands::InvokeTuiSurface(PluginInvokeTuiSurfaceCommand {
+                root: package_root,
+                plugin_id: "trusted-host-extension".to_owned(),
+                tui_surface: "command_palette".to_owned(),
+                payload: "{\"query\":\":ext\"}".to_owned(),
+                allow_commands: vec!["node".to_owned()],
+            }),
+        })
+        .await
+        .expect("invoke-tui-surface should execute trusted host extension");
+
+        let PluginsCommandExecution::InvokeTuiSurface(surface_execution) = surface_execution else {
+            panic!("expected invoke-tui-surface execution");
+        };
+        assert_eq!(
+            surface_execution.extension_family.as_deref(),
+            Some(TRUSTED_HOST_EXTENSION_FAMILY)
+        );
+        assert_eq!(surface_execution.tui_surface, "command_palette");
+        assert_eq!(
+            surface_execution.response_payload["handled_event"],
+            serde_json::json!("tui_surface")
+        );
+        assert_eq!(
+            surface_execution.response_payload["handled_tui_surface"],
+            serde_json::json!("command_palette")
+        );
+        assert_eq!(
+            surface_execution.response_payload["received_surface_payload"]["query"],
+            serde_json::json!(":ext")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_plugins_invoke_host_hook_rejects_governed_sidecar_extension() {
+        let temp_root = unique_temp_dir("loong-plugins-cli-invoke-host-hook-governed");
+        let package_root = format!("{temp_root}/host-hook-extension");
+        write_host_hook_declared_native_extension_package(&package_root);
+
+        let error = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            command: PluginsCommands::InvokeHostHook(PluginInvokeHostHookCommand {
+                root: package_root,
+                plugin_id: "host-hook-extension".to_owned(),
+                hook: "turn_start".to_owned(),
+                payload: "{}".to_owned(),
+                allow_commands: vec!["node".to_owned()],
+            }),
+        })
+        .await
+        .expect_err("invoke-host-hook should reject governed sidecar packages");
+
+        assert!(error.contains(TRUSTED_HOST_EXTENSION_FAMILY));
+        assert!(error.contains(TRUSTED_HOST_EXTENSION_TRUST_LANE));
     }
 }
