@@ -4683,7 +4683,7 @@ async fn build_command_lines(
         "/extensions" => {
             #[cfg(feature = "channel-plugin-bridge")]
             {
-                render_extensions_command_lines_with_width(runtime, width)
+                render_extensions_command_lines_with_width(runtime, width, args)
             }
             #[cfg(not(feature = "channel-plugin-bridge"))]
             {
@@ -5423,6 +5423,7 @@ fn render_skills_command_lines_with_width(runtime: &CliTurnRuntime, width: usize
 fn render_extensions_command_lines_with_width(
     runtime: &CliTurnRuntime,
     width: usize,
+    args: &str,
 ) -> CliResult<Vec<String>> {
     if !runtime.config.runtime_plugins.enabled {
         let message_spec = TuiMessageSpec {
@@ -5451,6 +5452,7 @@ fn render_extensions_command_lines_with_width(
     let entries = inventory
         .activation
         .inventory_entries(&inventory.translation);
+    let requested_plugin_id = args.trim();
     let roots = inventory
         .resolved_roots
         .iter()
@@ -5462,6 +5464,23 @@ fn render_extensions_command_lines_with_width(
     } else {
         roots
     };
+
+    if !requested_plugin_id.is_empty() {
+        let maybe_entry = entries
+            .iter()
+            .find(|entry| entry.plugin_id == requested_plugin_id);
+        let maybe_translation = inventory
+            .translation
+            .entries
+            .iter()
+            .find(|entry| entry.plugin_id == requested_plugin_id);
+        return Ok(render_extension_detail_lines_with_width(
+            requested_plugin_id,
+            maybe_entry,
+            maybe_translation,
+            width,
+        ));
+    }
 
     let mut summary_items = vec![
         TuiKeyValueSpec::Plain {
@@ -5593,6 +5612,115 @@ fn render_extension_inventory_item(
         key: entry.plugin_id.clone(),
         value,
     }
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn render_extension_detail_lines_with_width(
+    requested_plugin_id: &str,
+    entry: Option<&PluginActivationInventoryEntry>,
+    translation: Option<&PluginIR>,
+    width: usize,
+) -> Vec<String> {
+    let Some(entry) = entry else {
+        let message_spec = TuiMessageSpec {
+            role: "extensions".to_owned(),
+            caption: Some("extension detail".to_owned()),
+            sections: vec![TuiSectionSpec::Callout {
+                tone: TuiCalloutTone::Warning,
+                title: Some("not found".to_owned()),
+                lines: vec![format!(
+                    "No runtime extension named `{requested_plugin_id}` is currently visible."
+                )],
+            }],
+            footer_lines: vec![
+                "Use `/extensions` to browse the current runtime inventory first.".to_owned(),
+            ],
+        };
+        return super::super::render_cli_chat_message_spec_with_width(&message_spec, width);
+    };
+
+    let extension_family = translation
+        .and_then(|entry| entry.metadata.get("loong_extension_family"))
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("-");
+    let extension_trust_lane = translation
+        .and_then(|entry| entry.metadata.get("loong_extension_trust_lane"))
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("-");
+    let declared_tui_surfaces = translation
+        .map(|entry| metadata_string_list(&entry.metadata, "loong_extension_tui_surfaces_json"))
+        .unwrap_or_default();
+    let declared_host_hooks = translation
+        .map(|entry| metadata_string_list(&entry.metadata, "loong_extension_host_hooks_json"))
+        .unwrap_or_default();
+
+    let activation_status = entry
+        .activation_status
+        .map(|status| status.as_str().to_owned())
+        .unwrap_or_else(|| "unknown".to_owned());
+
+    let message_spec = TuiMessageSpec {
+        role: "extensions".to_owned(),
+        caption: Some(entry.plugin_id.clone()),
+        sections: vec![
+            TuiSectionSpec::KeyValues {
+                title: Some("runtime".to_owned()),
+                items: vec![
+                    TuiKeyValueSpec::Plain {
+                        key: "status".to_owned(),
+                        value: activation_status,
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "bridge".to_owned(),
+                        value: entry.bridge_kind.as_str().to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "source language".to_owned(),
+                        value: entry.source_language.clone(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "package root".to_owned(),
+                        value: entry.package_root.clone(),
+                    },
+                ],
+            },
+            TuiSectionSpec::KeyValues {
+                title: Some("extension contract".to_owned()),
+                items: vec![
+                    TuiKeyValueSpec::Plain {
+                        key: "family".to_owned(),
+                        value: extension_family.to_owned(),
+                    },
+                    TuiKeyValueSpec::Plain {
+                        key: "trust lane".to_owned(),
+                        value: extension_trust_lane.to_owned(),
+                    },
+                    TuiKeyValueSpec::Csv {
+                        key: "host hooks".to_owned(),
+                        values: declared_host_hooks,
+                    },
+                    TuiKeyValueSpec::Csv {
+                        key: "tui surfaces".to_owned(),
+                        values: declared_tui_surfaces,
+                    },
+                ],
+            },
+        ],
+        footer_lines: vec![
+            format!(
+                "Inspect full package truth with `loong plugins inventory --root \"{}\"`.",
+                entry.package_root
+            ),
+            format!(
+                "Validate authoring readiness with `loong plugins doctor --root \"{}\" --profile sdk-release`.",
+                entry.package_root
+            ),
+        ],
+    };
+
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
 }
 
 #[cfg(feature = "channel-plugin-bridge")]
@@ -8000,7 +8128,7 @@ mod tests {
         config.runtime_plugins.roots = vec![root.display().to_string()];
 
         let runtime = test_runtime_with_config(root.join("loong.toml"), config);
-        let rendered = super::render_extensions_command_lines_with_width(&runtime, 100)
+        let rendered = super::render_extensions_command_lines_with_width(&runtime, 100, "")
             .expect("render extensions command")
             .join("\n");
 
@@ -8020,13 +8148,76 @@ mod tests {
     #[test]
     fn extensions_command_guides_when_runtime_plugins_are_disabled() {
         let runtime = test_runtime_with_path(PathBuf::from("/tmp/example"));
-        let rendered = super::render_extensions_command_lines_with_width(&runtime, 100)
+        let rendered = super::render_extensions_command_lines_with_width(&runtime, 100, "")
             .expect("render disabled extensions command")
             .join("\n");
 
         assert!(rendered.contains("runtime plugins disabled"));
         assert!(rendered.contains("loong plugins init"));
         assert!(rendered.contains("loong plugins doctor"));
+    }
+
+    #[test]
+    fn extensions_command_can_render_one_plugin_detail() {
+        let root = std::env::temp_dir().join(format!(
+            "loong-chat-extension-detail-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("mkdir extension root");
+        write_runtime_plugin_manifest(
+            root.as_path(),
+            "weather-extension",
+            &sample_runtime_plugin_manifest("weather-extension"),
+        );
+
+        let mut config = LoongConfig::default();
+        config.runtime_plugins.enabled = true;
+        config.runtime_plugins.roots = vec![root.display().to_string()];
+
+        let runtime = test_runtime_with_config(root.join("loong.toml"), config);
+        let rendered =
+            super::render_extensions_command_lines_with_width(&runtime, 100, "weather-extension")
+                .expect("render extension detail")
+                .join("\n");
+
+        assert!(rendered.contains("extension contract"));
+        assert!(rendered.contains("trusted_host_extension"));
+        assert!(rendered.contains("command_palette"));
+        assert!(rendered.contains("turn_start"));
+        assert!(rendered.contains("package root"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extensions_command_reports_missing_plugin_detail() {
+        let root = std::env::temp_dir().join(format!(
+            "loong-chat-missing-extension-root-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("mkdir empty extension root");
+
+        let mut config = LoongConfig::default();
+        config.runtime_plugins.enabled = true;
+        config.runtime_plugins.roots = vec![root.display().to_string()];
+
+        let runtime = test_runtime_with_config(root.join("loong.toml"), config);
+        let rendered =
+            super::render_extensions_command_lines_with_width(&runtime, 100, "missing-extension")
+                .expect("render missing extension detail")
+                .join("\n");
+
+        assert!(rendered.contains("No runtime extension named"));
+        assert!(rendered.contains("missing-extension"));
+        assert!(rendered.contains("Use `/extensions` to browse"));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
