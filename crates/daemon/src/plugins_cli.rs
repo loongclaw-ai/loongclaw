@@ -2643,6 +2643,7 @@ fn render_plugin_doctor_result_lines(result: &PluginPreflightResult) -> Vec<Stri
         .runtime_health
         .as_ref()
         .map(|health| health.status.as_str());
+    let native_extension = &plugin.native_extension;
     let attestation = plugin
         .activation_attestation
         .as_ref()
@@ -2684,6 +2685,25 @@ fn render_plugin_doctor_result_lines(result: &PluginPreflightResult) -> Vec<Stri
         "  policy_summary={} effective_flags={} remediation_classes={} operator_actions={}",
         result.policy_summary, effective_flags, remediation_classes, operator_action_kinds
     ));
+    let has_native_extension_projection = native_extension.contract.is_some()
+        || native_extension.family.is_some()
+        || native_extension.trust_lane.is_some()
+        || !native_extension.methods.is_empty()
+        || !native_extension.host_hooks.is_empty()
+        || !native_extension.tui_surfaces.is_empty()
+        || !native_extension.metadata_issues.is_empty();
+    if has_native_extension_projection {
+        lines.push(format!(
+            "  native_extension contract={} family={} trust_lane={} methods={} host_hooks={} tui_surfaces={} metadata_issues={}",
+            display_text_or_dash(native_extension.contract.as_deref()),
+            display_text_or_dash(native_extension.family.as_deref()),
+            display_text_or_dash(native_extension.trust_lane.as_deref()),
+            format_csv_or_dash(&native_extension.methods),
+            format_csv_or_dash(&native_extension.host_hooks),
+            format_csv_or_dash(&native_extension.tui_surfaces),
+            format_csv_or_dash(&native_extension.metadata_issues),
+        ));
+    }
     lines.push(format!(
         "  blocking_diagnostics={} advisory_diagnostics={}",
         blocking_diagnostics, advisory_diagnostics
@@ -4456,6 +4476,68 @@ mod tests {
                 .recommended_actions
                 .iter()
                 .any(|action| action.operator_action.is_some())
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_plugins_doctor_surfaces_trusted_host_extension_declarations() {
+        let plugin_root = unique_temp_dir("loong-plugins-cli-doctor-trusted-host");
+        write_trusted_host_extension_package(&plugin_root);
+
+        let execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            command: PluginsCommands::Doctor(PluginDoctorCommand {
+                source: plugin_doctor_source(&plugin_root, "trusted-host-extension"),
+                include_passed: true,
+                include_warned: true,
+                include_blocked: true,
+                include_deferred: true,
+            }),
+        })
+        .await
+        .expect("plugins doctor should execute");
+
+        let PluginsCommandExecution::Doctor(execution) = execution else {
+            panic!("expected doctor execution");
+        };
+        let result = &execution.results[0].plugin;
+        assert_eq!(
+            result.native_extension.family.as_deref(),
+            Some(crate::kernel::TRUSTED_HOST_EXTENSION_FAMILY)
+        );
+        assert_eq!(
+            result.native_extension.trust_lane.as_deref(),
+            Some(crate::kernel::TRUSTED_HOST_EXTENSION_TRUST_LANE)
+        );
+        assert_eq!(
+            result.native_extension.host_hooks,
+            vec!["turn_start".to_owned(), "turn_end".to_owned()]
+        );
+        assert_eq!(
+            result.native_extension.tui_surfaces,
+            vec!["command_palette".to_owned()]
+        );
+        assert!(
+            result.native_extension.metadata_issues.is_empty(),
+            "trusted-host doctor projection should stay clean: {:?}",
+            result.native_extension.metadata_issues
+        );
+
+        let rendered = render_plugins_doctor_text(&execution);
+        assert!(rendered.contains("native_extension contract=process_stdio_json_line_v1"));
+        assert!(rendered.contains("family=trusted_host_extension"));
+        assert!(rendered.contains("trust_lane=trusted_host"));
+        assert!(rendered.contains("host_hooks=turn_start,turn_end"));
+        assert!(rendered.contains("tui_surfaces=command_palette"));
+
+        let encoded = serde_json::to_value(&execution).expect("serialize doctor execution");
+        assert_eq!(
+            encoded["results"][0]["plugin"]["native_extension"]["family"],
+            serde_json::json!("trusted_host_extension")
+        );
+        assert_eq!(
+            encoded["results"][0]["plugin"]["native_extension"]["tui_surfaces"],
+            serde_json::json!(["command_palette"])
         );
     }
 
