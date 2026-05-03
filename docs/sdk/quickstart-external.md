@@ -74,7 +74,7 @@ operator routes:
 - `/extensions <plugin-id>`
 - `/extensions run <plugin-id> <surface>`
 
-Current live shell-first surfaces:
+Current built-in shell-first surfaces:
 
 - `command_palette`
 - `settings_flow`
@@ -82,6 +82,9 @@ Current live shell-first surfaces:
 
 Those live routes now use the runtime-managed trusted host lane. They still do
 not imply an implicit in-process executor promise.
+
+Custom lowercase trusted TUI surface identifiers are also valid. The built-in
+three above only get richer first-party Loong affordances by default.
 
 ## Current Scaffold Boundary
 
@@ -258,12 +261,16 @@ Automatic trusted-host dispatch currently covers:
 - `session_start`
 - `session_shutdown`
 
-The current shell-first TUI lane also accepts typed trusted-host surface
-declarations for:
+The current shell-first TUI lane ships richer first-party affordances for:
 
 - `command_palette`
 - `settings_flow`
 - `startup_onboarding`
+
+Trusted host packages can also declare additional lowercase identifiers such as
+`sidebar_widget`. Those custom surfaces stay runnable through
+`loong plugins run-tui-surface` and `/extensions run`, even when they do not
+yet have dedicated first-party UI affordances.
 
 Scaffold them with one or more `--tui-surface` flags:
 

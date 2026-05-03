@@ -29,11 +29,16 @@ Today, trusted host authoring is deliberately narrow:
 - explicit host-hook and TUI-surface declarations
 - bounded probe execution plus runtime-managed TUI execution, not implicit in-process execution
 
-Current trusted shell-first TUI surfaces:
+Current built-in trusted shell-first TUI surfaces:
 
 - `command_palette`
 - `settings_flow`
 - `startup_onboarding`
+
+Trusted host packages can also declare additional lowercase surface identifiers
+such as `sidebar_widget`. Those custom surfaces stay inspectable and runnable
+through the same trusted runtime lane even when they do not yet have dedicated
+first-party UI affordances.
 
 ## Fast Path: Scaffold A Trusted Host Extension
 
@@ -132,7 +137,7 @@ same extension truth directly:
 - `/extensions <plugin-id>`
 - `/extensions run <plugin-id> <surface>`
 
-Current live routes already project:
+Current live routes already give richer first-party affordances to:
 
 - `command_palette`
 - `settings_flow`
@@ -140,6 +145,9 @@ Current live routes already project:
 
 Those routes now execute through the runtime-managed trusted host lane. They do
 not imply a general in-process TUI executor contract.
+
+Any other valid declared trusted TUI surface identifier can still execute
+through `loong plugins run-tui-surface` and `/extensions run <plugin-id> <surface>`.
 
 If `[runtime_plugins].enabled = true` and explicit roots are omitted, the
 current branch also auto-discovers the standard local roots first:

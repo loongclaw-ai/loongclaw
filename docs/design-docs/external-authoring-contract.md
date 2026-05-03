@@ -65,11 +65,16 @@ They currently support:
 - runtime-managed trusted TUI execution through the Loong CLI
 - operator-visible runtime and doctor truth
 
-Current shell-first TUI surface declarations include:
+Current built-in first-party TUI surfaces include:
 
 - `command_palette`
 - `settings_flow`
 - `startup_onboarding`
+
+Trusted host packages can also declare additional lowercase TUI surface
+identifiers such as `sidebar_widget`. Those custom identifiers stay runtime
+executable and inspectable even when they do not yet have richer first-party
+Loong affordances.
 
 ### Workflow and flow assets
 
@@ -106,11 +111,14 @@ Today, an external author can rely on these operator-visible surfaces:
 - shell-first TUI inspection with `/extensions`
 - shell-first runtime routing with `/extensions run <plugin-id> <surface>`
 
-The live shell-first TUI currently routes these declared surfaces:
+The live shell-first TUI currently ships richer first-party affordances for:
 
 - `command_palette`
 - `settings_flow`
 - `startup_onboarding`
+
+Any other valid declared trusted TUI surface identifier can still execute
+through `loong plugins run-tui-surface` and `/extensions run <plugin-id> <surface>`.
 
 That routing is additive. It does not yet imply a general in-process TUI
 executor contract.

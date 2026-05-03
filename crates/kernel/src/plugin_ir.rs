@@ -27,8 +27,30 @@ pub const TRUSTED_HOST_READ_ONLY_EXTENSION_HOOKS: &[&str] = &[
     "message_start",
     "message_end",
 ];
-pub const TRUSTED_HOST_TUI_EXTENSION_SURFACES: &[&str] =
+pub const TRUSTED_HOST_BUILT_IN_TUI_EXTENSION_SURFACES: &[&str] =
     &["command_palette", "settings_flow", "startup_onboarding"];
+
+pub fn trusted_host_tui_surface_identifier_is_valid(surface: &str) -> bool {
+    let trimmed = surface.trim();
+    if trimmed.is_empty() || trimmed != surface {
+        return false;
+    }
+
+    let mut characters = trimmed.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    if !first.is_ascii_lowercase() {
+        return false;
+    }
+
+    characters.all(|character| {
+        character.is_ascii_lowercase()
+            || character.is_ascii_digit()
+            || character == '_'
+            || character == '-'
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -1474,10 +1496,9 @@ fn validate_plugin_native_extension_declarations(
     }
 
     for surface in &declarations.tui_surfaces {
-        if !TRUSTED_HOST_TUI_EXTENSION_SURFACES.contains(&surface.as_str()) {
+        if !trusted_host_tui_surface_identifier_is_valid(surface.as_str()) {
             declarations.metadata_issues.push(format!(
-                "unsupported trusted TUI surface `{surface}`; supported surfaces are {}",
-                TRUSTED_HOST_TUI_EXTENSION_SURFACES.join(", ")
+                "invalid trusted TUI surface `{surface}`; expected a lowercase identifier starting with a letter and using only a-z, 0-9, `_`, or `-`"
             ));
         }
     }
@@ -3418,7 +3439,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_native_extension_declarations_flag_unsupported_tui_surface() {
+    fn plugin_native_extension_declarations_accept_custom_tui_surface_identifier() {
         let metadata = BTreeMap::from([
             (
                 "loong_extension_family".to_owned(),
@@ -3436,11 +3457,34 @@ mod tests {
 
         let declarations = plugin_native_extension_declarations_from_metadata(&metadata);
 
+        assert_eq!(declarations.tui_surfaces, vec!["sidebar_widget".to_owned()]);
+        assert!(declarations.metadata_issues.is_empty());
+    }
+
+    #[test]
+    fn plugin_native_extension_declarations_flag_invalid_tui_surface_identifier() {
+        let metadata = BTreeMap::from([
+            (
+                "loong_extension_family".to_owned(),
+                TRUSTED_HOST_EXTENSION_FAMILY.to_owned(),
+            ),
+            (
+                "loong_extension_trust_lane".to_owned(),
+                TRUSTED_HOST_EXTENSION_TRUST_LANE.to_owned(),
+            ),
+            (
+                "loong_extension_tui_surfaces_json".to_owned(),
+                "[\"Sidebar Widget\"]".to_owned(),
+            ),
+        ]);
+
+        let declarations = plugin_native_extension_declarations_from_metadata(&metadata);
+
         assert!(
             declarations
                 .metadata_issues
                 .iter()
-                .any(|issue| issue.contains("unsupported trusted TUI surface"))
+                .any(|issue| issue.contains("invalid trusted TUI surface"))
         );
     }
 }

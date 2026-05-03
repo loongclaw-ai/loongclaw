@@ -1864,10 +1864,9 @@ async fn execute_plugins_invoke_tui_surface(
             "plugins invoke-tui-surface requires plugin `{plugin_id}` to declare TUI surface `{tui_surface}` in loong_extension_tui_surfaces_json"
         ));
     }
-    if !crate::kernel::TRUSTED_HOST_TUI_EXTENSION_SURFACES.contains(&tui_surface.as_str()) {
+    if !crate::kernel::trusted_host_tui_surface_identifier_is_valid(tui_surface.as_str()) {
         return Err(format!(
-            "plugins invoke-tui-surface requires supported surface `{tui_surface}`; supported surfaces are {}",
-            crate::kernel::TRUSTED_HOST_TUI_EXTENSION_SURFACES.join(", ")
+            "plugins invoke-tui-surface requires a valid trusted TUI surface identifier `{tui_surface}` (lowercase letter followed by lowercase letters, digits, `_`, or `-`)"
         ));
     }
     let bridge_policy =
@@ -1915,10 +1914,9 @@ async fn execute_plugins_run_tui_surface(
     let payload = serde_json::from_str::<Value>(command.payload.as_str()).map_err(|error| {
         format!("plugins run-tui-surface requires --payload to be valid JSON: {error}")
     })?;
-    if !crate::kernel::TRUSTED_HOST_TUI_EXTENSION_SURFACES.contains(&tui_surface.as_str()) {
+    if !crate::kernel::trusted_host_tui_surface_identifier_is_valid(tui_surface.as_str()) {
         return Err(format!(
-            "plugins run-tui-surface requires supported surface `{tui_surface}`; supported surfaces are {}",
-            crate::kernel::TRUSTED_HOST_TUI_EXTENSION_SURFACES.join(", ")
+            "plugins run-tui-surface requires a valid trusted TUI surface identifier `{tui_surface}` (lowercase letter followed by lowercase letters, digits, `_`, or `-`)"
         ));
     }
 
@@ -2152,10 +2150,9 @@ fn resolve_scaffold_tui_surfaces(raw: &[String]) -> CliResult<Vec<String>> {
                 "plugins init requires each --tui-surface value to be non-empty".to_owned(),
             );
         }
-        if !crate::kernel::TRUSTED_HOST_TUI_EXTENSION_SURFACES.contains(&trimmed) {
+        if !crate::kernel::trusted_host_tui_surface_identifier_is_valid(trimmed) {
             return Err(format!(
-                "plugins init received unsupported --tui-surface `{trimmed}`; supported surfaces are {}",
-                crate::kernel::TRUSTED_HOST_TUI_EXTENSION_SURFACES.join(", ")
+                "plugins init received invalid --tui-surface `{trimmed}`; expected a lowercase identifier starting with a letter and using only a-z, 0-9, `_`, or `-`"
             ));
         }
         if declared_tui_surfaces
@@ -6794,7 +6791,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_plugins_init_rejects_unsupported_trusted_tui_surface() {
+    async fn execute_plugins_init_rejects_invalid_trusted_tui_surface_identifier() {
         let temp_root = unique_temp_dir("loong-plugins-cli-init-bad-surface");
         let package_root = format!("{temp_root}/weather-host");
 
@@ -6810,13 +6807,13 @@ mod tests {
                 source_language: Some("js".to_owned()),
                 capabilities: Vec::new(),
                 host_hooks: Vec::new(),
-                tui_surfaces: vec!["sidebar_widget".to_owned()],
+                tui_surfaces: vec!["Sidebar Widget".to_owned()],
                 version: "0.2.0".to_owned(),
                 summary: None,
             }),
         })
         .await
-        .expect_err("unsupported tui surface should be rejected");
+        .expect_err("invalid tui surface identifier should be rejected");
 
         assert!(error.contains("--tui-surface"));
     }
@@ -6972,6 +6969,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_plugins_invoke_tui_surface_accepts_custom_trusted_host_surface_identifier() {
+        let temp_root = unique_temp_dir("loong-plugins-cli-invoke-tui-surface-custom");
+        let package_root = format!("{temp_root}/trusted-host-extension");
+        write_trusted_host_extension_package(&package_root);
+
+        let manifest_path = format!("{package_root}/loong.plugin.json");
+        let mut manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&manifest_path).expect("read trusted-host manifest"),
+        )
+        .expect("decode trusted-host manifest");
+        manifest["metadata"]["loong_extension_tui_surfaces_json"] =
+            serde_json::json!("[\"sidebar_widget\"]");
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).expect("encode trusted-host manifest"),
+        )
+        .expect("write trusted-host manifest");
+
+        let surface_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            config: None,
+            command: PluginsCommands::InvokeTuiSurface(PluginInvokeTuiSurfaceCommand {
+                root: package_root,
+                plugin_id: "trusted-host-extension".to_owned(),
+                tui_surface: "sidebar_widget".to_owned(),
+                payload: "{\"section\":\"plugins\"}".to_owned(),
+                allow_commands: vec!["node".to_owned()],
+            }),
+        })
+        .await
+        .expect("invoke-tui-surface should accept a custom trusted host surface");
+
+        let PluginsCommandExecution::InvokeTuiSurface(surface_execution) = surface_execution else {
+            panic!("expected invoke-tui-surface execution");
+        };
+        assert_eq!(surface_execution.tui_surface, "sidebar_widget");
+        assert_eq!(
+            surface_execution.response_payload["handled_tui_surface"],
+            serde_json::json!("sidebar_widget")
+        );
+    }
+
+    #[tokio::test]
     async fn execute_plugins_run_tui_surface_uses_runtime_managed_trusted_host_lane() {
         let temp_root = unique_temp_dir("loong-plugins-cli-run-tui-surface");
         let package_root = format!("{temp_root}/trusted-host-extension");
@@ -7017,6 +7057,56 @@ mod tests {
         assert_eq!(
             surface_execution.response_payload["received_surface_payload"]["query"],
             serde_json::json!(":ext")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_plugins_run_tui_surface_accepts_custom_trusted_host_surface_identifier() {
+        let temp_root = unique_temp_dir("loong-plugins-cli-run-tui-surface-custom");
+        let package_root = format!("{temp_root}/trusted-host-extension");
+        write_trusted_host_extension_package(&package_root);
+
+        let manifest_path = format!("{package_root}/loong.plugin.json");
+        let mut manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&manifest_path).expect("read trusted-host manifest"),
+        )
+        .expect("decode trusted-host manifest");
+        manifest["metadata"]["loong_extension_tui_surfaces_json"] =
+            serde_json::json!("[\"sidebar_widget\"]");
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).expect("encode trusted-host manifest"),
+        )
+        .expect("write trusted-host manifest");
+
+        let config_path = format!("{temp_root}/loong.toml");
+        let mut config = mvp::config::LoongConfig::default();
+        config.runtime_plugins.enabled = true;
+        config.runtime_plugins.roots = vec![temp_root.clone()];
+        config.runtime_plugins.supported_bridges = vec!["process_stdio".to_owned()];
+        config.runtime_plugins.allowed_process_commands = vec!["node".to_owned()];
+        mvp::config::write(Some(config_path.as_str()), &config, true)
+            .expect("write runtime plugin config");
+
+        let surface_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            config: Some(config_path),
+            command: PluginsCommands::RunTuiSurface(PluginRunTuiSurfaceCommand {
+                plugin_id: "trusted-host-extension".to_owned(),
+                tui_surface: "sidebar_widget".to_owned(),
+                payload: "{\"section\":\"plugins\"}".to_owned(),
+            }),
+        })
+        .await
+        .expect("run-tui-surface should accept a custom trusted host surface");
+
+        let PluginsCommandExecution::RunTuiSurface(surface_execution) = surface_execution else {
+            panic!("expected run-tui-surface execution");
+        };
+        assert_eq!(surface_execution.tui_surface, "sidebar_widget");
+        assert_eq!(
+            surface_execution.response_payload["handled_tui_surface"],
+            serde_json::json!("sidebar_widget")
         );
     }
 
@@ -7221,6 +7311,10 @@ mod tests {
             assert!(
                 doc.contains("loong plugins run-tui-surface"),
                 "doc should mention the runtime-managed trusted TUI execution surface"
+            );
+            assert!(
+                doc.contains("sidebar_widget"),
+                "doc should mention that custom trusted TUI surface identifiers are valid"
             );
         }
     }

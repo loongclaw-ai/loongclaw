@@ -8768,6 +8768,90 @@ printf '{"plugin_id":"weather-extension","tui_surface":"%s","response_payload":{
     }
 
     #[test]
+    fn extensions_command_run_custom_tui_surface_renders_runtime_output() {
+        let root = std::env::temp_dir().join(format!(
+            "loong-chat-extension-run-custom-surface-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("mkdir extension root");
+        write_runtime_plugin_manifest(
+            root.as_path(),
+            "weather-extension",
+            &sample_process_stdio_tui_surface_manifest("weather-extension", "sidebar_widget"),
+        );
+
+        let fake_cli = root.join("fake-loong-plugins");
+        crate::test_support::write_executable_script_atomically(
+            &fake_cli,
+            r#"#!/bin/sh
+expected_subcommand="run-tui-surface"
+seen_subcommand=""
+seen_config=""
+surface=""
+previous=""
+for arg in "$@"; do
+  if [ "$arg" = "$expected_subcommand" ]; then
+    seen_subcommand="$arg"
+  fi
+  if [ "$previous" = "--config" ]; then
+    seen_config="$arg"
+  fi
+  if [ "$previous" = "--tui-surface" ]; then
+    surface="$arg"
+  fi
+  previous="$arg"
+done
+if [ "$seen_subcommand" != "$expected_subcommand" ]; then
+  echo "expected $expected_subcommand" >&2
+  exit 1
+fi
+if [ -z "$seen_config" ]; then
+  echo "missing --config" >&2
+  exit 1
+fi
+printf '{"plugin_id":"weather-extension","tui_surface":"%s","response_payload":{"handled_tui_surface":"%s","probe":"ok"},"runtime_evidence":{"executor":"fake-cli"}}\n' "$surface" "$surface"
+"#,
+        )
+        .expect("write fake cli");
+
+        let mut config = LoongConfig::default();
+        config.runtime_plugins.enabled = true;
+        config.runtime_plugins.roots = vec![root.display().to_string()];
+        config.runtime_plugins.allowed_process_commands = vec!["node".to_owned()];
+        let config_path = root.join("loong.toml");
+        crate::config::write(
+            Some(config_path.display().to_string().as_str()),
+            &config,
+            true,
+        )
+        .expect("write runtime config");
+        let runtime = test_runtime_with_config(config_path, config);
+        let mut env = crate::test_support::ScopedEnv::new();
+        env.set(
+            super::TEST_TUI_SURFACE_EXECUTABLE_ENV,
+            fake_cli.to_string_lossy().as_ref(),
+        );
+
+        let rendered = super::render_extensions_command_lines_with_width(
+            &runtime,
+            100,
+            "run weather-extension sidebar_widget",
+        )
+        .expect("render executed custom tui surface")
+        .join("\n");
+
+        assert!(rendered.contains("trusted tui surface runtime"));
+        assert!(rendered.contains("handled_tui_surface"));
+        assert!(rendered.contains("sidebar_widget"));
+        assert!(rendered.contains("fake-cli"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn extensions_command_detail_falls_back_to_runtime_bridge_when_no_probes_declared() {
         let root = std::env::temp_dir().join(format!(
             "loong-chat-extension-no-probes-{}",
