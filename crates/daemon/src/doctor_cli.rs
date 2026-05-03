@@ -266,6 +266,8 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
     checks.extend(collect_browser_companion_doctor_checks(&config).await);
     let runtime_plugins_surface = collect_runtime_plugins_doctor_surface(&config);
     checks.extend(runtime_plugins_surface.checks.clone());
+    let runtime_plugin_inventory =
+        crate::plugins_cli::runtime_plugin_inventory_read_model(&config).await;
 
     checks.extend(check_feishu_integration(&config, options.fix, &mut fixes));
     let channel_inventory = mvp::channel::channel_inventory(&config);
@@ -319,6 +321,7 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
             &summary,
             &config_path.display().to_string(),
             checks,
+            serde_json::to_value(&runtime_plugin_inventory).unwrap_or(serde_json::Value::Null),
             crate::doctor_compaction_hygiene::doctor_compaction_hygiene_json_payload(
                 &compaction_hygiene_signal,
             ),
@@ -363,6 +366,7 @@ fn build_doctor_json_payload(
     summary: &DoctorSummary,
     config_path: &str,
     checks: Vec<serde_json::Value>,
+    runtime_plugin_inventory: serde_json::Value,
     compaction_hygiene: serde_json::Value,
     fix_requested: bool,
     applied_fixes: Vec<String>,
@@ -379,6 +383,7 @@ fn build_doctor_json_payload(
             "fail": summary.fail
         },
         "checks": checks,
+        "runtime_plugin_inventory": runtime_plugin_inventory,
         "compaction_hygiene": compaction_hygiene,
         "fix_requested": fix_requested,
         "applied_fixes": applied_fixes,
@@ -6532,6 +6537,154 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    #[tokio::test]
+    async fn doctor_runtime_plugin_inventory_json_payload_surfaces_runtime_plugin_results() {
+        let root = browser_companion_temp_dir("runtime-plugins-inventory-json-payload");
+        let config = runtime_plugins_test_config(&root, true);
+        let runtime_root = root.join("runtime-plugins");
+        std::fs::create_dir_all(runtime_root.join("search")).expect("create runtime root");
+        std::fs::write(
+            runtime_root.join("search").join("loong.plugin.json"),
+            r#"{
+  "api_version": "v1alpha1",
+  "version": "1.0.0",
+  "plugin_id": "demo-extension-plugin",
+  "provider_id": "demo-extension",
+  "connector_name": "demo-extension-stdio",
+  "capabilities": ["InvokeConnector"],
+  "metadata": {
+    "bridge_kind": "process_stdio",
+    "adapter_family": "python-stdio-adapter",
+    "command": "python3",
+    "entrypoint": "index.py",
+    "loong_extension_family": "governed_native_runtime_extension",
+    "loong_extension_trust_lane": "governed_sidecar"
+  }
+}"#,
+        )
+        .expect("write runtime plugin manifest");
+
+        let payload = serde_json::to_value(
+            crate::plugins_cli::runtime_plugin_inventory_read_model(&config).await,
+        )
+        .expect("serialize runtime plugin inventory payload");
+        let plugin = payload["results"]
+            .as_array()
+            .and_then(|plugins| {
+                plugins
+                    .iter()
+                    .find(|plugin| plugin["plugin_id"].as_str() == Some("demo-extension-plugin"))
+            })
+            .expect("demo extension plugin inventory result should be present");
+
+        assert_eq!(payload["available"], json!(true));
+        assert_eq!(payload["returned_results"], json!(1));
+        assert!(payload["summary"].is_object());
+        assert_eq!(plugin["plugin_id"], json!("demo-extension-plugin"));
+        assert_eq!(
+            plugin["extension_family"],
+            json!("governed_native_runtime_extension")
+        );
+        assert_eq!(plugin["extension_trust_lane"], json!("governed_sidecar"));
+        assert_eq!(plugin["extension_host_hooks"], json!([]));
+        assert_eq!(plugin["extension_tui_surfaces"], json!([]));
+        assert!(plugin.get("activation_attestation").is_some());
+        assert!(plugin.get("runtime_health").is_some());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn doctor_runtime_plugin_inventory_json_payload_prefers_project_local_loong_extensions_over_global_duplicates()
+     {
+        let root = browser_companion_temp_dir("runtime-plugins-auto-discovery-precedence");
+        let home = browser_companion_temp_dir("runtime-plugins-auto-discovery-home");
+        let mut env = ScopedEnv::new();
+        env.set("HOME", &home);
+        let _cwd = DoctorCliCurrentDirGuard::set(&root);
+        let mut config = runtime_plugins_test_config(&root, true);
+        config.runtime_plugins.roots = vec!["   ".to_owned()];
+
+        let project_root = root.join(".loong/extensions/search");
+        let global_root = home.join(".loong/agent/extensions/search");
+        std::fs::create_dir_all(&project_root).expect("create project runtime root");
+        std::fs::create_dir_all(&global_root).expect("create global runtime root");
+
+        std::fs::write(
+            project_root.join("loong.plugin.json"),
+            r#"{
+  "api_version": "v1alpha1",
+  "version": "1.0.0",
+  "plugin_id": "shared-extension",
+  "provider_id": "project-extension",
+  "connector_name": "project-extension",
+  "capabilities": ["InvokeConnector"],
+  "summary": "Project-local extension",
+  "metadata": {
+    "bridge_kind": "process_stdio",
+    "adapter_family": "python-stdio-adapter",
+    "entrypoint": "stdin/stdout::invoke",
+    "source_language": "python",
+    "command": "python3",
+    "args_json": "[\"index.py\"]",
+    "process_timeout_ms": "5000"
+  }
+}"#,
+        )
+        .expect("write project-local runtime plugin manifest");
+        std::fs::write(
+            global_root.join("loong.plugin.json"),
+            r#"{
+  "api_version": "v1alpha1",
+  "version": "1.0.0",
+  "plugin_id": "shared-extension",
+  "provider_id": "global-extension",
+  "connector_name": "global-extension",
+  "capabilities": ["InvokeConnector"],
+  "summary": "Global extension",
+  "metadata": {
+    "bridge_kind": "process_stdio",
+    "adapter_family": "python-stdio-adapter",
+    "entrypoint": "stdin/stdout::invoke",
+    "source_language": "python",
+    "command": "python3",
+    "args_json": "[\"index.py\"]",
+    "process_timeout_ms": "5000"
+  }
+}"#,
+        )
+        .expect("write global runtime plugin manifest");
+
+        let payload = serde_json::to_value(
+            crate::plugins_cli::runtime_plugin_inventory_read_model(&config).await,
+        )
+        .expect("serialize runtime plugin inventory payload");
+
+        assert_eq!(payload["available"], json!(true));
+        assert_eq!(payload["roots_source"], json!("auto_discovered"));
+        assert_eq!(payload["returned_results"], json!(1));
+        assert_eq!(payload["shadowed_plugin_ids"], json!(["shared-extension"]));
+        assert_eq!(
+            payload["discovery_guidance"]["precedence_rule"],
+            json!("project_local_over_global")
+        );
+        assert_eq!(
+            payload["discovery_guidance"]["recommended_action"],
+            json!("review_global_duplicate")
+        );
+        assert_eq!(
+            payload["discovery_guidance"]["shadowed_conflicts"][0]["plugin_id"],
+            json!("shared-extension")
+        );
+        assert_eq!(
+            payload["discovery_guidance"]["discovery_actions"][0]["kind"],
+            json!("inspect_effective_package")
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&home).ok();
+    }
+
     #[test]
     fn doctor_json_payload_surfaces_structured_compaction_hygiene_block() {
         let summary = DoctorSummary {
@@ -6547,6 +6700,7 @@ mod tests {
                 "level": "fail",
                 "detail": "broken continuity"
             })],
+            serde_json::Value::Null,
             json!({
                 "enabled": true,
                 "level": "fail",

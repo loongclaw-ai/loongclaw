@@ -14,12 +14,13 @@ use crate::kernel::{
 };
 use crate::{
     BridgeSupportSpec, CliResult, HumanApprovalMode, HumanApprovalSpec, JsonSchemaDescriptor,
-    MaterializedBridgeSupportDeltaArtifact, OperationSpec, PluginInventoryResult,
-    PluginPreflightBridgeProfileRecommendation, PluginPreflightProfile, PluginPreflightResult,
-    PluginScanSpec, ResolvedBridgeSupportSelection, RunnerSpec, SecurityProfileSignatureSpec,
-    SpecRunReport, default_plugin_inventory_limit, default_plugin_preflight_limit, execute_spec,
+    MaterializedBridgeSupportDeltaArtifact, OperationSpec, PluginActivationAttestationResult,
+    PluginInventoryResult, PluginPreflightBridgeProfileRecommendation, PluginPreflightProfile,
+    PluginPreflightResult, PluginRuntimeHealthResult, PluginScanSpec,
+    ResolvedBridgeSupportSelection, RunnerSpec, SecurityProfileSignatureSpec, SpecRunReport,
+    default_plugin_inventory_limit, default_plugin_preflight_limit, execute_spec,
     json_schema_descriptor, materialize_bridge_support_delta_artifact,
-    materialize_bridge_support_template, resolve_bridge_support_policy,
+    materialize_bridge_support_template, mvp, resolve_bridge_support_policy,
     resolve_bridge_support_selection,
 };
 
@@ -579,6 +580,44 @@ pub struct PluginsInventoryExecution {
     pub summary: PluginsInventorySummaryView,
     pub returned_results: usize,
     pub results: Vec<PluginInventoryResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimePluginInventoryResultView {
+    pub plugin_id: String,
+    pub source_path: String,
+    pub capabilities: Vec<String>,
+    pub extension_family: Option<String>,
+    pub extension_trust_lane: Option<String>,
+    pub extension_host_hooks: Vec<String>,
+    pub extension_tui_surfaces: Vec<String>,
+    pub activation_status: Option<String>,
+    pub activation_reason: Option<String>,
+    pub loaded: bool,
+    pub activation_attestation: Option<PluginActivationAttestationResult>,
+    pub runtime_health: Option<PluginRuntimeHealthResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimePluginInventoryReadModel {
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roots_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub returned_results: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<PluginsInventorySummaryView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shadowed_plugin_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discovery_guidance:
+        Option<crate::runtime_plugin_discovery::RuntimePluginDiscoveryGuidanceView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub results: Vec<RuntimePluginInventoryResultView>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1205,6 +1244,146 @@ pub async fn execute_plugins_command(
                 },
             )))
         }
+    }
+}
+
+pub(crate) async fn runtime_plugin_inventory_read_model(
+    config: &mvp::config::LoongConfig,
+) -> RuntimePluginInventoryReadModel {
+    if !config.runtime_plugins.enabled {
+        return RuntimePluginInventoryReadModel {
+            available: false,
+            reason: Some("runtime_plugins_disabled".to_owned()),
+            error: None,
+            roots_source: None,
+            returned_results: None,
+            summary: None,
+            shadowed_plugin_ids: Vec::new(),
+            discovery_guidance: None,
+            results: Vec::new(),
+        };
+    }
+
+    let root_selection = config.runtime_plugins.resolved_root_selection();
+    let roots_source = Some(root_selection.source.to_owned());
+    let roots = root_selection
+        .roots
+        .into_iter()
+        .map(|root| root.display().to_string())
+        .collect::<Vec<_>>();
+    if roots.is_empty() {
+        return RuntimePluginInventoryReadModel {
+            available: false,
+            reason: Some("no_runtime_plugin_roots".to_owned()),
+            error: None,
+            roots_source,
+            returned_results: None,
+            summary: None,
+            shadowed_plugin_ids: Vec::new(),
+            discovery_guidance: None,
+            results: Vec::new(),
+        };
+    }
+
+    let options = PluginsCommandOptions {
+        json: false,
+        command: PluginsCommands::Inventory(PluginInventoryCommand {
+            source: PluginScanSourceArgs {
+                roots,
+                query: String::new(),
+                limit: Some(100),
+                bridge_support: None,
+                bridge_profile: None,
+                bridge_support_delta: None,
+                bridge_support_sha256: None,
+                bridge_support_delta_sha256: None,
+            },
+            include_ready: true,
+            include_blocked: true,
+            include_deferred: true,
+            include_examples: false,
+        }),
+    };
+
+    match execute_plugins_command(options).await {
+        Ok(PluginsCommandExecution::Inventory(execution)) => {
+            let (effective_results, shadowed_plugin_ids, shadowed_by_plugin_id) =
+                if roots_source.as_deref() == Some("auto_discovered") {
+                    let selection = kernel::prefer_first_plugin_ids(execution.results, |result| {
+                        result.plugin_id.as_str()
+                    });
+                    (
+                        selection.effective,
+                        selection.shadowed_plugin_ids,
+                        selection.shadowed_by_plugin_id,
+                    )
+                } else {
+                    (execution.results, Vec::new(), BTreeMap::new())
+                };
+            let summary = summarize_plugin_inventory_results(&effective_results);
+            let shadowed_conflicts =
+                crate::runtime_plugin_discovery::build_runtime_plugin_shadowing_conflicts(
+                    &effective_results,
+                    &shadowed_by_plugin_id,
+                    |result| result.plugin_id.as_str(),
+                    |result| result.source_path.as_str(),
+                );
+            let discovery_guidance =
+                crate::runtime_plugin_discovery::build_runtime_plugin_discovery_guidance(
+                    roots_source.as_deref(),
+                    shadowed_conflicts,
+                );
+
+            RuntimePluginInventoryReadModel {
+                available: true,
+                reason: None,
+                error: None,
+                roots_source,
+                returned_results: Some(effective_results.len()),
+                summary: Some(summary),
+                shadowed_plugin_ids,
+                discovery_guidance,
+                results: effective_results
+                    .into_iter()
+                    .map(|result| RuntimePluginInventoryResultView {
+                        plugin_id: result.plugin_id,
+                        source_path: result.source_path,
+                        capabilities: result.capabilities,
+                        extension_family: result.native_extension.family,
+                        extension_trust_lane: result.native_extension.trust_lane,
+                        extension_host_hooks: result.native_extension.host_hooks,
+                        extension_tui_surfaces: result.native_extension.tui_surfaces,
+                        activation_status: result.activation_status,
+                        activation_reason: result.activation_reason,
+                        loaded: result.loaded,
+                        activation_attestation: result.activation_attestation,
+                        runtime_health: result.runtime_health,
+                    })
+                    .collect(),
+            }
+        }
+        Ok(_) => RuntimePluginInventoryReadModel {
+            available: false,
+            reason: Some("unexpected_plugins_command_variant".to_owned()),
+            error: None,
+            roots_source,
+            returned_results: None,
+            summary: None,
+            shadowed_plugin_ids: Vec::new(),
+            discovery_guidance: None,
+            results: Vec::new(),
+        },
+        Err(error) => RuntimePluginInventoryReadModel {
+            available: false,
+            reason: Some("inventory_execution_failed".to_owned()),
+            error: Some(error),
+            roots_source,
+            returned_results: None,
+            summary: None,
+            shadowed_plugin_ids: Vec::new(),
+            discovery_guidance: None,
+            results: Vec::new(),
+        },
     }
 }
 
