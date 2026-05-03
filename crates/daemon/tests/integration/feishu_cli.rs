@@ -134,6 +134,20 @@ async fn record_request(State(state): State<MockServerState>, request: Request) 
     });
 }
 
+async fn wait_for_mock_request_count(
+    requests: &Arc<Mutex<Vec<MockRequest>>>,
+    expected: usize,
+) -> Vec<MockRequest> {
+    for _ in 0..50 {
+        let snapshot = requests.lock().await.clone();
+        if snapshot.len() >= expected {
+            return snapshot;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    requests.lock().await.clone()
+}
+
 #[test]
 fn feishu_command_registers_nested_integration_subcommands() {
     let help = render_cli_help(["feishu"]);
@@ -3037,7 +3051,7 @@ async fn feishu_send_command_uses_tenant_token_receive_id_override_and_uuid() {
     assert_eq!(payload["delivery"]["receive_id"], "oc_send_demo");
     assert_eq!(payload["delivery"]["uuid"], "send-uuid-1");
 
-    let requests = requests.lock().await.clone();
+    let requests = wait_for_mock_request_count(&requests, 2).await;
     assert_eq!(requests.len(), 2);
     assert_eq!(
         requests[1].authorization.as_deref(),

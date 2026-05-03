@@ -1742,11 +1742,17 @@ mod tests {
         let processed_messages_for_run = processed_messages.clone();
         let adapter_state_for_assert = adapter_state.clone();
         let stop = mvp::channel::ChannelServeStopHandle::new();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let account_id = format!("managed-bridge-recovery-{unique}");
+        let configured_account_id = account_id.clone();
         let spec = mvp::channel::ChannelServeRuntimeSpec {
             platform: mvp::channel::ChannelPlatform::Weixin,
             operation_id: mvp::channel::CHANNEL_OPERATION_SERVE_ID,
-            account_id: "managed-bridge-recovery",
-            account_label: "managed-bridge-recovery",
+            account_id: &account_id,
+            account_label: &account_id,
         };
 
         mvp::channel::with_channel_serve_runtime_with_stop(
@@ -1777,7 +1783,7 @@ mod tests {
                     ManagedBridgeServeContext {
                         channel_id: "weixin",
                         plugin_id: "scripted-bridge",
-                        configured_account_id: "managed-bridge-recovery",
+                        configured_account_id: &configured_account_id,
                     },
                     move |_message, _feedback_policy| {
                         let processed_messages = processed_messages_for_run.clone();
@@ -1823,11 +1829,17 @@ mod tests {
         let adapter_state = ScriptedAdapterState::default();
         let adapter_state_for_assert = adapter_state.clone();
         let stop = mvp::channel::ChannelServeStopHandle::new();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let account_id = format!("managed-bridge-budget-{unique}");
+        let configured_account_id = account_id.clone();
         let spec = mvp::channel::ChannelServeRuntimeSpec {
             platform: mvp::channel::ChannelPlatform::Weixin,
             operation_id: mvp::channel::CHANNEL_OPERATION_SERVE_ID,
-            account_id: "managed-bridge-budget",
-            account_label: "managed-bridge-budget",
+            account_id: &account_id,
+            account_label: &account_id,
         };
 
         let error = mvp::channel::with_channel_serve_runtime_with_stop(
@@ -1851,7 +1863,7 @@ mod tests {
                     ManagedBridgeServeContext {
                         channel_id: "weixin",
                         plugin_id: "scripted-bridge",
-                        configured_account_id: "managed-bridge-budget",
+                        configured_account_id: &configured_account_id,
                     },
                     |_message, _feedback_policy| Box::pin(async { Ok("unused".to_owned()) }),
                 )
