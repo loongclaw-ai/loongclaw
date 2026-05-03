@@ -66,7 +66,11 @@ fn parse_tool_result_envelope(line: &str) -> Option<Value> {
         return None;
     }
     if let Some(tool_result_line) = ToolResultLine::parse(trimmed) {
-        return serde_json::to_value(tool_result_line.envelope()).ok();
+        return Some(serde_json::json!({
+            "tool": tool_result_line.tool_name(),
+            "payload_summary": tool_result_line.payload_summary_str(),
+            "payload_truncated": tool_result_line.payload_truncated(),
+        }));
     }
     let candidate = if trimmed.starts_with('[') {
         trimmed

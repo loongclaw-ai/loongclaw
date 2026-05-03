@@ -333,7 +333,7 @@ pub(super) fn external_skills_install_definition(descriptor: &ToolDescriptor) ->
                     },
                     "bundled_skill_id": {
                         "type": "string",
-                        "description": "Optional first-party bundled skill identifier, for example `browser-companion-preview`."
+                        "description": "Optional first-party bundled skill identifier, for example `agent-browser`."
                     },
                     "skill_id": {
                         "type": "string",

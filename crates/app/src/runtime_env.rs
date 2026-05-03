@@ -97,24 +97,6 @@ pub fn initialize_runtime_environment(config: &LoongConfig, resolved_config_path
         config.tools.browser.max_text_chars.to_string(),
     );
     set_env_var(
-        "LOONG_BROWSER_COMPANION_ENABLED",
-        bool_env(config.tools.browser_companion.enabled),
-    );
-    set_env_var(
-        "LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS",
-        config.tools.browser_companion.timeout_seconds.to_string(),
-    );
-    match normalized_optional_str(config.tools.browser_companion.command.as_deref()) {
-        Some(command) => set_env_var("LOONG_BROWSER_COMPANION_COMMAND", command),
-        None => remove_env_var("LOONG_BROWSER_COMPANION_COMMAND"),
-    }
-    match normalized_optional_str(config.tools.browser_companion.expected_version.as_deref()) {
-        Some(expected_version) => {
-            set_env_var("LOONG_BROWSER_COMPANION_EXPECTED_VERSION", expected_version)
-        }
-        None => remove_env_var("LOONG_BROWSER_COMPANION_EXPECTED_VERSION"),
-    }
-    set_env_var(
         "LOONG_WEB_FETCH_ENABLED",
         bool_env(config.tools.web.enabled),
     );
@@ -210,10 +192,6 @@ fn bool_env(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
-fn normalized_optional_str(raw: Option<&str>) -> Option<&str> {
-    raw.map(str::trim).filter(|value| !value.is_empty())
-}
-
 fn set_env_var(key: &str, value: impl AsRef<std::ffi::OsStr>) {
     crate::process_env::set_var(key, value);
 }
@@ -256,10 +234,6 @@ mod tests {
             "LOONG_BROWSER_MAX_SESSIONS",
             "LOONG_BROWSER_MAX_LINKS",
             "LOONG_BROWSER_MAX_TEXT_CHARS",
-            "LOONG_BROWSER_COMPANION_ENABLED",
-            "LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS",
-            "LOONG_BROWSER_COMPANION_COMMAND",
-            "LOONG_BROWSER_COMPANION_EXPECTED_VERSION",
             "LOONG_WEB_FETCH_ENABLED",
             "LOONG_WEB_FETCH_ALLOW_PRIVATE_HOSTS",
             "LOONG_WEB_FETCH_ALLOWED_DOMAINS",
@@ -290,9 +264,6 @@ mod tests {
         config.tools.browser.max_sessions = 4;
         config.tools.browser.max_links = 12;
         config.tools.browser.max_text_chars = 2048;
-        config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some("loong-browser-companion".to_owned());
-        config.tools.browser_companion.expected_version = Some("1.2.3".to_owned());
         config.tools.web.enabled = false;
         config.tools.web.allow_private_hosts = true;
         config.tools.web.allowed_domains = vec!["docs.example.com".to_owned()];
@@ -378,28 +349,10 @@ mod tests {
             Some("2048")
         );
         assert_eq!(
-            std::env::var("LOONG_BROWSER_COMPANION_ENABLED")
+            std::env::var("LOONG_WEB_FETCH_TIMEOUT_SECONDS")
                 .ok()
                 .as_deref(),
-            Some("true")
-        );
-        assert_eq!(
-            std::env::var("LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS")
-                .ok()
-                .as_deref(),
-            Some("30")
-        );
-        assert_eq!(
-            std::env::var("LOONG_BROWSER_COMPANION_COMMAND")
-                .ok()
-                .as_deref(),
-            Some("loong-browser-companion")
-        );
-        assert_eq!(
-            std::env::var("LOONG_BROWSER_COMPANION_EXPECTED_VERSION")
-                .ok()
-                .as_deref(),
-            Some("1.2.3")
+            Some("9")
         );
         assert_eq!(
             std::env::var("LOONG_WEB_FETCH_ENABLED").ok().as_deref(),
@@ -458,31 +411,6 @@ mod tests {
                 .ok()
                 .as_deref(),
             Some("5")
-        );
-    }
-
-    #[test]
-    fn initialize_runtime_environment_drops_blank_browser_companion_metadata() {
-        let mut env = ScopedEnv::new();
-        clear_runtime_environment_exports(&mut env);
-        let mut config = LoongConfig::default();
-        config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.timeout_seconds = 7;
-        config.tools.browser_companion.command = Some("   ".to_owned());
-        config.tools.browser_companion.expected_version = Some("\n\t".to_owned());
-
-        initialize_runtime_environment(&config, None);
-
-        assert_eq!(
-            std::env::var("LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS")
-                .ok()
-                .as_deref(),
-            Some("7")
-        );
-        assert_eq!(std::env::var("LOONG_BROWSER_COMPANION_COMMAND").ok(), None);
-        assert_eq!(
-            std::env::var("LOONG_BROWSER_COMPANION_EXPECTED_VERSION").ok(),
-            None
         );
     }
 

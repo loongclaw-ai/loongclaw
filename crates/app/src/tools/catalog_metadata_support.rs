@@ -120,8 +120,8 @@ pub(super) fn tool_argument_hint(name: &str) -> &'static str {
         "web" => {
             "url?:string,mode?:string,max_bytes?:integer,query?:string,provider?:string,max_results?:integer"
         }
-        "browser" => {
-            "action?:string,url?:string,session_id?:string,mode?:string,selector?:string,text?:string,condition?:string,timeout_ms?:integer"
+        "browse" => {
+            "action?:string,url?:string,session_id?:string,mode?:string,selector?:string,link_id?:integer,limit?:integer,max_bytes?:integer"
         }
         "memory" => "query?:string,max_results?:integer,path?:string,from?:integer,lines?:integer",
         "config.import" => {
@@ -144,13 +144,9 @@ pub(super) fn tool_argument_hint(name: &str) -> &'static str {
             "action?:string,enabled?:boolean,allowed_domains?:string[],blocked_domains?:string[]"
         }
         "skills.remove" => "skill_id:string",
-        "browser.companion.session.start" => "url:string",
-        "browser.companion.navigate" => "session_id:string,url:string",
-        "browser.companion.snapshot" => "session_id:string,mode?:string",
-        "browser.companion.wait" => "session_id:string,condition?:string,timeout_ms?:integer",
-        "browser.companion.session.stop" => "session_id:string",
-        "browser.companion.click" => "session_id:string,selector:string",
-        "browser.companion.type" => "session_id:string,selector:string,text:string",
+        "browser.open" => "url:string,max_bytes?:integer",
+        "browser.extract" => "session_id:string,mode?:string,selector?:string,limit?:integer",
+        "browser.click" => "session_id:string,link_id:integer",
         "http.request" => {
             "url:string,method?:string,headers?:object,body?:string,content_type?:string,max_bytes?:integer"
         }
@@ -567,21 +563,14 @@ pub(super) fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'sta
             ("replace", "boolean"),
         ],
         "skills.list" => &[],
-        "browser.companion.session.start" => &[("url", "string")],
-        "browser.companion.navigate" => &[("session_id", "string"), ("url", "string")],
-        "browser.companion.snapshot" => &[("session_id", "string"), ("mode", "string")],
-        "browser.companion.wait" => &[
+        "browser.open" => &[("url", "string"), ("max_bytes", "integer")],
+        "browser.extract" => &[
             ("session_id", "string"),
-            ("condition", "string"),
-            ("timeout_ms", "integer"),
-        ],
-        "browser.companion.session.stop" => &[("session_id", "string")],
-        "browser.companion.click" => &[("session_id", "string"), ("selector", "string")],
-        "browser.companion.type" => &[
-            ("session_id", "string"),
+            ("mode", "string"),
             ("selector", "string"),
-            ("text", "string"),
+            ("limit", "integer"),
         ],
+        "browser.click" => &[("session_id", "string"), ("link_id", "integer")],
         "http.request" => &[
             ("url", "string"),
             ("method", "string"),
@@ -779,13 +768,9 @@ pub(super) fn tool_required_fields(name: &str) -> &'static [&'static str] {
         "skills.inspect" | "skills.invoke" | "skills.remove" => &["skill_id"],
         // Grouped requirements are the source of truth for this tool's anyOf shape.
         "skills.install" => &[],
-        "browser.companion.session.start" => &["url"],
-        "browser.companion.navigate" => &["session_id", "url"],
-        "browser.companion.snapshot"
-        | "browser.companion.wait"
-        | "browser.companion.session.stop" => &["session_id"],
-        "browser.companion.click" => &["session_id", "selector"],
-        "browser.companion.type" => &["session_id", "selector", "text"],
+        "browser.open" => &["url"],
+        "browser.extract" => &["session_id"],
+        "browser.click" => &["session_id", "link_id"],
         "http.request" => &["url"],
         "file.read" => &["path"],
         "glob.search" => &["pattern"],
@@ -875,14 +860,9 @@ pub(super) fn tool_tags(name: &str) -> &'static [&'static str] {
         "skills.list" => &["skills", "list", "discover"],
         "skills.policy" => &["skills", "policy", "security"],
         "skills.remove" => &["skills", "remove", "uninstall"],
-        "browser.companion.session.start"
-        | "browser.companion.navigate"
-        | "browser.companion.snapshot"
-        | "browser.companion.wait"
-        | "browser.companion.session.stop" => &["browser", "companion", "session", "read"],
-        "browser.companion.click" | "browser.companion.type" => {
-            &["browser", "companion", "write", "approval"]
-        }
+        "browse" => &["browse", "page", "extract", "links"],
+        "browser.open" | "browser.extract" => &["browser", "page", "read"],
+        "browser.click" => &["browser", "page", "navigate"],
         "http.request" => &["http", "request", "web", "network", "external"],
         "file.read" => &["file", "read", "filesystem", "repo"],
         "glob.search" => &[

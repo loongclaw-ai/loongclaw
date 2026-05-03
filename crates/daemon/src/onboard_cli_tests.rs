@@ -283,12 +283,7 @@ impl OnboardPromptLineReader for TestPromptLineReader {
     }
 }
 
-struct BrowserCompanionEnvGuard {
-    _lock: MutexGuard<'static, ()>,
-    saved_ready: Option<OsString>,
-}
-
-fn set_browser_companion_env_var(key: &str, value: &str) {
+fn set_test_env_var(key: &str, value: &str) {
     // SAFETY: daemon tests serialize process env mutations behind
     // `lock_daemon_test_environment`, so no concurrent env readers/writers
     // observe racy updates while these tests run.
@@ -298,37 +293,13 @@ fn set_browser_companion_env_var(key: &str, value: &str) {
     }
 }
 
-fn remove_browser_companion_env_var(key: &str) {
+fn remove_test_env_var(key: &str) {
     // SAFETY: daemon tests serialize process env mutations behind
     // `lock_daemon_test_environment`, so removing the variable here is
     // coordinated with all other env-mutating daemon tests.
     #[allow(unsafe_code, clippy::disallowed_methods)]
     unsafe {
         std::env::remove_var(key);
-    }
-}
-
-impl BrowserCompanionEnvGuard {
-    fn runtime_gate_closed() -> Self {
-        Self::set_ready(None)
-    }
-
-    fn runtime_gate_open() -> Self {
-        Self::set_ready(Some("true"))
-    }
-
-    fn set_ready(value: Option<&str>) -> Self {
-        let lock = crate::test_support::lock_daemon_test_environment();
-        let key = "LOONG_BROWSER_COMPANION_READY";
-        let saved_ready = std::env::var_os(key);
-        match value {
-            Some(value) => set_browser_companion_env_var(key, value),
-            None => remove_browser_companion_env_var(key),
-        }
-        Self {
-            _lock: lock,
-            saved_ready,
-        }
     }
 }
 
@@ -342,8 +313,8 @@ impl PasteDrainWindowEnvGuard {
         let lock = crate::test_support::lock_daemon_test_environment();
         let saved_value = std::env::var_os(ONBOARD_PASTE_DRAIN_WINDOW_ENV);
         match value {
-            Some(value) => set_browser_companion_env_var(ONBOARD_PASTE_DRAIN_WINDOW_ENV, value),
-            None => remove_browser_companion_env_var(ONBOARD_PASTE_DRAIN_WINDOW_ENV),
+            Some(value) => set_test_env_var(ONBOARD_PASTE_DRAIN_WINDOW_ENV, value),
+            None => remove_test_env_var(ONBOARD_PASTE_DRAIN_WINDOW_ENV),
         }
         Self {
             _lock: lock,
@@ -356,22 +327,9 @@ impl Drop for PasteDrainWindowEnvGuard {
     fn drop(&mut self) {
         match &self.saved_value {
             Some(value) => {
-                set_browser_companion_env_var(
-                    ONBOARD_PASTE_DRAIN_WINDOW_ENV,
-                    &value.to_string_lossy(),
-                );
+                set_test_env_var(ONBOARD_PASTE_DRAIN_WINDOW_ENV, &value.to_string_lossy());
             }
-            None => remove_browser_companion_env_var(ONBOARD_PASTE_DRAIN_WINDOW_ENV),
-        }
-    }
-}
-
-impl Drop for BrowserCompanionEnvGuard {
-    fn drop(&mut self) {
-        let key = "LOONG_BROWSER_COMPANION_READY";
-        match self.saved_ready.take() {
-            Some(value) => set_browser_companion_env_var(key, &value.to_string_lossy()),
-            None => remove_browser_companion_env_var(key),
+            None => remove_test_env_var(ONBOARD_PASTE_DRAIN_WINDOW_ENV),
         }
     }
 }
@@ -446,25 +404,6 @@ async fn run_preflight_checks_includes_provider_transport_review_for_responses_c
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn browser_companion_onboard_preflight_warns_when_enabled_without_command() {
-    let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
-    let mut config = mvp::config::LoongConfig::default();
-    config.provider.api_key = Some(SecretRef::Inline("inline-openai-key".to_owned()));
-    config.tools.browser_companion.enabled = true;
-
-    let checks = run_preflight_checks(&config, true).await;
-
-    assert!(
-        checks.iter().any(|check| {
-            check.name == "browser companion install"
-                && check.level == OnboardCheckLevel::Warn
-                && check.detail.contains("no command is configured")
-        }),
-        "onboard preflight should flag companion configs that cannot be executed yet: {checks:#?}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn run_preflight_checks_fail_for_invalid_provider_credential_env_value() {
     let secret = "sk-live-direct-secret-value";
     let mut config = mvp::config::LoongConfig::default();
@@ -482,52 +421,6 @@ async fn run_preflight_checks_fail_for_invalid_provider_credential_env_value() {
                 && !check.detail.contains(secret)
         }),
         "preflight should fail fast on invalid provider credential env values without echoing the secret: {checks:#?}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn browser_companion_onboard_preflight_warns_when_runtime_gate_is_closed() {
-    let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
-
-    let mut config = mvp::config::LoongConfig::default();
-    config.provider.api_key = Some(SecretRef::Inline("inline-openai-key".to_owned()));
-    config.tools.browser_companion.enabled = true;
-    config.tools.browser_companion.command =
-        Some(crate::browser_companion_diagnostics::fake_browser_companion_version_command("1.5.0"));
-    config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
-
-    let checks = run_preflight_checks(&config, true).await;
-
-    assert!(
-        checks.iter().any(|check| {
-            check.name == "browser companion install"
-                && check.level == OnboardCheckLevel::Warn
-                && check.detail.contains("runtime gate is still closed")
-        }),
-        "onboard preflight should surface that a healthy install still is not runtime-ready: {checks:#?}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn browser_companion_onboard_preflight_passes_when_runtime_gate_is_open() {
-    let _env_guard = BrowserCompanionEnvGuard::runtime_gate_open();
-
-    let mut config = mvp::config::LoongConfig::default();
-    config.provider.api_key = Some(SecretRef::Inline("inline-openai-key".to_owned()));
-    config.tools.browser_companion.enabled = true;
-    config.tools.browser_companion.command =
-        Some(crate::browser_companion_diagnostics::fake_browser_companion_version_command("1.5.0"));
-    config.tools.browser_companion.expected_version = Some("1.5.0".to_owned());
-
-    let checks = run_preflight_checks(&config, true).await;
-
-    assert!(
-        checks.iter().any(|check| {
-            check.name == "browser companion install"
-                && check.level == OnboardCheckLevel::Pass
-                && check.detail.contains("runtime is ready")
-        }),
-        "onboard preflight should mark the companion lane healthy when the runtime gate is open: {checks:#?}"
     );
 }
 

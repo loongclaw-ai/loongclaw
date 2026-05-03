@@ -18,11 +18,11 @@ and persisted policy updates around managed external skills.
 | --- | --- |
 | inspect the current persisted skills policy | `loong skills policy get` |
 | see what is already resolved in the runtime | `loong skills list` |
-| search or recommend by operator goal | `loong skills search "browser preview"` or `loong skills recommend "summarize docs site"` |
+| search or recommend by operator goal | `loong skills search "browser automation"` or `loong skills recommend "summarize docs site"` |
 | inspect one installed or discoverable skill | `loong skills info <skill_id>` |
 | install a local directory or archive | `loong skills install ./path/to/skill` |
 | fetch and install a remote package | `loong skills fetch https://example.com/skill.zip --approve-download --install` |
-| turn on the browser preview helper path | `loong skills enable-browser-preview` |
+| install a bundled browser automation helper | `loong skills install-bundled agent-browser` |
 
 ## Default Public Posture
 
@@ -61,8 +61,9 @@ Managed external skills have four separate states:
    into the managed install root
 3. exposure: `external_skills.enabled` and `auto_expose_installed` decide
    whether installed skills become part of the usable runtime surface
-4. runtime readiness: some skills, especially browser preview, still depend on
-   shell policy or an external runtime binary on `PATH`
+4. runtime readiness: some skills, especially browser automation helpers such
+   as `agent-browser`, still depend on shell policy or an external runtime
+   binary on `PATH`
 
 That separation is why "the skill installed correctly" and "the assistant can
 use it right now" are not always the same statement.
@@ -73,9 +74,9 @@ Discovery and inspection:
 
 ```bash
 loong skills list
-loong skills search "browser preview"
+loong skills search "browser automation"
 loong skills recommend "summarize docs site"
-loong skills info browser-companion-preview
+loong skills info agent-browser
 ```
 
 Install and remove:
@@ -109,8 +110,7 @@ Operational notes:
   rules, and `auto_expose_installed`, but `install_root` still belongs in
   config.
 - `skills install-bundled <skill_id>` also exists for first-party packaged
-  managed skills, but browser preview is usually easier through
-  `enable-browser-preview`.
+  managed skills, including `agent-browser`.
 
 ## Local Install vs Remote Fetch
 
@@ -138,25 +138,15 @@ Choose deliberately:
 - domain allow/block rules apply to `fetch` and belong in persisted policy
   rather than being hidden in ad-hoc shell aliases.
 
-## Browser Preview Shortcut
+## Agent Browser Setup
 
-`loong skills enable-browser-preview` is the shortest public route when the real
-goal is "make the browser preview path usable" rather than "manually compose all
-the config toggles myself."
-
-What it does:
-
-- enables the managed external-skills runtime
-- turns on `auto_expose_installed`
-- ensures `agent-browser` is allowed through shell policy unless you explicitly
-  hard-deny it
-- fills `tools.file_root` if it was still empty
-- installs the bundled browser preview helper skill
+The shortest public route for richer browser automation is to install the
+bundled `agent-browser` skill and make sure the runtime binary is available.
 
 Typical operator loop:
 
 ```bash
-loong skills enable-browser-preview
+loong skills install-bundled agent-browser --replace
 npm install -g agent-browser && agent-browser install
 agent-browser open example.com
 loong doctor
@@ -164,10 +154,10 @@ loong doctor
 
 Two boundaries still matter:
 
-- if `[tools].shell_deny` contains `agent-browser`, the enable command will
-  fail until you remove that hard deny.
-- if the runtime binary is still missing on `PATH`, the helper skill may be
-  installed but preview will not be ready yet.
+- if `[tools].shell_deny` contains `agent-browser`, the runtime path will stay
+  blocked until you remove that hard deny.
+- if the runtime binary is still missing on `PATH`, the skill may be installed
+  but automation will not be ready yet.
 
 ## Persisted Policy Shape
 
@@ -197,14 +187,13 @@ Use this when:
 | What happened | What it usually means | What to do next |
 | --- | --- | --- |
 | `skills fetch` is rejected before download starts | download approval or domain policy is blocking it | run `loong skills policy get`, then retry with `--approve-download` or update policy deliberately |
-| a skill installed but does not show up as usable | install succeeded, but the runtime exposure gate is still closed | set `auto_expose_installed = true` through `skills policy set` or use `enable-browser-preview` for the preview path |
+| a skill installed but does not show up as usable | install succeeded, but the runtime exposure gate is still closed | set `auto_expose_installed = true` through `skills policy set` |
 | you do not know where managed skills should live | the runtime default is acceptable until you need a reviewed location | set `external_skills.install_root` in config when you need a stable explicit path |
-| `skills enable-browser-preview` fails immediately | `[tools].shell_deny` hard-denies `agent-browser` | remove `agent-browser` from `shell_deny`, then rerun the enable command |
-| browser preview still is not ready after enable | the helper skill is present, but the runtime binary is missing or not callable | install `agent-browser`, verify it with `agent-browser open example.com`, then rerun `loong doctor` |
+| `agent-browser` still does not run after install | shell policy or the runtime binary is still missing | remove `agent-browser` from `shell_deny`, verify `agent-browser open example.com`, then rerun `loong doctor` |
 
 ## Continue Reading
 
 - Continue to [Browser And Web Boundaries](/use-loong/browser-and-web-boundaries) when the failure is really a private-host, allowed-domain, or browser runtime gate problem.
 - Continue to [Tool Surface](/use-loong/tool-surface) when you want the broader truthful-tool contract around enablement surfaces.
-- Continue to [Doctor And Health](/get-started/doctor-and-health) when you want the health-first repair path after enabling skills or browser preview.
+- Continue to [Doctor And Health](/get-started/doctor-and-health) when you want the health-first repair path after enabling skills or external browser automation.
 - Go back to [Configuration Patterns](/use-loong/configuration-patterns) when you want the wider operator config map.

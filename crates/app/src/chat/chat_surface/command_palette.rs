@@ -2500,7 +2500,7 @@ mod tests {
             Language::En,
             vec![
                 plugin("github-issues", "manage repository issues"),
-                skill("browser-companion", "preview browser automation flow"),
+                skill("agent-browser", "browser automation flow"),
                 skill("issue-helper", "issue notes helper"),
             ],
         );

@@ -47,6 +47,12 @@ fn write_external_skills_config_with_cli(root: &Path, enabled: bool, cli_enabled
     config.external_skills.install_root = Some(root.join("managed-skills").display().to_string());
     mvp::config::write(Some(config_path.to_string_lossy().as_ref()), &config, true)
         .expect("write config fixture");
+    let runtime_config = mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(
+        &config,
+        Some(&config_path),
+    );
+    mvp::tools::external_skills_operator_policy_reset_with_config(true, &runtime_config)
+        .expect("reset skills cli external skills policy");
     config_path
 }
 
@@ -161,9 +167,6 @@ fn skills_install_cli_parses_global_flags_after_subcommand() {
                 | other @ loong_daemon::skills_cli::SkillsCommands::Info { .. }
                 | other @ loong_daemon::skills_cli::SkillsCommands::Fetch { .. }
                 | other @ loong_daemon::skills_cli::SkillsCommands::InstallBundled { .. }
-                | other @ loong_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
-                    ..
-                }
                 | other @ loong_daemon::skills_cli::SkillsCommands::Remove { .. }
                 | other @ loong_daemon::skills_cli::SkillsCommands::Policy { .. } => {
                     panic!("unexpected skills subcommand parsed: {other:?}")
@@ -180,7 +183,7 @@ fn skills_install_bundled_cli_parses_global_flags_after_subcommand() {
         "loong",
         "skills",
         "install-bundled",
-        "browser-companion-preview",
+        "agent-browser",
         "--replace",
         "--json",
         "--config",
@@ -198,7 +201,7 @@ fn skills_install_bundled_cli_parses_global_flags_after_subcommand() {
             assert!(json);
             match command {
                 loong_daemon::skills_cli::SkillsCommands::InstallBundled { skill_id, replace } => {
-                    assert_eq!(skill_id, "browser-companion-preview");
+                    assert_eq!(skill_id, "agent-browser");
                     assert!(replace);
                 }
                 other @ loong_daemon::skills_cli::SkillsCommands::List
@@ -207,9 +210,6 @@ fn skills_install_bundled_cli_parses_global_flags_after_subcommand() {
                 | other @ loong_daemon::skills_cli::SkillsCommands::Info { .. }
                 | other @ loong_daemon::skills_cli::SkillsCommands::Fetch { .. }
                 | other @ loong_daemon::skills_cli::SkillsCommands::Install { .. }
-                | other @ loong_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
-                    ..
-                }
                 | other @ loong_daemon::skills_cli::SkillsCommands::Remove { .. }
                 | other @ loong_daemon::skills_cli::SkillsCommands::Policy { .. } => {
                     panic!("unexpected skills subcommand parsed: {other:?}")
@@ -294,49 +294,6 @@ fn skills_recommend_cli_parses_query_and_limit_after_subcommand() {
 }
 
 #[test]
-fn skills_enable_browser_preview_cli_parses_global_flags_after_subcommand() {
-    let cli = try_parse_cli([
-        "loong",
-        "skills",
-        "enable-browser-preview",
-        "--replace",
-        "--json",
-        "--config",
-        "/tmp/loong.toml",
-    ])
-    .expect("skills enable-browser-preview CLI should parse");
-
-    match cli.command {
-        Some(Commands::Skills {
-            config,
-            json,
-            command,
-        }) => {
-            assert_eq!(config.as_deref(), Some("/tmp/loong.toml"));
-            assert!(json);
-            match command {
-                loong_daemon::skills_cli::SkillsCommands::EnableBrowserPreview { replace } => {
-                    assert!(replace);
-                }
-                other @ loong_daemon::skills_cli::SkillsCommands::List
-                | other @ loong_daemon::skills_cli::SkillsCommands::Search { .. }
-                | other @ loong_daemon::skills_cli::SkillsCommands::Recommend { .. }
-                | other @ loong_daemon::skills_cli::SkillsCommands::Info { .. }
-                | other @ loong_daemon::skills_cli::SkillsCommands::Fetch { .. }
-                | other @ loong_daemon::skills_cli::SkillsCommands::Install { .. }
-                | other @ loong_daemon::skills_cli::SkillsCommands::InstallBundled { .. }
-                | other @ loong_daemon::skills_cli::SkillsCommands::Remove { .. }
-                | other @ loong_daemon::skills_cli::SkillsCommands::Policy { .. } => {
-                    panic!("unexpected skills subcommand parsed: {other:?}")
-                }
-            }
-        }
-        Some(other) => panic!("unexpected command parsed: {other:?}"),
-        None => panic!("expected skills command to parse"),
-    }
-}
-
-#[test]
 fn skills_policy_set_cli_parses_domain_and_approval_flags() {
     let cli = try_parse_cli([
         "loong",
@@ -393,7 +350,6 @@ fn skills_policy_set_cli_parses_domain_and_approval_flags() {
             | other @ loong_daemon::skills_cli::SkillsCommands::Fetch { .. }
             | other @ loong_daemon::skills_cli::SkillsCommands::Install { .. }
             | other @ loong_daemon::skills_cli::SkillsCommands::InstallBundled { .. }
-            | other @ loong_daemon::skills_cli::SkillsCommands::EnableBrowserPreview { .. }
             | other @ loong_daemon::skills_cli::SkillsCommands::Remove { .. } => {
                 panic!("unexpected skills subcommand parsed: {other:?}")
             }
@@ -458,9 +414,6 @@ fn skills_fetch_cli_parses_install_flags_after_subcommand() {
                 | other @ loong_daemon::skills_cli::SkillsCommands::Info { .. }
                 | other @ loong_daemon::skills_cli::SkillsCommands::Install { .. }
                 | other @ loong_daemon::skills_cli::SkillsCommands::InstallBundled { .. }
-                | other @ loong_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
-                    ..
-                }
                 | other @ loong_daemon::skills_cli::SkillsCommands::Remove { .. }
                 | other @ loong_daemon::skills_cli::SkillsCommands::Policy { .. } => {
                     panic!("unexpected skills subcommand parsed: {other:?}")
@@ -534,394 +487,6 @@ fn execute_skills_command_fetch_propagates_runtime_policy_errors() {
     .expect_err("fetch should surface approval gating before network access");
 
     assert!(error.contains("requires explicit authorization"));
-
-    fs::remove_dir_all(&root).ok();
-}
-
-#[test]
-fn execute_skills_command_enable_browser_preview_persists_runtime_and_installs_helper_skill() {
-    let root = unique_temp_dir("loong-skills-cli-browser-preview");
-    let _env = SkillsCliEnvironmentGuard::set(&[]);
-    let config_path = write_external_skills_config(&root, false);
-
-    let enable = loong_daemon::skills_cli::execute_skills_command(
-        loong_daemon::skills_cli::SkillsCommandOptions {
-            config: Some(config_path.display().to_string()),
-            json: false,
-            command: loong_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
-                replace: false,
-            },
-        },
-    )
-    .expect("enable browser preview should succeed");
-
-    assert_eq!(
-        enable.outcome.payload["skill_id"],
-        "browser-companion-preview"
-    );
-    assert_eq!(
-        enable.outcome.payload["display_name"],
-        "Browser Companion Preview"
-    );
-    assert!(
-        enable.outcome.payload["next_steps"].is_array(),
-        "enable browser preview should surface follow-up steps in the payload"
-    );
-    assert!(
-        enable.outcome.payload["recipes"].is_array(),
-        "enable browser preview should surface ready-to-run recipe commands in the payload"
-    );
-
-    let reloaded = mvp::config::load(Some(config_path.to_string_lossy().as_ref()))
-        .expect("reload config")
-        .1;
-    assert!(
-        reloaded.external_skills.enabled,
-        "enable-browser-preview should persist external skills enablement"
-    );
-    assert!(
-        reloaded.external_skills.auto_expose_installed,
-        "enable-browser-preview should persist installed-skill auto exposure"
-    );
-    assert!(
-        reloaded
-            .tools
-            .shell_default_mode
-            .eq_ignore_ascii_case("allow")
-            || reloaded
-                .tools
-                .shell_allow
-                .iter()
-                .any(|command| command == "agent-browser"),
-        "enable-browser-preview should leave the browser companion command allowed through shell policy"
-    );
-
-    let list = loong_daemon::skills_cli::execute_skills_command(
-        loong_daemon::skills_cli::SkillsCommandOptions {
-            config: Some(config_path.display().to_string()),
-            json: false,
-            command: loong_daemon::skills_cli::SkillsCommands::List,
-        },
-    )
-    .expect("skills list should succeed after browser preview enable");
-    assert!(
-        list.outcome.payload["skills"]
-            .as_array()
-            .expect("skills payload should be an array")
-            .iter()
-            .any(|skill| skill["skill_id"] == "browser-companion-preview"),
-        "browser preview helper skill should be installed into the managed skills runtime"
-    );
-
-    fs::remove_dir_all(&root).ok();
-}
-
-#[test]
-fn execute_skills_command_enable_browser_preview_quotes_follow_up_config_path() {
-    let root = unique_temp_dir("loong's-skills-cli-browser-preview");
-    let _env = SkillsCliEnvironmentGuard::set(&[]);
-    let config_path = write_external_skills_config(&root, false);
-
-    let enable = loong_daemon::skills_cli::execute_skills_command(
-        loong_daemon::skills_cli::SkillsCommandOptions {
-            config: Some(config_path.display().to_string()),
-            json: false,
-            command: loong_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
-                replace: false,
-            },
-        },
-    )
-    .expect("enable browser preview should succeed");
-
-    let next_steps = enable.outcome.payload["next_steps"]
-        .as_array()
-        .expect("enable browser preview should return next_steps");
-    let expected = format!(
-        "Run diagnostics: loong doctor --config {}",
-        shell_quote(&config_path.display().to_string())
-    );
-    assert!(
-        next_steps
-            .iter()
-            .any(|step| step.as_str() == Some(expected.as_str())),
-        "follow-up steps should shell-quote config paths: {next_steps:#?}"
-    );
-
-    fs::remove_dir_all(&root).ok();
-}
-
-#[test]
-fn execute_skills_command_enable_browser_preview_hides_recipes_when_cli_is_disabled() {
-    let root = unique_temp_dir("loong-skills-cli-browser-preview-cli-disabled");
-    let _env = SkillsCliEnvironmentGuard::set(&[("PATH", Some(""))]);
-    let config_path = write_external_skills_config_with_cli(&root, false, false);
-
-    let enable = loong_daemon::skills_cli::execute_skills_command(
-        loong_daemon::skills_cli::SkillsCommandOptions {
-            config: Some(config_path.display().to_string()),
-            json: false,
-            command: loong_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
-                replace: false,
-            },
-        },
-    )
-    .expect("enable browser preview should succeed even when cli is disabled");
-
-    assert_eq!(enable.outcome.payload["cli_enabled"], false);
-    let next_steps = enable.outcome.payload["next_steps"]
-        .as_array()
-        .expect("enable browser preview should return next_steps");
-    let expected_doctor_step = format!(
-        "Run diagnostics: loong doctor --config {}",
-        shell_quote(&config_path.display().to_string())
-    );
-    assert!(
-        next_steps.iter().any(|step| {
-            step.as_str()
-                == Some(
-                    "Install browser preview runtime: npm install -g agent-browser && agent-browser install",
-                )
-        }),
-        "cli-disabled configs should still surface the runtime install step: {next_steps:#?}"
-    );
-    assert!(
-        next_steps.iter().any(|step| {
-            step.as_str() == Some("Verify browser preview runtime: agent-browser open example.com")
-        }),
-        "cli-disabled configs should still surface the runtime verification step: {next_steps:#?}"
-    );
-    assert!(
-        next_steps
-            .iter()
-            .any(|step| step.as_str() == Some(expected_doctor_step.as_str())),
-        "cli-disabled configs should keep the doctor follow-up step: {next_steps:#?}"
-    );
-    assert!(
-        next_steps.iter().any(|step| {
-            step.as_str() == Some("Re-enable `cli.enabled` before running the preview recipes.")
-        }),
-        "cli-disabled configs should explicitly explain why preview recipes are withheld: {next_steps:#?}"
-    );
-    assert!(
-        !next_steps.iter().any(|step| {
-            step.as_str()
-                .is_some_and(|step| step.contains("Try browser companion preview: loong ask"))
-        }),
-        "cli-disabled configs should not advertise ask-based preview follow-up: {next_steps:#?}"
-    );
-    let recipes = enable.outcome.payload["recipes"]
-        .as_array()
-        .expect("enable browser preview should return recipes");
-    assert!(
-        recipes.is_empty(),
-        "cli-disabled configs should not expose ready-to-run ask recipes: {recipes:#?}"
-    );
-
-    fs::remove_dir_all(&root).ok();
-}
-
-#[test]
-fn execute_skills_command_enable_browser_preview_is_idempotent_after_first_install() {
-    let root = unique_temp_dir("loong-skills-cli-browser-preview-idempotent");
-    let _env = SkillsCliEnvironmentGuard::set(&[]);
-    let config_path = write_external_skills_config(&root, false);
-
-    loong_daemon::skills_cli::execute_skills_command(
-        loong_daemon::skills_cli::SkillsCommandOptions {
-            config: Some(config_path.display().to_string()),
-            json: false,
-            command: loong_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
-                replace: false,
-            },
-        },
-    )
-    .expect("initial enable browser preview should succeed");
-
-    let second = loong_daemon::skills_cli::execute_skills_command(
-        loong_daemon::skills_cli::SkillsCommandOptions {
-            config: Some(config_path.display().to_string()),
-            json: false,
-            command: loong_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
-                replace: false,
-            },
-        },
-    )
-    .expect("second enable browser preview should stay idempotent");
-
-    assert_eq!(
-        second.outcome.payload["skill_id"],
-        "browser-companion-preview"
-    );
-    assert_eq!(second.outcome.payload["replaced"], true);
-
-    fs::remove_dir_all(&root).ok();
-}
-
-#[test]
-fn execute_skills_command_enable_browser_preview_rejects_explicit_shell_deny_without_mutation() {
-    let root = unique_temp_dir("loong-skills-cli-browser-preview-shell-deny");
-    let _env = SkillsCliEnvironmentGuard::set(&[]);
-    let config_path = write_external_skills_config(&root, false);
-    let config_string = config_path.display().to_string();
-    let (resolved_path, mut config) =
-        mvp::config::load(Some(config_string.as_str())).expect("load config");
-    config.tools.shell_deny.push("agent-browser".to_owned());
-    mvp::config::write(
-        Some(resolved_path.to_string_lossy().as_ref()),
-        &config,
-        true,
-    )
-    .expect("persist hard-deny fixture");
-
-    let error = loong_daemon::skills_cli::execute_skills_command(
-        loong_daemon::skills_cli::SkillsCommandOptions {
-            config: Some(config_string.clone()),
-            json: false,
-            command: loong_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
-                replace: false,
-            },
-        },
-    )
-    .expect_err("enable browser preview should reject an explicit shell deny");
-
-    assert!(
-        error.contains("shell_deny"),
-        "error should identify the blocking shell deny entry: {error}"
-    );
-
-    let (_, reloaded) =
-        mvp::config::load(Some(config_string.as_str())).expect("reload unchanged config");
-    assert!(
-        !reloaded.external_skills.enabled,
-        "failed enable should not flip external skills on"
-    );
-    assert!(
-        !reloaded.external_skills.auto_expose_installed,
-        "failed enable should not turn on installed-skill auto exposure"
-    );
-    assert!(
-        !reloaded
-            .tools
-            .shell_allow
-            .iter()
-            .any(|command| command == "agent-browser"),
-        "failed enable should not add agent-browser to shell allow"
-    );
-    assert!(
-        reloaded
-            .tools
-            .shell_deny
-            .iter()
-            .any(|command| command == "agent-browser"),
-        "explicit hard deny should be preserved for the operator to remove intentionally"
-    );
-    assert!(
-        !root
-            .join("managed-skills")
-            .join("browser-companion-preview")
-            .exists(),
-        "failed enable should not install the helper skill"
-    );
-
-    fs::remove_dir_all(&root).ok();
-}
-
-#[test]
-fn execute_skills_command_enable_browser_preview_rolls_back_config_on_install_failure() {
-    let root = unique_temp_dir("loong-skills-cli-browser-preview-install-failure");
-    let _env = SkillsCliEnvironmentGuard::set(&[]);
-    let config_path = write_external_skills_config(&root, false);
-    let config_string = config_path.display().to_string();
-    fs::write(
-        root.join("managed-skills"),
-        "block install root with a file",
-    )
-    .expect("create install-root blocker");
-
-    let error = loong_daemon::skills_cli::execute_skills_command(
-        loong_daemon::skills_cli::SkillsCommandOptions {
-            config: Some(config_string.clone()),
-            json: false,
-            command: loong_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
-                replace: false,
-            },
-        },
-    )
-    .expect_err("enable browser preview should fail when the install root cannot be prepared");
-
-    assert!(
-        error.contains("failed to create external skills install root"),
-        "error should explain that the install root setup failed: {error}"
-    );
-
-    let (_, reloaded) =
-        mvp::config::load(Some(config_string.as_str())).expect("reload unchanged config");
-    assert!(
-        !reloaded.external_skills.enabled,
-        "failed enable should not persist external skills enablement"
-    );
-    assert!(
-        !reloaded.external_skills.auto_expose_installed,
-        "failed enable should not persist installed-skill auto exposure"
-    );
-    assert!(
-        !reloaded
-            .tools
-            .shell_allow
-            .iter()
-            .any(|command| command == "agent-browser"),
-        "failed enable should not persist agent-browser on the shell allow list"
-    );
-
-    fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(unix)]
-#[test]
-fn execute_skills_command_enable_browser_preview_rolls_back_skill_on_config_persist_failure() {
-    use std::os::unix::fs::PermissionsExt;
-
-    if integration_permission_test_running_as_root() {
-        eprintln!("skipping browser preview config write failure test under uid 0");
-        return;
-    }
-    let root = unique_temp_dir("loong-skills-cli-browser-preview-config-failure");
-    let install_root = root.join("managed-skills");
-    let config_path = root.join("loong.toml");
-    let mut config = mvp::config::LoongConfig::default();
-    config.tools.file_root = Some(root.display().to_string());
-    config.external_skills.enabled = false;
-    config.external_skills.auto_expose_installed = false;
-    config.external_skills.install_root = Some(install_root.display().to_string());
-    mvp::config::write(Some(config_path.to_string_lossy().as_ref()), &config, true)
-        .expect("write config fixture");
-    let config_path_text = config_path.to_string_lossy().to_string();
-    let _env = SkillsCliEnvironmentGuard::set(&[(
-        "LOONG_TEST_FAIL_CONFIG_WRITE_PATH",
-        Some(config_path_text.as_str()),
-    )]);
-
-    let error = loong_daemon::skills_cli::execute_skills_command(
-        loong_daemon::skills_cli::SkillsCommandOptions {
-            config: Some(config_path.display().to_string()),
-            json: false,
-            command: loong_daemon::skills_cli::SkillsCommands::EnableBrowserPreview {
-                replace: false,
-            },
-        },
-    )
-    .expect_err("enable browser preview should fail when config persistence fails");
-
-    assert!(
-        error.contains("Permission denied")
-            || error.contains("permission denied")
-            || error.contains("failed to write config file"),
-        "error should surface the config write failure: {error}"
-    );
-    assert!(
-        !install_root.join("browser-companion-preview").exists(),
-        "failed config persistence should not leave the helper skill installed"
-    );
 
     fs::remove_dir_all(&root).ok();
 }
@@ -1909,58 +1474,6 @@ fn execute_skills_command_info_guidance_avoids_false_success_for_inactive_skill(
 }
 
 #[test]
-fn execute_skills_command_installs_bundled_browser_companion_preview() {
-    let root = unique_temp_dir("loong-skills-cli-bundled-install");
-    let _env = SkillsCliEnvironmentGuard::set(&[]);
-    let config_path = write_external_skills_config(&root, true);
-
-    let install = loong_daemon::skills_cli::execute_skills_command(
-        loong_daemon::skills_cli::SkillsCommandOptions {
-            config: Some(config_path.display().to_string()),
-            json: false,
-            command: loong_daemon::skills_cli::SkillsCommands::InstallBundled {
-                skill_id: "browser-companion-preview".to_owned(),
-                replace: false,
-            },
-        },
-    )
-    .expect("bundled skills install should succeed");
-    assert_eq!(
-        install.outcome.payload["skill_id"],
-        "browser-companion-preview"
-    );
-    assert_eq!(
-        install.outcome.payload["display_name"],
-        "Browser Companion Preview"
-    );
-    assert_eq!(install.outcome.payload["source_kind"], "bundled");
-    assert_eq!(
-        install.outcome.payload["source_path"],
-        "bundled://browser-companion-preview"
-    );
-
-    let info = loong_daemon::skills_cli::execute_skills_command(
-        loong_daemon::skills_cli::SkillsCommandOptions {
-            config: Some(config_path.display().to_string()),
-            json: false,
-            command: loong_daemon::skills_cli::SkillsCommands::Info {
-                skill_id: "browser-companion-preview".to_owned(),
-            },
-        },
-    )
-    .expect("bundled skills info should succeed");
-    assert!(
-        info.outcome.payload["instructions_preview"]
-            .as_str()
-            .expect("instructions preview should be text")
-            .contains("agent-browser"),
-        "bundled browser companion preview should teach the managed agent-browser flow"
-    );
-
-    fs::remove_dir_all(&root).ok();
-}
-
-#[test]
 fn execute_skills_command_installs_bundled_byted_web_search() {
     let root = unique_temp_dir("loong-skills-cli-byted-web-search-install");
     let _env = SkillsCliEnvironmentGuard::set(&[]);
@@ -2106,7 +1619,7 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
     assert_eq!(initial.outcome.payload["policy"]["enabled"], false);
     assert_eq!(
         initial.outcome.payload["policy"]["require_download_approval"],
-        false
+        true
     );
     assert_eq!(
         initial.outcome.payload["policy"]["allowed_domains"],
@@ -2193,10 +1706,10 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
     .expect("policy reset should succeed");
     assert_eq!(reset.outcome.payload["persisted"], true);
     assert_eq!(reset.outcome.payload["config_updated"], true);
-    assert_eq!(reset.outcome.payload["policy"]["enabled"], true);
+    assert_eq!(reset.outcome.payload["policy"]["enabled"], false);
     assert_eq!(
         reset.outcome.payload["policy"]["require_download_approval"],
-        false
+        true
     );
     assert_eq!(
         reset.outcome.payload["policy"]["allowed_domains"],
@@ -2217,10 +1730,10 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
         },
     )
     .expect("policy get after reset should succeed");
-    assert_eq!(final_get.outcome.payload["policy"]["enabled"], true);
+    assert_eq!(final_get.outcome.payload["policy"]["enabled"], false);
     assert_eq!(
         final_get.outcome.payload["policy"]["require_download_approval"],
-        false
+        true
     );
     assert_eq!(
         final_get.outcome.payload["policy"]["allowed_domains"],
@@ -2233,9 +1746,9 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
 
     let (_, reloaded_after_reset) = mvp::config::load(Some(config_path.to_string_lossy().as_ref()))
         .expect("reload reset config");
-    assert!(reloaded_after_reset.external_skills.enabled);
+    assert!(!reloaded_after_reset.external_skills.enabled);
     assert!(
-        !reloaded_after_reset
+        reloaded_after_reset
             .external_skills
             .require_download_approval
     );
@@ -2255,7 +1768,7 @@ fn execute_skills_command_policy_round_trips_persisted_config() {
         reloaded_after_reset.external_skills.install_root.as_deref(),
         Some(install_root.as_str())
     );
-    assert!(reloaded_after_reset.external_skills.auto_expose_installed);
+    assert!(!reloaded_after_reset.external_skills.auto_expose_installed);
 
     fs::remove_dir_all(&root).ok();
 }
@@ -2342,7 +1855,7 @@ fn execute_skills_command_policy_set_requires_explicit_approval() {
     let (_, reloaded) =
         mvp::config::load(Some(config_string.as_str())).expect("reload unchanged config");
     assert!(!reloaded.external_skills.enabled);
-    assert!(!reloaded.external_skills.require_download_approval);
+    assert!(reloaded.external_skills.require_download_approval);
     assert!(reloaded.external_skills.allowed_domains.is_empty());
     assert!(reloaded.external_skills.blocked_domains.is_empty());
 
@@ -2495,100 +2008,6 @@ fn render_skills_cli_text_surfaces_operator_install_summary() {
     assert!(rendered.contains("installed skill_id=demo-skill"));
     assert!(rendered.contains("display_name=Demo Skill"));
     assert!(rendered.contains("replaced=true"));
-}
-
-#[test]
-fn render_skills_cli_text_surfaces_browser_preview_guidance() {
-    let config_path = "/tmp/loong's config.toml";
-    let rendered = loong_daemon::skills_cli::render_skills_cli_text(
-        &loong_daemon::skills_cli::SkillsCommandExecution {
-            resolved_config_path: config_path.to_owned(),
-            outcome: kernel::ToolCoreOutcome {
-                status: "ok".to_owned(),
-                payload: serde_json::json!({
-                    "tool_name": "skills.enable-browser-preview",
-                    "skill_id": "browser-companion-preview",
-                    "display_name": "Browser Companion Preview",
-                    "source_path": "bundled://browser-companion-preview",
-                    "install_path": "/tmp/managed/browser-companion-preview",
-                    "replaced": false,
-                    "config_updated": true,
-                    "runtime_binary_available": false,
-                    "next_steps": [
-                        "Install browser preview runtime: npm install -g agent-browser && agent-browser install",
-                        "Verify browser preview runtime: agent-browser open example.com",
-                        "Run diagnostics: loong doctor --config '/tmp/loong'\"'\"'s config.toml'"
-                    ],
-                    "recipes": [
-                        {
-                            "label": "summarize a page",
-                            "command": "loong ask --config '/tmp/loong'\"'\"'s config.toml' --message 'Use the browser companion preview to open https://example.com, snapshot the page, and summarize what is visible.'"
-                        },
-                        {
-                            "label": "extract page text",
-                            "command": "loong ask --config '/tmp/loong'\"'\"'s config.toml' --message 'Use the browser companion preview to open https://example.com, extract the main page text, and return the key points.'"
-                        }
-                    ]
-                }),
-            },
-        },
-    )
-    .expect("browser preview payload should render");
-
-    assert!(rendered.contains("config=/tmp/loong's config.toml"));
-    assert!(rendered.contains("runtime_binary_available=false"));
-    assert!(rendered.contains("next steps:"));
-    assert!(rendered.contains("Install browser preview runtime:"));
-    assert!(rendered.contains("agent-browser install"));
-    assert!(
-        rendered
-            .contains("Run diagnostics: loong doctor --config '/tmp/loong'\"'\"'s config.toml'")
-    );
-    assert!(rendered.contains("recipes:"));
-    assert!(rendered.contains("- summarize a page:"));
-    assert!(rendered.contains("snapshot the page"));
-}
-
-#[test]
-fn render_skills_cli_text_hides_browser_preview_recipes_when_cli_is_disabled() {
-    let rendered = loong_daemon::skills_cli::render_skills_cli_text(
-        &loong_daemon::skills_cli::SkillsCommandExecution {
-            resolved_config_path: "/tmp/loong.toml".to_owned(),
-            outcome: kernel::ToolCoreOutcome {
-                status: "ok".to_owned(),
-                payload: serde_json::json!({
-                    "tool_name": "skills.enable-browser-preview",
-                    "skill_id": "browser-companion-preview",
-                    "display_name": "Browser Companion Preview",
-                    "source_path": "bundled://browser-companion-preview",
-                    "install_path": "/tmp/managed/browser-companion-preview",
-                    "replaced": false,
-                    "config_updated": true,
-                    "runtime_binary_available": false,
-                    "cli_enabled": false,
-                    "next_steps": [
-                        "Install browser preview runtime: npm install -g agent-browser && agent-browser install",
-                        "Verify browser preview runtime: agent-browser open example.com",
-                        "Run diagnostics: loong doctor --config '/tmp/loong.toml'",
-                        "Re-enable `cli.enabled` before running the preview recipes."
-                    ],
-                    "recipes": []
-                }),
-            },
-        },
-    )
-    .expect("browser preview payload should render");
-
-    assert!(rendered.contains("next steps:"));
-    assert!(rendered.contains("Re-enable `cli.enabled` before running the preview recipes."));
-    assert!(
-        !rendered.contains("recipes:"),
-        "cli-disabled payloads should not render an empty recipes section: {rendered}"
-    );
-    assert!(
-        !rendered.contains("Try browser companion preview:"),
-        "cli-disabled payloads should not advertise ask-based preview follow-up: {rendered}"
-    );
 }
 
 #[test]

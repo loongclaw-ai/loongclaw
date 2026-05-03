@@ -212,19 +212,12 @@ fn runtime_snapshot_restore_normalization_treats_blank_inline_secret_as_absent()
 #[test]
 fn runtime_snapshot_tool_runtime_json_reports_browser_execution_tiers() {
     let config = mvp::config::LoongConfig::default();
-    let mut runtime = mvp::tools::runtime_config::ToolRuntimeConfig::default();
-    runtime.browser_companion.enabled = true;
-    runtime.browser_companion.ready = true;
-    runtime.browser_companion.command = Some("browser-companion".to_owned());
+    let runtime = mvp::tools::runtime_config::ToolRuntimeConfig::default();
 
     let access = runtime_tool_access_summary(&config, &runtime);
     let json = runtime_snapshot_tool_runtime_json(&runtime, &access);
 
     assert_eq!(json["browser"]["execution_tier"], json!("restricted"));
-    assert_eq!(
-        json["browser_companion"]["execution_tier"],
-        json!("balanced")
-    );
     assert_eq!(json["web_search"]["enabled"], json!(true));
     assert_eq!(json["web_search"]["default_provider"], json!("duckduckgo"));
     assert_eq!(json["web_search"]["credential_ready"], json!(true));
@@ -244,7 +237,10 @@ fn runtime_snapshot_tool_runtime_json_reports_browser_execution_tiers() {
         json!("duckduckgo")
     );
     assert_eq!(json["access"]["query_search_credential_ready"], json!(true));
-    assert_eq!(json["access"]["managed_browser_session_ready"], json!(true));
+    assert_eq!(
+        json["access"]["managed_browser_session_ready"],
+        json!(false)
+    );
 }
 
 #[test]
@@ -253,8 +249,6 @@ fn runtime_tool_access_summary_distinguishes_network_search_browser_and_governan
     let mut runtime = mvp::tools::runtime_config::ToolRuntimeConfig::default();
     runtime.web_fetch.enabled = false;
     runtime.browser.enabled = false;
-    runtime.browser_companion.enabled = true;
-    runtime.browser_companion.ready = false;
     runtime.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_BRAVE.to_owned();
     runtime.web_search.brave_api_key = None;
 
@@ -268,7 +262,7 @@ fn runtime_tool_access_summary_distinguishes_network_search_browser_and_governan
     );
     assert!(!summary.query_search_credential_ready);
     assert!(!summary.browser_page_access_enabled);
-    assert!(summary.managed_browser_session_enabled);
+    assert!(!summary.managed_browser_session_enabled);
     assert!(!summary.managed_browser_session_ready);
     assert_eq!(summary.consent_mode, "full");
     assert_eq!(summary.approval_mode, "disabled");

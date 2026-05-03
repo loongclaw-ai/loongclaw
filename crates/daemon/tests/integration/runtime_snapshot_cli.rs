@@ -104,9 +104,6 @@ fn write_runtime_snapshot_config(root: &Path) -> (PathBuf, mvp::config::LoongCon
     config.tools.file_root = Some(root.display().to_string());
     config.tools.shell_allow = vec!["git".to_owned(), "cargo".to_owned()];
     config.tools.browser.enabled = true;
-    config.tools.browser_companion.enabled = true;
-    config.tools.browser_companion.command = Some("browser-companion".to_owned());
-    config.tools.browser_companion.expected_version = Some("1.2.3".to_owned());
     config.tools.web.enabled = true;
     config.tools.web.allowed_domains = vec!["docs.example.com".to_owned()];
     config.tools.web.blocked_domains = vec!["internal.example".to_owned()];
@@ -166,6 +163,12 @@ fn write_runtime_snapshot_config(root: &Path) -> (PathBuf, mvp::config::LoongCon
     let config_path = root.join("loong.toml");
     mvp::config::write(Some(config_path.to_string_lossy().as_ref()), &config, true)
         .expect("write config fixture");
+    let runtime_config = mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(
+        &config,
+        Some(&config_path),
+    );
+    mvp::tools::external_skills_operator_policy_reset_with_config(true, &runtime_config)
+        .expect("reset runtime snapshot external skills policy");
     (config_path, config)
 }
 
@@ -326,11 +329,11 @@ fn runtime_snapshot_json_payload_includes_provider_tool_and_external_skill_inven
     );
     assert_eq!(
         payload["tool_runtime"]["access"]["managed_browser_session_enabled"],
-        true
+        false
     );
     assert_eq!(
         payload["tool_runtime"]["access"]["managed_browser_session_ready"],
-        true
+        false
     );
     assert_eq!(payload["external_skills"]["policy"]["enabled"], true);
     assert!(array_contains_object_field(
@@ -684,8 +687,8 @@ fn runtime_snapshot_text_highlights_experiment_relevant_sections() {
     assert!(rendered.contains("query_search_provider_label=DuckDuckGo"));
     assert!(rendered.contains("query_search_credential_ready=true"));
     assert!(rendered.contains("browser_page_enabled=true"));
-    assert!(rendered.contains("managed_browser_enabled=true"));
-    assert!(rendered.contains("managed_browser_ready=true"));
+    assert!(rendered.contains("managed_browser_enabled=false"));
+    assert!(rendered.contains("managed_browser_ready=false"));
     assert!(rendered.contains("consent_mode=full"));
     assert!(rendered.contains("approval_mode=disabled"));
     assert!(rendered.contains("tools visible_count="));

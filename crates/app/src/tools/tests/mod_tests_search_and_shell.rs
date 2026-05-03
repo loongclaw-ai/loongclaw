@@ -310,10 +310,9 @@ fn tool_execution_config_default_is_no_timeout() {
 
 #[test]
 fn framework_timeout_excludes_tools_with_dedicated_timeout_controls() {
-    assert!(tool_uses_dedicated_timeout(
-        "browser.companion.session.start"
-    ));
-    assert!(tool_uses_dedicated_timeout("browser.companion.wait"));
+    assert!(tool_uses_dedicated_timeout("browser.open"));
+    assert!(tool_uses_dedicated_timeout("browser.extract"));
+    assert!(tool_uses_dedicated_timeout("browser.click"));
     assert!(tool_uses_dedicated_timeout("delegate"));
     assert!(tool_uses_dedicated_timeout("delegate_async"));
     assert!(tool_uses_dedicated_timeout("shell.exec"));

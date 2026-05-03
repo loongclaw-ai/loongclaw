@@ -29,33 +29,15 @@ pub(super) struct EffectiveToolMetadataError {
 
 fn resolve_effective_tool_target(
     resolved_tool: ResolvedToolExecution,
-    mut request: ToolCoreRequest,
-    mut normalized_intent: ToolIntent,
+    request: ToolCoreRequest,
+    normalized_intent: ToolIntent,
     _original_intent: &ToolIntent,
 ) -> EffectiveToolTarget {
-    let mut execution_kind = resolved_tool.execution_kind;
-    let mut tool_name = resolved_tool.canonical_name.to_owned();
-
-    if resolved_tool.canonical_name == "browser"
-        && let Ok(routed_tool_name) =
-            crate::tools::route_direct_tool_name("browser", &request.payload)
-        && matches!(
-            routed_tool_name,
-            "browser.companion.click" | "browser.companion.type"
-        )
-        && let Some(routed_tool) = crate::tools::resolve_tool_execution(routed_tool_name)
-    {
-        execution_kind = routed_tool.execution_kind;
-        tool_name = routed_tool.canonical_name.to_owned();
-        request.tool_name = tool_name.clone();
-        normalized_intent.tool_name = tool_name.clone();
-    }
-
     EffectiveToolTarget {
-        execution_kind,
+        execution_kind: resolved_tool.execution_kind,
         request,
         intent: normalized_intent,
-        tool_name,
+        tool_name: resolved_tool.canonical_name.to_owned(),
     }
 }
 

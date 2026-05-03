@@ -5,8 +5,8 @@ description: Understand private-host, domain, and browser runtime gates without 
 
 # Browser And Web Boundaries
 
-Use this page when web fetch, browser actions, browser preview, or outbound HTTP
-delivery feels "mysteriously blocked."
+Use this page when web fetch, built-in browse actions, external browser
+automation, or outbound HTTP delivery feels "mysteriously blocked."
 
 The important operator truth is that Loong has more than one web-facing
 boundary, and each one owns a different lane.
@@ -16,10 +16,10 @@ boundary, and each one owns a different lane.
 | If you need to... | Start here |
 | --- | --- |
 | allow a private or loopback HTTP target for outbound delivery | [Outbound HTTP Trust Toggle](#outbound-http-trust-toggle) |
-| change built-in browser enablement or session limits | [Built-In Browser Shape](#built-in-browser-shape) |
-| allow the built-in web fetch or built-in browser lane to reach a private host | [Built-In Web And Browser Policy](#built-in-web-and-browser-policy) |
-| constrain browser or web traffic to a reviewed domain set | [Allowed And Blocked Domains](#allowed-and-blocked-domains) |
-| understand why browser preview still is not ready after install | [Browser Preview And Companion Gates](#browser-preview-and-companion-gates) |
+| change built-in browse enablement or session limits | [Built-In Browse Shape](#built-in-browse-shape) |
+| allow the built-in web fetch or built-in browse lane to reach a private host | [Built-In Web And Browse Policy](#built-in-web-and-browse-policy) |
+| constrain browse or web traffic to a reviewed domain set | [Allowed And Blocked Domains](#allowed-and-blocked-domains) |
+| understand why `agent-browser` still is not ready after install | [External Browser Automation Runtime](#external-browser-automation-runtime) |
 | inspect the underlying public safety posture | [Security And Reliability](/reference/security-and-reliability) |
 
 ## One Problem Family, Four Different Config Owners
@@ -29,10 +29,11 @@ come from different policy owners:
 
 - `[outbound_http]` owns HTTP-backed outbound delivery such as webhook-style and
   workplace send surfaces
-- `[tools.browser]` owns built-in browser enablement and local session limits
+- `[tools.browser]` owns built-in browse enablement and local session limits
 - `[tools.web]` owns built-in web fetch and the outbound trust boundary used by
-  built-in browser requests
-- `[tools.browser_companion]` owns the richer managed browser companion policy
+  built-in browse requests
+- managed skills such as `agent-browser` own richer browser automation outside
+  the built-in browse lane
 
 That is why "just set one flag" is often the wrong operator advice.
 
@@ -58,9 +59,9 @@ Keep this mental rule:
 - `outbound_http` is for config-backed outbound delivery
 - it is not the same thing as the built-in browser or web-fetch policy
 
-## Built-In Browser Shape
+## Built-In Browse Shape
 
-The built-in browser tool is split across two config families on purpose:
+The built-in browse tool is split across two config families on purpose:
 
 ```toml
 [tools.browser]
@@ -81,16 +82,16 @@ max_redirects = 1
 
 Read this split carefully:
 
-- change `[tools.browser]` when browser actions themselves are disabled or need
-  different session, link, or text limits
+- change `[tools.browser]` when built-in browse actions themselves are disabled
+  or need different session, link, or text limits
 - change `[tools.web]` when the blocker is URL policy, private-host policy,
   redirects, timeout, or allowed and blocked domains
-- built-in browser requests follow `tools.web` for host and domain trust; they
+- built-in browse requests follow `tools.web` for host and domain trust; they
   do not use `[outbound_http]`
 
-## Built-In Web And Browser Policy
+## Built-In Web And Browse Policy
 
-The built-in browser lane follows the same web-fetch safety boundary as the
+The built-in browse lane follows the same web-fetch safety boundary as the
 built-in web tools.
 
 ```toml
@@ -117,10 +118,10 @@ This is the lane to change when:
 
 - built-in `web.fetch` or search-style retrieval is blocked on a local/private
   URL
-- built-in browser open/extract/navigation needs to reach a private bridge
-- the browser lane should be allowlisted to a reviewed public domain set
-- the browser tool itself is already enabled and the remaining problem is
-  clearly about web reachability rather than browser session sizing
+- built-in browse open/extract/click needs to reach a private bridge
+- the browse lane should be allowlisted to a reviewed public domain set
+- the built-in browse tool itself is already enabled and the remaining problem
+  is clearly about web reachability rather than session sizing
 
 ## Allowed And Blocked Domains
 
@@ -141,17 +142,17 @@ these next:
 - the host may still be missing from a non-empty `allowed_domains` list
 - the host may already appear in `blocked_domains`
 - you may be changing the wrong lane, such as `outbound_http` when the built-in
-  browser is the real caller
+  browse tool is the real caller
 
-## Browser Preview And Companion Gates
+## External Browser Automation Runtime
 
-Browser preview adds another layer beyond plain URL policy: the runtime itself
-must be installed and ready.
+External browser automation adds another layer beyond plain URL policy: the
+runtime itself must be installed and ready.
 
 The shortest public path is still:
 
 ```bash
-loong skills enable-browser-preview
+loong skills install-bundled agent-browser --replace
 npm install -g agent-browser && agent-browser install
 agent-browser open example.com
 loong doctor
@@ -159,67 +160,36 @@ loong doctor
 
 That path solves a different problem than `tools.web`:
 
-- `enable-browser-preview` turns on the managed preview helper flow
+- `skills install-bundled agent-browser` installs the packaged operator skill
 - `agent-browser` is the runtime binary that must actually exist on `PATH`
-- `loong doctor` is the public repair path when preview still is not ready
-
-## Managed Browser Companion Policy
-
-When you want the richer companion lane to be explicit in config instead of
-relying on defaults alone, this is the public shape:
-
-```toml
-[tools.browser_companion]
-enabled = true
-command = "loong-browser-companion"
-expected_version = "1.2.3"
-timeout_seconds = 30
-allow_private_hosts = false
-allowed_domains = ["docs.example.com"]
-blocked_domains = ["internal.example"]
-```
-
-Read this block carefully:
-
-- `enabled = true` only turns on the config gate; it does not make the runtime
-  binary magically available
-- `command` and `expected_version` make doctor's install/version checks concrete
-- `allow_private_hosts`, `allowed_domains`, and `blocked_domains` are the
-  companion lane's own policy when you configure it explicitly
-- this block is separate from `[tools.browser]` and the built-in browser tool;
-  it is for the managed companion runtime path
-
-If the companion block is still at defaults, the runtime can fall back to the
-exported web policy environment instead of a custom companion-specific domain
-policy.
+- `loong doctor` is the public repair path when automation still is not ready
 
 ## Common Failure Cases
 
 | What happened | What it usually means | What to change |
 | --- | --- | --- |
 | an outbound webhook or workplace send target is rejected | the outbound delivery lane is still fail-closed for private hosts | set `[outbound_http] allow_private_hosts = true` only if that private target is intentional |
-| browser commands are unavailable before any URL is even tried | the built-in browser tool is disabled or too tightly bounded for the use case | review `[tools.browser] enabled`, `max_sessions`, `max_links`, and `max_text_chars` |
-| built-in browser open or web fetch rejects a local/private URL | the built-in tool lane is still in public-only mode | set `[tools.web] allow_private_hosts = true` |
+| built-in browse commands are unavailable before any URL is even tried | the built-in browse tool is disabled or too tightly bounded for the use case | review `[tools.browser] enabled`, `max_sessions`, `max_links`, and `max_text_chars` |
+| built-in browse open or web fetch rejects a local/private URL | the built-in tool lane is still in public-only mode | set `[tools.web] allow_private_hosts = true` |
 | a target is still rejected after private hosts are allowed | the host is missing from an allowlist or already blocked explicitly | review `allowed_domains` and `blocked_domains` in the owning lane |
-| browser preview enable succeeded, but preview is still unavailable | the helper skill is present but the runtime binary is missing or not callable | install `agent-browser`, verify it directly, then rerun `loong doctor` |
-| browser preview enable fails immediately | shell policy explicitly denies `agent-browser` | remove `agent-browser` from `[tools].shell_deny`, then retry |
-| doctor says the browser companion runtime gate is not ready | config and runtime readiness are still different states | keep using the built-in browser lane or disable `tools.browser_companion.enabled` until the companion runtime is truly ready |
+| `agent-browser` still is not usable after install | the skill is present but the runtime binary is missing or not callable | install `agent-browser`, verify it directly, then rerun `loong doctor` |
+| `agent-browser` is installed but invocation still fails immediately | shell policy explicitly denies `agent-browser` | remove `agent-browser` from `[tools].shell_deny`, then retry |
 
 ## Reading Rules
 
 - Change only the lane that actually owns the blocked traffic.
-- Check `[tools.browser]` first if the problem is "browser tool unavailable"
+- Check `[tools.browser]` first if the problem is "built-in browse tool unavailable"
   rather than "URL rejected."
-- Do not use `outbound_http` as a generic fix for built-in browser or web-fetch
+- Do not use `outbound_http` as a generic fix for built-in browse or web-fetch
   failures.
 - Do not use `allow_private_hosts = true` as a substitute for a real domain
   policy when the lane should stay narrow.
-- Treat `doctor` as the repair path when browser preview or companion readiness
+- Treat `doctor` as the repair path when external browser automation readiness
   is unclear.
 
 ## Continue Reading
 
-- Continue to [Managed Skills](/use-loong/managed-skills) when the issue is skill install, browser preview enablement, or download policy rather than raw URL policy.
+- Continue to [Managed Skills](/use-loong/managed-skills) when the issue is skill install, `agent-browser` setup, or download policy rather than raw URL policy.
 - Continue to [Configuration Patterns](/use-loong/configuration-patterns) when you want the wider operator config map around providers, channels, memory, and trust toggles.
 - Continue to [Tool Surface](/use-loong/tool-surface) when you want the broader truthful-tool contract behind these boundaries.
 - Continue to [Doctor And Health](/get-started/doctor-and-health) when you want the repair-first operator path.

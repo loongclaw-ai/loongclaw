@@ -1,84 +1,6 @@
 use super::*;
 use tempfile::tempdir;
 
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_visibility_surface_requires_runtime_readiness_for_all_companion_tools() {
-    let catalog = tool_catalog();
-    let expected = [
-        ("browser.companion.session.start", ToolExecutionKind::Core),
-        ("browser.companion.navigate", ToolExecutionKind::Core),
-        ("browser.companion.snapshot", ToolExecutionKind::Core),
-        ("browser.companion.wait", ToolExecutionKind::Core),
-        ("browser.companion.session.stop", ToolExecutionKind::Core),
-        ("browser.companion.click", ToolExecutionKind::App),
-        ("browser.companion.type", ToolExecutionKind::App),
-    ];
-
-    let mut hidden = ToolRuntimeConfig::default();
-    hidden.browser_companion.enabled = true;
-    hidden.browser_companion.ready = false;
-    hidden.browser_companion.command = Some("browser-companion".to_owned());
-    let hidden_view = runtime_tool_view_for_runtime_config(&hidden);
-
-    let mut visible = ToolRuntimeConfig::default();
-    visible.browser_companion.enabled = true;
-    visible.browser_companion.ready = true;
-    visible.browser_companion.command = Some("browser-companion".to_owned());
-    let visible_view = runtime_tool_view_for_runtime_config(&visible);
-
-    for (tool_name, execution_kind) in expected {
-        let descriptor = catalog
-            .resolve(tool_name)
-            .unwrap_or_else(|| panic!("missing browser companion descriptor `{tool_name}`"));
-        assert_eq!(
-            descriptor.visibility_gate,
-            ToolVisibilityGate::BrowserCompanion
-        );
-        assert_eq!(descriptor.execution_kind, execution_kind);
-        assert!(
-            !hidden_view.contains(tool_name),
-            "tool should stay hidden until runtime-ready: {tool_name}"
-        );
-        assert!(
-            visible_view.contains(tool_name),
-            "tool should appear once runtime-ready: {tool_name}"
-        );
-    }
-}
-
-#[test]
-fn browser_companion_visibility_gate_requires_runtime_readiness() {
-    let mut config = ToolRuntimeConfig::default();
-    config.browser_companion.enabled = true;
-    config.browser_companion.ready = false;
-    config.browser_companion.command = Some("browser-companion".to_owned());
-
-    assert!(!tool_visibility_gate_enabled_for_runtime_policy(
-        ToolVisibilityGate::BrowserCompanion,
-        &config
-    ));
-
-    config.browser_companion.ready = true;
-
-    assert!(tool_visibility_gate_enabled_for_runtime_policy(
-        ToolVisibilityGate::BrowserCompanion,
-        &config
-    ));
-}
-
-#[test]
-fn browser_companion_visibility_gate_stays_hidden_for_config_only_views() {
-    let mut config = ToolConfig::default();
-    config.browser_companion.enabled = true;
-
-    assert!(!tool_visibility_gate_enabled_for_runtime_view(
-        ToolVisibilityGate::BrowserCompanion,
-        &config,
-        false
-    ));
-}
-
 #[test]
 fn memory_file_root_visibility_gate_requires_safe_root_configuration() {
     let hidden_config = ToolConfig::default();
@@ -219,11 +141,9 @@ fn runtime_tool_view_includes_memory_search_for_canonical_memory_without_workspa
 }
 
 #[test]
-fn browser_visibility_gate_is_independent_from_companion_settings() {
+fn browser_visibility_gate_tracks_browser_runtime() {
     let mut config = ToolRuntimeConfig::default();
     config.browser.enabled = true;
-    config.browser_companion.enabled = false;
-    config.browser_companion.ready = false;
 
     assert!(tool_visibility_gate_enabled_for_runtime_policy(
         ToolVisibilityGate::Browser,
@@ -659,11 +579,11 @@ fn governance_profile_follows_descriptor_declared_policy() {
 #[cfg(feature = "tool-browser")]
 #[test]
 fn governance_profile_resolves_alias_backed_tool_metadata() {
-    let policy = governance_profile_for_tool_name("browser_companion_click");
+    let policy = governance_profile_for_tool_name("browser_click");
 
     assert_eq!(policy.scope, ToolGovernanceScope::Routine);
-    assert_eq!(policy.risk_class, ToolRiskClass::High);
-    assert_eq!(policy.approval_mode, ToolApprovalMode::PolicyDriven);
+    assert_eq!(policy.risk_class, ToolRiskClass::Low);
+    assert_eq!(policy.approval_mode, ToolApprovalMode::Never);
 }
 
 #[cfg(feature = "tool-shell")]
@@ -909,18 +829,6 @@ fn web_search_definition_requires_query_and_exposes_provider_override() {
     assert_eq!(parameters["required"], json!(["query"]));
     assert!(parameters["properties"]["provider"]["enum"].is_array());
     assert!(parameters["properties"]["max_results"].is_object());
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_type_definition_requires_session_selector_and_text() {
-    let descriptor = tool_catalog()
-        .descriptor("browser.companion.type")
-        .expect("browser.companion.type descriptor");
-    let definition = descriptor.provider_definition();
-    let required = &definition["function"]["parameters"]["required"];
-
-    assert_eq!(required, &json!(["session_id", "selector", "text"]));
 }
 
 #[cfg(feature = "feishu-integration")]

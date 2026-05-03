@@ -291,19 +291,10 @@ Notes:
 
 | Field | Type | Default | Valid Range/Values | Description |
 |-------|------|---------|-------------------|-------------|
-| `enabled` | boolean | `true` | `true`, `false` | Enable browser automation |
-| `max_sessions` | integer | `8` | `1` - `32` | Maximum concurrent browser sessions |
+| `enabled` | boolean | `true` | `true`, `false` | Enable built-in bounded page browsing |
+| `max_sessions` | integer | `8` | `1` - `32` | Maximum concurrent browse sessions |
 | `max_links` | integer | `40` | `1` - `200` | Maximum links per page |
 | `max_text_chars` | integer | `6000` | `256` - `20000` | Maximum text extraction characters |
-
-### tools.browser_companion
-
-| Field | Type | Default | Valid Range/Values | Description |
-|-------|------|---------|-------------------|-------------|
-| `enabled` | boolean | `false` | `true`, `false` | Enable browser companion |
-| `command` | string? | `null` | Path | Browser companion command path |
-| `expected_version` | string? | `null` | Version string | Expected companion version |
-| `timeout_seconds` | integer | `30` | `1`+ | Companion timeout (seconds) |
 
 ### tools.web
 

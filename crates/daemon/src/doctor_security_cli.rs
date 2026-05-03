@@ -236,8 +236,6 @@ async fn build_doctor_security_execution(
 ) -> CliResult<DoctorSecurityAuditExecution> {
     let runtime =
         mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, Some(config_path));
-    let browser_companion_diagnostics =
-        crate::browser_companion_diagnostics::collect_browser_companion_diagnostics(config).await;
 
     let mut findings = Vec::new();
 
@@ -267,7 +265,7 @@ async fn build_doctor_security_execution(
     let secret_hygiene_finding = assess_secret_hygiene(config_path, config)?;
     findings.push(secret_hygiene_finding);
 
-    let browser_finding = assess_browser_surfaces(&runtime, browser_companion_diagnostics.as_ref());
+    let browser_finding = assess_browser_surfaces(&runtime);
     findings.push(browser_finding);
 
     let summary = summarize_findings(&findings);
@@ -822,90 +820,27 @@ fn assess_secret_hygiene(
 
 fn assess_browser_surfaces(
     runtime: &mvp::tools::runtime_config::ToolRuntimeConfig,
-    diagnostics: Option<&crate::browser_companion_diagnostics::BrowserCompanionDiagnostics>,
 ) -> SecurityFinding {
     let browser_enabled = runtime.browser.enabled;
     let browser_tier = runtime.browser_execution_security_tier();
-    let companion_enabled = runtime.browser_companion.enabled;
-    let companion_tier = runtime.browser_companion_execution_security_tier();
 
     let mut evidence = Vec::new();
     let browser_enabled_evidence = format!("tools.browser.enabled={browser_enabled}");
     evidence.push(browser_enabled_evidence);
     let browser_tier_evidence = format!("browser.execution_tier={}", browser_tier.as_str());
     evidence.push(browser_tier_evidence);
-    let companion_enabled_evidence = format!("tools.browser_companion.enabled={companion_enabled}");
-    evidence.push(companion_enabled_evidence);
-    let companion_tier_evidence = format!(
-        "browser_companion.execution_tier={}",
-        companion_tier.as_str()
-    );
-    evidence.push(companion_tier_evidence);
-
-    if !companion_enabled {
-        let summary = if browser_enabled {
-            "Browser automation stays on the built-in restricted lane because the managed browser companion is disabled."
-                .to_owned()
-        } else {
-            "Browser automation surfaces are disabled.".to_owned()
-        };
-        let next_steps = Vec::new();
-        return build_finding(
-            "browser_surfaces",
-            "Browser Surfaces",
-            SecurityFindingStatus::Covered,
-            SecurityFindingSeverity::Info,
-            summary,
-            evidence,
-            next_steps,
-        );
-    }
-
-    if let Some(diagnostics) = diagnostics {
-        let install_evidence =
-            format!("browser_companion.install={}", diagnostics.install_detail());
-        evidence.push(install_evidence);
-        if let Some(runtime_gate_detail) = diagnostics.runtime_gate_detail() {
-            let gate_evidence = format!("browser_companion.runtime_gate={runtime_gate_detail}");
-            evidence.push(gate_evidence);
-        }
-
-        if !diagnostics.install_ready() || !diagnostics.runtime_ready {
-            let summary =
-                "The browser companion lane is enabled, but install or runtime readiness is still incomplete."
-                    .to_owned();
-            let next_steps = vec![
-                "Keep the built-in browser lane as the active path until the companion runtime is fully ready."
-                    .to_owned(),
-                format!(
-                    "Run {} doctor to repair the companion install/runtime gate.",
-                    mvp::config::active_cli_command_name()
-                ),
-            ];
-            return build_finding(
-                "browser_surfaces",
-                "Browser Surfaces",
-                SecurityFindingStatus::Partial,
-                SecurityFindingSeverity::Warn,
-                summary,
-                evidence,
-                next_steps,
-            );
-        }
-    }
-
-    let summary =
-        "The managed browser companion lane is active, but this command does not prove remote/browser auth equivalence beyond local runtime readiness."
-            .to_owned();
-    let next_steps = vec![
-        "Keep browser companion deployment local-first unless you have separately reviewed its auth boundary."
-            .to_owned(),
-    ];
+    let summary = if browser_enabled {
+        "Built-in browse stays on the restricted lane, and richer browser automation is expected to run through an external skill or plugin."
+            .to_owned()
+    } else {
+        "Browser automation surfaces are disabled.".to_owned()
+    };
+    let next_steps = Vec::new();
     build_finding(
         "browser_surfaces",
         "Browser Surfaces",
-        SecurityFindingStatus::Unknown,
-        SecurityFindingSeverity::Warn,
+        SecurityFindingStatus::Covered,
+        SecurityFindingSeverity::Info,
         summary,
         evidence,
         next_steps,
@@ -1655,10 +1590,8 @@ fn config_file_permission_issue(config_path: &Path) -> CliResult<Option<String>>
 mod tests {
     use super::*;
 
-    use crate::test_support::ScopedEnv;
     use loong_contracts::SecretRef;
     use std::path::PathBuf;
-    use std::process::Command;
     use std::sync::MutexGuard;
 
     fn temp_config_path(label: &str) -> PathBuf {
@@ -1679,24 +1612,6 @@ mod tests {
             .iter()
             .find(|finding| finding.id == id)
             .unwrap_or_else(|| panic!("missing finding `{id}`"))
-    }
-
-    fn portable_browser_companion_probe() -> (String, String) {
-        let output = Command::new("rustc")
-            .arg("--version")
-            .output()
-            .expect("run rustc --version");
-        assert!(output.status.success(), "rustc --version should succeed");
-
-        let observed_version = String::from_utf8(output.stdout).expect("utf-8 rustc version");
-        let observed_version = observed_version.trim().to_owned();
-        let expected_version = observed_version
-            .split_whitespace()
-            .nth(1)
-            .expect("rustc version token")
-            .to_owned();
-
-        ("rustc".to_owned(), expected_version)
     }
 
     struct ExternalSkillsPolicyResetGuard {
@@ -1896,27 +1811,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_surfaces_become_unknown_when_companion_is_ready() {
+    async fn browser_surfaces_report_built_in_browse_lane() {
         let path = temp_config_path("browser-companion");
         write_placeholder_config(&path);
 
-        let (command_name, expected_version) = portable_browser_companion_probe();
-
         let mut config = mvp::config::LoongConfig::default();
-        config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(command_name);
-        config.tools.browser_companion.expected_version = Some(expected_version);
-
-        let mut env = ScopedEnv::new();
-        env.set("LOONG_BROWSER_COMPANION_READY", "true");
+        config.tools.browser.enabled = true;
 
         let execution = build_doctor_security_execution(&path, &config)
             .await
             .expect("build security execution");
         let finding = finding_by_id(&execution.findings, "browser_surfaces");
 
-        assert_eq!(finding.status, SecurityFindingStatus::Unknown);
-        assert_eq!(finding.severity, SecurityFindingSeverity::Warn);
+        assert_eq!(finding.status, SecurityFindingStatus::Covered);
+        assert_eq!(finding.severity, SecurityFindingSeverity::Info);
     }
 
     #[test]

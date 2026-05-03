@@ -103,18 +103,12 @@ impl DefaultAppToolDispatcher {
                         self.tool_config.delegate.max_depth,
                     )?,
                 };
-                return Ok(with_runtime_ready_browser_companion_tools(
-                    delegate_child_tool_view_for_contract(
-                        &self.tool_config,
-                        subagent_contract.as_ref(),
-                    ),
-                    &session_context.tool_view,
+                return Ok(delegate_child_tool_view_for_contract(
+                    &self.tool_config,
+                    subagent_contract.as_ref(),
                 ));
             }
-            return Ok(with_runtime_ready_browser_companion_tools(
-                runtime_tool_view_for_config(&self.tool_config),
-                &session_context.tool_view,
-            ));
+            return Ok(runtime_tool_view_for_config(&self.tool_config));
         }
         if repo
             .load_session_summary_with_legacy_fallback(&session_context.session_id)?
@@ -125,18 +119,12 @@ impl DefaultAppToolDispatcher {
                 &session_context.session_id,
                 self.tool_config.delegate.max_depth,
             )?;
-            return Ok(with_runtime_ready_browser_companion_tools(
-                delegate_child_tool_view_for_contract(
-                    &self.tool_config,
-                    subagent_contract.as_ref(),
-                ),
-                &session_context.tool_view,
+            return Ok(delegate_child_tool_view_for_contract(
+                &self.tool_config,
+                subagent_contract.as_ref(),
             ));
         }
-        Ok(with_runtime_ready_browser_companion_tools(
-            runtime_tool_view_for_config(&self.tool_config),
-            &session_context.tool_view,
-        ))
+        Ok(runtime_tool_view_for_config(&self.tool_config))
     }
 
     #[cfg(not(feature = "memory-sqlite"))]
@@ -144,10 +132,8 @@ impl DefaultAppToolDispatcher {
         &self,
         session_context: &SessionContext,
     ) -> Result<ToolView, String> {
-        Ok(with_runtime_ready_browser_companion_tools(
-            runtime_tool_view_for_config(&self.tool_config),
-            &session_context.tool_view,
-        ))
+        let _ = session_context;
+        Ok(runtime_tool_view_for_config(&self.tool_config))
     }
 
     #[cfg(feature = "memory-sqlite")]

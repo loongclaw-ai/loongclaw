@@ -269,7 +269,7 @@ fn status_cli_json_rolls_up_gateway_acp_and_work_unit_sections() {
     let stdout = render_output(&output.stdout);
     let payload: Value = serde_json::from_str(&stdout).expect("decode status json");
 
-    assert_eq!(payload["schema"]["version"], 3);
+    assert_eq!(payload["schema"]["version"], 2);
     assert_eq!(payload["schema"]["surface"], "status");
     assert_eq!(payload["schema"]["purpose"], "operator_runtime_summary");
     assert_eq!(payload["gateway"]["owner"]["phase"], "stopped");
@@ -311,11 +311,11 @@ fn status_cli_json_rolls_up_gateway_acp_and_work_unit_sections() {
         assert!(payload["work_units"]["error"].is_string());
     }
     assert!(
-        payload["deep_dive_actions"]
+        payload["next_actions"]
             .as_array()
-            .map(|actions| actions.len() >= 4)
+            .map(|actions| actions.len() >= 2)
             .unwrap_or(false),
-        "status JSON should include typed drill-down actions: {payload:#?}"
+        "status JSON should include typed operator actions: {payload:#?}"
     );
     assert!(
         payload["recipes"]
@@ -444,8 +444,11 @@ fn doctor_cli_json_includes_schema_for_machine_readable_automation() {
         "doctor JSON should keep next steps machine-readable: {payload:#?}"
     );
     assert!(
-        payload["next_step_actions"].is_array(),
-        "doctor JSON should include typed next-step actions for direct operator handoff surfaces: {payload:#?}"
+        !payload["next_steps"]
+            .as_array()
+            .expect("doctor next_steps should be an array")
+            .is_empty(),
+        "doctor JSON should include concrete next-step guidance for direct operator handoff surfaces: {payload:#?}"
     );
 
     fs::remove_dir_all(&root).ok();
@@ -479,7 +482,7 @@ fn status_cli_text_surfaces_section_summaries_and_drill_down_actions() {
     assert!(stdout.contains("runtime posture"));
     assert!(stdout.contains("[WARN] tool calling"));
     assert!(stdout.contains("enabled=false · availability=disabled"));
-    assert!(stdout.contains("inspect deeper"));
+    assert!(stdout.contains("also useful"));
 
     fs::remove_dir_all(&root).ok();
 }

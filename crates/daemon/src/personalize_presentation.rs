@@ -32,10 +32,6 @@ pub(crate) const fn personalize_action_label() -> &'static str {
     "teach Loong your working style"
 }
 
-pub(crate) const fn personalize_action_title() -> &'static str {
-    "Teach Loong your working style"
-}
-
 pub(crate) const fn personalize_review_intro() -> &'static str {
     "Review how Loong will work with you:"
 }

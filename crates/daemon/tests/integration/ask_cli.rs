@@ -837,24 +837,14 @@ fn ask_cli_latest_session_selector_process_wait_budget_starts_with_process_run()
 #[test]
 fn ask_cli_openai_preface_plus_tool_search_then_exec_runs_full_e2e() {
     let fixture = LatestSelectorCliFixture::new("ask-tool-search-exec-e2e");
-    let final_reply = "E2E PASS tool search then exec.";
+    let final_reply = "E2E PASS direct bash execution.";
     let provider_responses = vec![
         MockProviderResponse::ok_json(openai_chat_tool_call_body(
-            "I'll find the right runtime tool first.",
-            "call-search-exec-tool",
-            "tool_search",
+            "I'll run the guarded workspace command.",
+            "call-run-bash-tool",
+            "bash",
             json!({
-                "query": "run a guarded workspace command",
-                "limit": 5,
-            }),
-        )),
-        MockProviderResponse::ok_json(openai_chat_tool_call_body(
-            "Now I'll run the discovered command tool.",
-            "call-run-exec-tool",
-            "exec",
-            json!({
-                "command": "printf",
-                "args": ["LOONG_E2E_EXEC_OK"],
+                "command": "printf LOONG_E2E_EXEC_OK",
             }),
         )),
         MockProviderResponse::ok_json(openai_chat_final_body(final_reply)),
@@ -867,6 +857,7 @@ fn ask_cli_openai_preface_plus_tool_search_then_exec_runs_full_e2e() {
         config.provider.model = "test-model".to_owned();
         config.provider.wire_api = ProviderWireApi::ChatCompletions;
         config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.shell_default_mode = "allow".to_owned();
     });
 
     provider_server.arm();
@@ -884,14 +875,14 @@ fn ask_cli_openai_preface_plus_tool_search_then_exec_runs_full_e2e() {
 
     assert!(
         output.status.success(),
-        "ask tool-search e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+        "ask bash e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
     );
     assert!(
         stdout.contains(final_reply),
         "stdout should contain only the terminal assistant answer: {stdout:?}"
     );
     assert!(
-        !stdout.contains("I'll find the right runtime tool first"),
+        !stdout.contains("I'll run the guarded workspace command."),
         "stdout should not finalize the first assistant preface: {stdout:?}"
     );
     assert!(
@@ -900,39 +891,27 @@ fn ask_cli_openai_preface_plus_tool_search_then_exec_runs_full_e2e() {
     );
     assert_eq!(
         provider_requests.len(),
-        3,
-        "ask should continue through tool_search and exec follow-up turns: {provider_requests:#?}"
+        2,
+        "ask should continue through bash execution and final reply: {provider_requests:#?}"
     );
 
     let initial_request = &provider_requests[0];
     assert_provider_request_contains_text(
         initial_request,
-        "Search for the command tool",
+        "run printf",
         "initial provider request",
     );
 
-    let search_followup_request = &provider_requests[1];
-    assert_provider_request_contains_text(
-        search_followup_request,
-        "[tool_result]",
-        "tool_search follow-up provider request",
-    );
-    assert_provider_request_contains_text(
-        search_followup_request,
-        "exec",
-        "tool_search follow-up provider request",
-    );
-
-    let exec_followup_request = &provider_requests[2];
+    let exec_followup_request = &provider_requests[1];
     assert_provider_request_contains_text(
         exec_followup_request,
         "[tool_result]",
-        "exec follow-up provider request",
+        "bash follow-up provider request",
     );
     assert_provider_request_contains_text(
         exec_followup_request,
         "LOONG_E2E_EXEC_OK",
-        "exec follow-up provider request",
+        "bash follow-up provider request",
     );
 }
 
@@ -1143,64 +1122,22 @@ fn ask_cli_installed_skill_can_be_discovered_and_loaded_e2e() {
 
     let final_reply = "E2E PASS installed skill loaded.";
     let provider_server =
-        DynamicMockProviderServer::spawn(3, move |request_index, request| match request_index {
+        DynamicMockProviderServer::spawn(1, move |request_index, request| match request_index {
             0 => {
                 assert_provider_request_contains_text(
                     request,
-                    "[available_external_skills]",
+                    "[available_skills]",
                     "initial skill provider request",
                 );
                 assert_provider_request_contains_text(
                     request,
                     "release-guard",
                     "initial skill provider request",
-                );
-                MockProviderResponse::ok_json(openai_chat_tool_call_body(
-                    "I will find the installed release guard skill.",
-                    "call-skill-search",
-                    "tool_search",
-                    json!({
-                        "query": "release guard skill",
-                        "limit": 5,
-                    }),
-                ))
-            }
-            1 => {
-                assert_provider_request_contains_text(
-                    request,
-                    "Matching installed skills",
-                    "skill search follow-up request",
-                );
-                assert_provider_request_contains_text(
-                    request,
-                    "release-guard",
-                    "skill search follow-up request",
-                );
-                let lease = extract_tool_lease_from_request(request);
-                MockProviderResponse::ok_json(openai_chat_tool_call_body(
-                    "I will load the installed skill instructions.",
-                    "call-skill-invoke",
-                    "tool_invoke",
-                    json!({
-                        "tool_id": "skills",
-                        "lease": lease,
-                        "arguments": {
-                            "operation": "run",
-                            "skill_id": "release-guard",
-                        },
-                    }),
-                ))
-            }
-            2 => {
-                assert_provider_request_contains_text(
-                    request,
-                    "Loaded external skill",
-                    "skill invoke follow-up request",
                 );
                 assert_provider_request_contains_text(
                     request,
                     "SKILL_E2E_INVOCATION_MARKER",
-                    "skill invoke follow-up request",
+                    "initial skill provider request",
                 );
                 MockProviderResponse::ok_json(openai_chat_final_body(final_reply))
             }
@@ -1241,13 +1178,13 @@ fn ask_cli_installed_skill_can_be_discovered_and_loaded_e2e() {
         output.status.success(),
         "ask installed-skill e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
     );
+    assert_eq!(
+        provider_requests.len(),
+        1,
+        "ask should reach the provider with injected skill context in one request: {provider_requests:#?}"
+    );
     assert!(
         stdout.contains(final_reply),
         "stdout should contain the terminal skill answer: {stdout:?}"
-    );
-    assert_eq!(
-        provider_requests.len(),
-        3,
-        "ask should continue through skill search and invoke: {provider_requests:#?}"
     );
 }

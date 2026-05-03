@@ -58,7 +58,7 @@ pub fn execute_tool_core_with_config(
         match canonical_name.as_str() {
             "tool.search" => tool_search::execute_tool_search_tool_with_config(request, config),
             "tool.invoke" => tool_lease::execute_tool_invoke_tool_with_config(request, config),
-            "read" | "write" | "edit" | "bash" | "web" | "browser" | "memory" => {
+            "read" | "write" | "edit" | "bash" | "web" | "browse" | "memory" => {
                 super::routing::execute_direct_tool_core_with_config(request, config)
             }
             _ => execute_discoverable_tool_core_with_config(request, config),
@@ -241,7 +241,10 @@ pub(crate) fn tool_uses_dedicated_timeout(tool_name: &str) -> bool {
     if tool_name == DELEGATE_ASYNC_TOOL_NAME {
         return true;
     }
-    tool_name.starts_with(BROWSER_COMPANION_TOOL_PREFIX)
+    matches!(
+        tool_name,
+        "browser.open" | "browser.extract" | "browser.click"
+    )
 }
 
 fn dispatch_tool_request(
@@ -295,14 +298,6 @@ fn dispatch_tool_request(
         #[cfg(test)]
         "skills.remove" => {
             external_skills::execute_external_skills_remove_tool_with_config(request, config)
-        }
-        #[cfg(feature = "tool-browser")]
-        "browser.companion.session.start"
-        | "browser.companion.navigate"
-        | "browser.companion.snapshot"
-        | "browser.companion.wait"
-        | "browser.companion.session.stop" => {
-            browser_companion::execute_browser_companion_core_tool_with_config(request, config)
         }
         #[cfg(feature = "tool-browser")]
         "browser.open" | "browser.extract" | "browser.click" => {

@@ -80,7 +80,7 @@ pub(super) fn provider_definition_for_view(descriptor: &ToolDescriptor, view: &T
     let definition = descriptor.provider_definition();
     let definition = match descriptor.name {
         "web" => direct_web_provider_definition_for_view(definition, view),
-        "browser" => direct_browser_provider_definition_for_view(definition, view),
+        "browse" => direct_browser_provider_definition_for_view(definition, view),
         _ => definition,
     };
 
@@ -223,33 +223,24 @@ fn direct_browser_provider_definition_for_view(mut definition: Value, view: &Too
 
     let action_value = properties.get_mut("action");
     if let Some(action_property) = action_value.and_then(Value::as_object_mut) {
-        action_property.insert(
-            "enum".to_owned(),
-            json!([
-                "start", "navigate", "snapshot", "wait", "click", "type", "stop"
-            ]),
-        );
+        action_property.insert("enum".to_owned(), json!(["open", "extract", "click"]));
         action_property.insert(
             "description".to_owned(),
-            Value::String("Managed browser session action to perform.".to_owned()),
+            Value::String("Bounded page-browser action to perform.".to_owned()),
         );
-    }
-
-    let removable_keys = ["max_bytes", "limit", "link_id"];
-    for key in removable_keys {
-        properties.remove(key);
     }
 
     let mode_value = properties.get_mut("mode");
     if let Some(mode_property) = mode_value.and_then(Value::as_object_mut) {
-        mode_property.insert("enum".to_owned(), json!(["summary", "html"]));
+        mode_property.insert(
+            "enum".to_owned(),
+            json!(["page_text", "title", "links", "selector_text"]),
+        );
         mode_property.insert(
             "description".to_owned(),
-            Value::String("Snapshot mode for the managed browser session.".to_owned()),
+            Value::String("Extraction mode for the bounded browser page session.".to_owned()),
         );
     }
-
-    parameters.remove("required");
 
     definition
 }

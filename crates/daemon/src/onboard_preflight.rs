@@ -107,9 +107,6 @@ pub(crate) async fn run_preflight_checks(
     let file_root = file_root_resolution.path().clone();
     checks.push(directory_preflight_check("tool file root", &file_root));
 
-    let browser_companion_checks = collect_browser_companion_preflight_checks(config).await;
-    checks.extend(browser_companion_checks);
-
     let channel_checks = collect_channel_preflight_checks(config);
     checks.extend(channel_checks);
 
@@ -390,36 +387,6 @@ pub(crate) fn provider_model_probe_failure_check(
     let probe_failure =
         crate::provider_model_probe_policy::provider_model_probe_failure(config, error.as_str());
     onboard_check_from_provider_model_probe_failure(probe_failure)
-}
-
-async fn collect_browser_companion_preflight_checks(
-    config: &mvp::config::LoongConfig,
-) -> Vec<OnboardCheck> {
-    let Some(diagnostics) =
-        crate::browser_companion_diagnostics::collect_browser_companion_diagnostics(config).await
-    else {
-        return Vec::new();
-    };
-
-    let level = if diagnostics.install_ready() && diagnostics.runtime_ready {
-        OnboardCheckLevel::Pass
-    } else {
-        OnboardCheckLevel::Warn
-    };
-    let detail = if diagnostics.install_ready() {
-        diagnostics
-            .runtime_gate_detail()
-            .unwrap_or_else(|| diagnostics.install_detail())
-    } else {
-        diagnostics.install_detail()
-    };
-
-    vec![OnboardCheck {
-        name: crate::browser_companion_diagnostics::BROWSER_COMPANION_INSTALL_CHECK_NAME,
-        level,
-        detail,
-        non_interactive_warning_policy: OnboardNonInteractiveWarningPolicy::Block,
-    }]
 }
 
 fn provider_transport_check(config: &mvp::config::LoongConfig) -> OnboardCheck {

@@ -166,7 +166,7 @@ impl<'a, 'b, D: AppToolDispatcher + ?Sized> ToolIntentPreparationHarness<'a, 'b,
             crate::tools::payload_uses_reserved_internal_tool_context(&normalized_payload);
         if matches!(
             resolved_tool.canonical_name,
-            "read" | "write" | "edit" | "bash" | "web" | "browser" | "memory"
+            "read" | "write" | "edit" | "bash" | "web" | "browse" | "memory"
         ) && let Err(reason) =
             crate::tools::route_direct_tool_name(resolved_tool.canonical_name, &normalized_payload)
         {

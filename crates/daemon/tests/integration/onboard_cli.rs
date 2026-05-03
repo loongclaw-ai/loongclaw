@@ -6132,10 +6132,6 @@ fn onboarding_success_summary_derives_structured_actions() {
         summary.next_actions[4].kind,
         loong_daemon::onboard_cli::OnboardingActionKind::Channel
     );
-    assert_eq!(
-        summary.next_actions[5].kind,
-        crate::onboard_cli::OnboardingActionKind::BrowserPreview
-    );
     assert_eq!(summary.next_actions[0].label, "first answer");
     assert_eq!(summary.next_actions[1].label, "chat");
     assert_eq!(
@@ -6144,7 +6140,7 @@ fn onboarding_success_summary_derives_structured_actions() {
     );
     assert_eq!(summary.next_actions[3].label, "Telegram");
     assert_eq!(summary.next_actions[4].label, "Feishu/Lark");
-    assert_eq!(summary.next_actions[5].label, "enable browser preview");
+    assert_eq!(summary.next_actions.len(), 5);
 }
 
 #[test]
@@ -6337,36 +6333,6 @@ fn onboarding_success_summary_keeps_generic_handoff_when_managed_bridge_is_ready
             .iter()
             .all(|action| action.kind != crate::onboard_cli::OnboardingActionKind::Doctor),
         "ready managed bridge setups should keep the existing generic handoff and avoid forcing doctor into the next-action list: {summary:#?}"
-    );
-}
-
-#[test]
-fn onboarding_success_summary_advertises_browser_preview_enable_action() {
-    let path = PathBuf::from("/tmp/loong-config.toml");
-    let summary = crate::onboard_cli::build_onboarding_success_summary(
-        &path,
-        &mvp::config::LoongConfig::default(),
-        None,
-    );
-    let lines = crate::onboard_cli::render_onboarding_success_summary_with_width(&summary, 80);
-
-    assert!(
-        summary.next_actions.iter().any(|action| {
-            action.kind == crate::onboard_cli::OnboardingActionKind::BrowserPreview
-                && action.label == "enable browser preview"
-                && action.command
-                    == "loong skills enable-browser-preview --config '/tmp/loong-config.toml'"
-        }),
-        "onboarding should surface a concrete browser preview enable step for operators: {summary:#?}"
-    );
-    assert!(
-        lines.iter().any(|line| {
-            line.contains("enable browser preview")
-                && line.contains("loong skills enable-browser-preview --config")
-        }) && lines
-            .iter()
-            .any(|line| line.contains("/tmp/loong-config.toml")),
-        "success summary should render the browser preview enable action in the follow-up section: {lines:#?}"
     );
 }
 

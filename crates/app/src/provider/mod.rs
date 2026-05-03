@@ -82,7 +82,7 @@ pub use shape::{
 
 #[cfg(test)]
 use auth_profile_runtime::{ProviderAuthProfile, resolve_provider_auth_profiles};
-use catalog_query_runtime::{fetch_available_models_with_profiles, fetch_model_catalog_with_profiles};
+use catalog_query_runtime::fetch_model_catalog_with_profiles;
 #[cfg(test)]
 use catalog_runtime::{
     ModelCatalogCache, clear_model_catalog_singleflight_slot,

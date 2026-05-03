@@ -29,9 +29,8 @@ pub(crate) fn runtime_tool_access_summary(
             &runtime.web_search,
         );
     let browser_page_access_enabled = runtime.browser.enabled;
-    let managed_browser_session_enabled = runtime.browser_companion.enabled;
-    let managed_browser_session_ready =
-        runtime.browser_companion.enabled && runtime.browser_companion.ready;
+    let managed_browser_session_enabled = false;
+    let managed_browser_session_ready = false;
     let consent_mode = config.tools.consent.default_mode.as_str();
     let approval_mode = render_tool_approval_mode(config.tools.approval.mode);
 

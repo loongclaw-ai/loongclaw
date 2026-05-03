@@ -1,10 +1,8 @@
-use std::collections::BTreeSet;
-
 use loong_contracts::{KernelError, ToolPlaneError};
 
 use super::{
     ApprovalRequirement, KernelFailureClass, TOOL_PREFLIGHT_ALLOW_RULE_ID, ToolDecisionTelemetry,
-    ToolView, TurnFailure,
+    TurnFailure,
 };
 
 pub(crate) fn classify_kernel_error(error: &KernelError) -> KernelFailureClass {
@@ -74,18 +72,4 @@ pub(super) fn render_app_tool_denied_reason(reason: &str) -> String {
         .strip_prefix("app_tool_denied: ")
         .unwrap_or(reason)
         .to_owned()
-}
-
-pub(super) fn with_runtime_ready_browser_companion_tools(
-    base_view: ToolView,
-    session_tool_view: &ToolView,
-) -> ToolView {
-    let mut names: BTreeSet<String> = base_view.tool_names().map(str::to_owned).collect();
-    names.extend(
-        session_tool_view
-            .tool_names()
-            .filter(|name| name.starts_with("browser.companion."))
-            .map(str::to_owned),
-    );
-    ToolView::from_tool_names(names)
 }

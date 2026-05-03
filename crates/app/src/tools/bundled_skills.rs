@@ -3,9 +3,6 @@ use std::borrow::Cow;
 use include_dir::{Dir, include_dir};
 use serde::Serialize;
 
-pub(crate) const BROWSER_COMPANION_PREVIEW_SKILL_ID: &str = "browser-companion-preview";
-pub(crate) const BROWSER_COMPANION_COMMAND: &str = "agent-browser";
-
 // Keep a vendored `crates/app/skills/` snapshot so the published `loong-app`
 // crate can embed bundled skills without relying on paths outside the package.
 static BUNDLED_SKILLS_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/skills");
@@ -50,11 +47,6 @@ const BUNDLED_EXTERNAL_SKILLS: &[BundledExternalSkill] = &[
         skill_id: "agent-browser",
         source_path: "bundled://agent-browser",
         relative_dir: "agent-browser",
-    },
-    BundledExternalSkill {
-        skill_id: BROWSER_COMPANION_PREVIEW_SKILL_ID,
-        source_path: "bundled://browser-companion-preview",
-        relative_dir: "browser-companion-preview",
     },
     BundledExternalSkill {
         skill_id: "byted-web-search",

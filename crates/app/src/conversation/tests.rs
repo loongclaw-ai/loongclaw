@@ -15023,10 +15023,8 @@ async fn turn_engine_injects_browser_scope_into_kernel_request() {
     use loong_contracts::{ToolCoreOutcome, ToolCoreRequest, ToolPlaneError};
     use loong_kernel::CoreToolAdapter;
 
-    // In the discovery-first model, browser.open is a discoverable Core tool
-    // and must be invoked through tool.invoke.  The adapter receives the outer
-    // tool.invoke request; we extract the inner arguments to verify browser
-    // scope injection.
+    // The provider-visible path is the direct `browse` surface, which still
+    // must carry the session-scoped browser token into kernel execution.
     struct BrowserScopeEchoAdapter;
 
     #[async_trait]
@@ -15039,26 +15037,8 @@ async fn turn_engine_injects_browser_scope_into_kernel_request() {
             &self,
             request: ToolCoreRequest,
         ) -> Result<ToolCoreOutcome, ToolPlaneError> {
-            // tool.invoke: extract browser scope from nested arguments.
-            let (tool_name, scope) =
-                if crate::tools::canonical_tool_name(&request.tool_name) == "tool.invoke" {
-                    let tool_id = request
-                        .payload
-                        .get("tool_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or(&request.tool_name)
-                        .to_owned();
-                    let arguments = request
-                        .payload
-                        .get("arguments")
-                        .cloned()
-                        .unwrap_or(Value::Null);
-                    let scope = arguments[crate::tools::BROWSER_SESSION_SCOPE_FIELD].clone();
-                    (tool_id, scope)
-                } else {
-                    let scope = request.payload[crate::tools::BROWSER_SESSION_SCOPE_FIELD].clone();
-                    (request.tool_name, scope)
-                };
+            let scope = request.payload[crate::tools::BROWSER_SESSION_SCOPE_FIELD].clone();
+            let tool_name = request.tool_name;
             Ok(ToolCoreOutcome {
                 status: "ok".to_owned(),
                 payload: json!({
@@ -15101,17 +15081,11 @@ async fn turn_engine_injects_browser_scope_into_kernel_request() {
     };
 
     let engine = TurnEngine::new(5);
-    let (tool_name, args_json) = crate::tools::synthesize_test_provider_tool_call_with_scope(
-        "browser.open",
-        json!({"url": "https://example.com"}),
-        Some("root-session"),
-        Some("t-browser"),
-    );
     let turn = ProviderTurn {
         assistant_text: "".to_owned(),
         tool_intents: vec![ToolIntent {
-            tool_name,
-            args_json,
+            tool_name: "browse".to_owned(),
+            args_json: json!({"url": "https://example.com"}),
             source: "provider_tool_call".to_owned(),
             session_id: "root-session".to_owned(),
             turn_id: "t-browser".to_owned(),
@@ -15123,7 +15097,7 @@ async fn turn_engine_injects_browser_scope_into_kernel_request() {
     let result = engine
         .execute_turn_in_view(
             &turn,
-            &crate::tools::ToolView::from_tool_names(["tool.invoke", "browser.open"]),
+            &crate::tools::ToolView::from_tool_names(["browse"]),
             super::runtime_binding::ConversationRuntimeBinding::kernel(&ctx),
         )
         .await;
@@ -15138,7 +15112,7 @@ async fn turn_engine_injects_browser_scope_into_kernel_request() {
                 .expect("tool result line should keep [ok] prefix");
             let envelope: Value =
                 serde_json::from_str(payload).expect("tool result envelope should be valid json");
-            assert_eq!(envelope["tool"], "browser.open");
+            assert_eq!(envelope["tool"], "browse");
             assert!(
                 envelope["payload_summary"]
                     .as_str()

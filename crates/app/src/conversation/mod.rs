@@ -28,9 +28,7 @@ mod session_address;
 mod session_history;
 mod session_state;
 mod subagent;
-mod tool_discovery_state;
 mod tool_input_contract;
-mod tool_loop_supervisor;
 mod tool_result_compaction;
 mod tool_result_line;
 mod tool_result_reduction;
@@ -59,10 +57,7 @@ pub(crate) const SAFE_LANE_REPLAN_MAX_ROUNDS: u8 = 16;
 pub(crate) const SAFE_LANE_REPLAN_MAX_NODE_ATTEMPTS: u8 = 4;
 pub(crate) const TURN_LOOP_MAX_CONSECUTIVE_SAME_TOOL: usize = 10;
 pub(crate) const TURN_LOOP_MAX_DISCOVERY_FOLLOWUP_ROUNDS: usize = 12;
-pub(crate) const TURN_LOOP_MAX_PING_PONG_CYCLES: usize = 2;
-pub(crate) const TURN_LOOP_MAX_REPEATED_TOOL_CALL_ROUNDS: usize = 2;
 pub(crate) const TURN_LOOP_MAX_ROUNDS: usize = 6;
-pub(crate) const TURN_LOOP_MAX_SAME_TOOL_FAILURE_ROUNDS: usize = 3;
 pub(crate) const TURN_LOOP_MAX_TOTAL_TOOL_CALLS: usize = 200;
 pub(crate) const TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS: usize = 2_048;
 
@@ -80,7 +75,7 @@ pub use analytics::{
 pub(crate) use compaction::{COMPACTED_SUMMARY_PREFIX, is_compacted_summary_content};
 pub(crate) use compaction_diagnostics::ContextCompactionDiagnostics;
 #[cfg(feature = "memory-sqlite")]
-pub(crate) use compaction_snapshot::{CompactionSessionSnapshot, load_compaction_session_snapshot};
+pub(crate) use compaction_snapshot::load_compaction_session_snapshot;
 pub use context_engine::{
     AssembledConversationContext, CONTEXT_ENGINE_API_VERSION, ContextArtifactDescriptor,
     ContextArtifactKind, ContextEngineBootstrapResult, ContextEngineCapability,
@@ -149,7 +144,6 @@ pub use subagent::{
     ConstrainedSubagentRole, ConstrainedSubagentRuntimeBinding, ConstrainedSubagentTerminalReason,
     DelegateBuiltinProfile, coordination_actions_for_subagent_handle, subagent_surface_fields,
 };
-pub(crate) use tool_discovery_state::latest_tool_discovery_state_from_assistant_contents;
 pub use turn_budget::SafeLaneFailureRouteReason;
 pub(crate) use turn_checkpoint::{TurnCheckpointDiagnostics, TurnCheckpointRecoveryAssessment};
 pub use turn_checkpoint::{

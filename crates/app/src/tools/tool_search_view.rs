@@ -7,6 +7,7 @@ use crate::tools::{
     effective_runtime_visible_tool_view,
 };
 
+#[cfg(test)]
 pub(crate) fn tool_id_visible_in_view(tool_id: &str, view: &ToolView) -> bool {
     let canonical_tool_id = super::canonical_tool_name(tool_id);
     if view.contains(canonical_tool_id) {

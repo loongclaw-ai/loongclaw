@@ -10,10 +10,7 @@ pub(crate) const fn first_run_group_for_setup_action_kind(
     kind: crate::next_actions::SetupNextActionKind,
 ) -> FirstRunActionGroup {
     match kind {
-        crate::next_actions::SetupNextActionKind::Channel
-        | crate::next_actions::SetupNextActionKind::BrowserPreview => {
-            FirstRunActionGroup::ContinueSetup
-        }
+        crate::next_actions::SetupNextActionKind::Channel => FirstRunActionGroup::ContinueSetup,
         crate::next_actions::SetupNextActionKind::Ask
         | crate::next_actions::SetupNextActionKind::Chat
         | crate::next_actions::SetupNextActionKind::Personalize
@@ -25,8 +22,7 @@ pub(crate) const fn first_run_group_for_onboarding_action_kind(
     kind: crate::onboard_finalize::OnboardingActionKind,
 ) -> FirstRunActionGroup {
     match kind {
-        crate::onboard_finalize::OnboardingActionKind::Channel
-        | crate::onboard_finalize::OnboardingActionKind::BrowserPreview => {
+        crate::onboard_finalize::OnboardingActionKind::Channel => {
             FirstRunActionGroup::ContinueSetup
         }
         crate::onboard_finalize::OnboardingActionKind::Ask
@@ -172,12 +168,6 @@ mod tests {
             ),
             FirstRunActionGroup::ContinueSetup
         );
-        assert_eq!(
-            first_run_group_for_setup_action_kind(
-                crate::next_actions::SetupNextActionKind::BrowserPreview,
-            ),
-            FirstRunActionGroup::ContinueSetup
-        );
     }
 
     #[test]
@@ -197,12 +187,6 @@ mod tests {
         assert_eq!(
             first_run_group_for_onboarding_action_kind(
                 crate::onboard_finalize::OnboardingActionKind::Channel,
-            ),
-            FirstRunActionGroup::ContinueSetup
-        );
-        assert_eq!(
-            first_run_group_for_onboarding_action_kind(
-                crate::onboard_finalize::OnboardingActionKind::BrowserPreview,
             ),
             FirstRunActionGroup::ContinueSetup
         );

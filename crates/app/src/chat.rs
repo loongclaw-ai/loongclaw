@@ -15,8 +15,8 @@ use crate::acp::{
     AcpConversationTurnOptions, AcpTurnEventSink, AcpTurnProvenance, JsonlAcpTurnEventSink,
 };
 
-mod chat_surface;
 mod boot;
+mod chat_surface;
 mod checkpoint;
 mod checkpoint_labels;
 #[cfg(test)]

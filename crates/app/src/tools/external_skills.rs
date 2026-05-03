@@ -4417,9 +4417,6 @@ fn runtime_config_selector_enabled(
         | "external_skills.enabled"
         | "tools.external_skills.enabled" => Some(config.external_skills.enabled),
         "browser.enabled" | "tools.browser.enabled" => Some(config.browser.enabled),
-        "browser_companion.enabled" | "tools.browser_companion.enabled" => {
-            Some(config.browser_companion.enabled)
-        }
         "delegate.enabled" | "tools.delegate.enabled" => Some(config.delegate_enabled),
         "messages.enabled" | "tools.messages.enabled" => Some(config.messages_enabled),
         "sessions.enabled" | "tools.sessions.enabled" => Some(config.sessions_enabled),
@@ -6031,7 +6028,7 @@ mod tests {
                 ToolCoreRequest {
                     tool_name: "skills.install".to_owned(),
                     payload: json!({
-                        "bundled_skill_id": "browser-companion-preview"
+                        "bundled_skill_id": "agent-browser"
                     }),
                 },
                 &config,
@@ -6039,15 +6036,12 @@ mod tests {
             .expect("bundled install should succeed");
 
             assert_eq!(outcome.status, "ok");
-            assert_eq!(outcome.payload["skill_id"], "browser-companion-preview");
+            assert_eq!(outcome.payload["skill_id"], "agent-browser");
             assert_eq!(outcome.payload["source_kind"], "bundled");
-            assert_eq!(
-                outcome.payload["source_path"],
-                "bundled://browser-companion-preview"
-            );
+            assert_eq!(outcome.payload["source_path"], "bundled://agent-browser");
             let installed_skill = root
                 .join("external-skills-installed")
-                .join("browser-companion-preview")
+                .join("agent-browser")
                 .join("SKILL.md");
             assert!(
                 installed_skill.exists(),
@@ -6253,7 +6247,7 @@ mod tests {
                     tool_name: "skills.install".to_owned(),
                     payload: json!({
                         "path": "source/demo-skill",
-                        "bundled_skill_id": "browser-companion-preview"
+                        "bundled_skill_id": "agent-browser"
                     }),
                 },
                 &config,

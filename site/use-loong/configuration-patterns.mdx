@@ -37,9 +37,9 @@ Loong keeps the top-level operator config explicit:
 - channel families such as `feishu`, `telegram`, or `wecom` keep their own
   account-aware config blocks
 - `external_skills` keeps managed skill enablement and download policy explicit
-- `tools.browser`, `tools.web`, and `tools.browser_companion` keep browser
-  session limits, trust boundaries, and companion policy explicit instead of
-  hiding them in helper scripts
+- `tools.browser` and `tools.web` keep bounded page browsing, session limits,
+  and trust boundaries explicit, while richer browser automation stays an
+  installable managed skill instead of a hidden sidecar lane
 - `memory.profile` stays operator-visible as the continuity choice instead of exposing multiple public memory forms or hiding behind prompt logic
 - top-level runtime toggles such as `outbound_http` stay explicit
 
@@ -78,9 +78,9 @@ Secret reference note:
 Other governed operator-facing config families live alongside that core shape:
 
 - [Managed Skills](/use-loong/managed-skills) covers `[external_skills]`
-  enablement, install policy, and browser preview bootstrap.
+  enablement, install policy, and `agent-browser` setup.
 - [Browser And Web Boundaries](/use-loong/browser-and-web-boundaries)
-  covers `[tools.browser]`, `[tools.web]`, `[tools.browser_companion]`, and
+  covers `[tools.browser]`, `[tools.web]`, and
   when `[outbound_http] allow_private_hosts = true` is the right owner.
 
 ## Skills And Browser Boundary Shape
@@ -106,9 +106,6 @@ allow_private_hosts = false
 allowed_domains = ["docs.example.com"]
 blocked_domains = ["internal.example"]
 
-[tools.browser_companion]
-enabled = false
-
 [outbound_http]
 allow_private_hosts = false
 ```
@@ -117,18 +114,20 @@ Read that block with these owner rules:
 
 - `[external_skills]` governs managed skill discovery, download approval,
   install location, and runtime exposure policy
-- `[tools.browser]` governs built-in browser enablement and local session, link,
-  and text limits
+- `[tools.browser]` governs built-in bounded page browsing and local session,
+  link, and text limits
 - `[tools.web]` governs built-in web fetch and built-in browser host and domain
   trust
-- `[tools.browser_companion]` governs the managed companion runtime lane
+- richer browser automation is exposed through managed skills such as
+  `agent-browser`, not a separate config block
 - `[outbound_http]` governs HTTP-backed outbound delivery, not the built-in
   browser
 
 Continue to [Managed Skills](/use-loong/managed-skills) when the blocker is
 install or exposure policy. Continue to
 [Browser And Web Boundaries](/use-loong/browser-and-web-boundaries) when
-the blocker is private hosts, domains, or companion readiness.
+the blocker is private hosts, domains, or browser automation runtime
+readiness.
 
 ## Single Provider Profile
 

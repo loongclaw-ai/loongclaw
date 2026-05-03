@@ -82,9 +82,6 @@ fn write_runtime_restore_config(root: &Path) -> (PathBuf, mvp::config::LoongConf
     config.tools.browser.max_sessions = 4;
     config.tools.browser.max_links = 32;
     config.tools.browser.max_text_chars = 4096;
-    config.tools.browser_companion.enabled = true;
-    config.tools.browser_companion.command = Some("browser-companion".to_owned());
-    config.tools.browser_companion.expected_version = Some("1.2.3".to_owned());
     config.tools.web.enabled = true;
     config.tools.web.allowed_domains = vec!["docs.example.com".to_owned()];
     config.tools.web.blocked_domains = vec!["internal.example".to_owned()];
@@ -124,9 +121,9 @@ fn write_runtime_restore_config(root: &Path) -> (PathBuf, mvp::config::LoongConf
             provider: mvp::config::ProviderConfig {
                 kind: mvp::config::ProviderKind::Openai,
                 model: "gpt-4.1-mini".to_owned(),
-                api_key: Some(loong_contracts::SecretRef::Inline(
-                    "${OPENAI_API_KEY}".to_owned(),
-                )),
+                api_key: Some(loong_contracts::SecretRef::Env {
+                    env: "OPENAI_API_KEY".to_owned(),
+                }),
                 ..Default::default()
             },
         },
@@ -138,9 +135,9 @@ fn write_runtime_restore_config(root: &Path) -> (PathBuf, mvp::config::LoongConf
             provider: mvp::config::ProviderConfig {
                 kind: mvp::config::ProviderKind::Deepseek,
                 model: "deepseek-chat".to_owned(),
-                api_key: Some(loong_contracts::SecretRef::Inline(
-                    "${RUNTIME_RESTORE_DEEPSEEK_KEY}".to_owned(),
-                )),
+                api_key: Some(loong_contracts::SecretRef::Env {
+                    env: "RUNTIME_RESTORE_DEEPSEEK_KEY".to_owned(),
+                }),
                 ..Default::default()
             },
         },
@@ -149,6 +146,12 @@ fn write_runtime_restore_config(root: &Path) -> (PathBuf, mvp::config::LoongConf
     let config_path = root.join("loong.toml");
     mvp::config::write(Some(config_path.to_string_lossy().as_ref()), &config, true)
         .expect("write config fixture");
+    let runtime_config = mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(
+        &config,
+        Some(&config_path),
+    );
+    mvp::tools::external_skills_operator_policy_reset_with_config(true, &runtime_config)
+        .expect("reset runtime restore external skills policy");
     (config_path, config)
 }
 
@@ -225,7 +228,6 @@ fn mutate_runtime_restore_config(config_path: &Path, root: &Path) {
     config.tools.shell_allow = vec!["git".to_owned()];
     config.tools.shell_deny.clear();
     config.tools.browser.enabled = false;
-    config.tools.browser_companion.enabled = false;
     config.tools.web.allowed_domains.clear();
     config.tools.web.blocked_domains.clear();
 
@@ -778,10 +780,6 @@ fn runtime_restore_apply_replays_snapshot_state_and_verifies_post_apply_match() 
     assert!(!reloaded.memory.fail_open);
     assert!(reloaded.acp.enabled);
     assert!(reloaded.tools.browser.enabled);
-    assert_eq!(
-        reloaded.tools.browser_companion.expected_version.as_deref(),
-        Some("1.2.3")
-    );
 
     let snapshot = collect_runtime_snapshot_cli_state(Some(
         config_path.to_str().expect("config path should be utf-8"),

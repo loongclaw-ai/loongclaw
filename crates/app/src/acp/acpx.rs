@@ -1051,6 +1051,7 @@ mod tests {
                         ..AcpxBackendConfig::default()
                     }),
                 },
+                allow_mcp_server_injection: true,
                 ..AcpConfig::default()
             },
             ..LoongConfig::default()
@@ -1126,6 +1127,7 @@ mod tests {
         let backend = AcpxCliProbeBackend;
         let config = LoongConfig {
             acp: AcpConfig {
+                allow_mcp_server_injection: true,
                 backends: AcpBackendProfilesConfig {
                     acpx: Some(AcpxBackendConfig {
                         command: Some(script_path.display().to_string()),

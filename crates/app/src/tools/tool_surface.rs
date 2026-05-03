@@ -10,7 +10,7 @@ pub(crate) const DIRECT_WRITE_TOOL_NAME: &str = "write";
 pub(crate) const DIRECT_EDIT_TOOL_NAME: &str = "edit";
 pub(crate) const DIRECT_BASH_TOOL_NAME: &str = "bash";
 pub(crate) const DIRECT_WEB_TOOL_NAME: &str = "web";
-pub(crate) const DIRECT_BROWSER_TOOL_NAME: &str = "browser";
+pub(crate) const DIRECT_BROWSER_TOOL_NAME: &str = "browse";
 pub(crate) const DIRECT_MEMORY_TOOL_NAME: &str = "memory";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,21 +93,19 @@ impl DirectWebRuntimeModes {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DirectBrowserRuntimeModes {
-    pub(crate) managed_session_available: bool,
+    pub(crate) page_inspection_available: bool,
 }
 
 impl DirectBrowserRuntimeModes {
     pub(crate) fn from_view(view: &ToolView) -> Self {
         Self {
-            managed_session_available: view
-                .tool_names()
-                .any(|tool_name| tool_name.starts_with("browser.companion.")),
+            page_inspection_available: browser_page_inspection_available_in_view(view),
         }
     }
 
     pub(crate) fn provider_description(self) -> Option<&'static str> {
-        self.managed_session_available
-            .then_some("Drive a managed browser session")
+        self.page_inspection_available
+            .then_some("Open a page, extract text or links, or follow discovered page links")
     }
 }
 
@@ -180,9 +178,9 @@ const WEB_GUIDELINES: &[&str] = &[
     "Prefer plain fetch or search before dropping to low-level request fields.",
 ];
 const BROWSER_GUIDELINES: &[&str] = &[
-    "Use browser only for managed browser sessions and live page interaction.",
-    "Keep session start, navigate, snapshot, click, type, wait, and stop under `browser` instead of teaching companion sub-tool names.",
-    "Use web for simple fetches, public docs, and read-only page checks.",
+    "Use browser for bounded page inspection: open a page, extract text or links, or follow one discovered link.",
+    "For richer browser automation such as form filling, DOM clicks, login flows, and waits, load the `agent-browser` skill and run its CLI workflow through bash.",
+    "Use web for simple fetches, APIs, and public docs when you do not need a bounded page session.",
 ];
 const MEMORY_GUIDELINES: &[&str] = &[
     "Use memory for persisted notes and cross-session recall.",
@@ -234,9 +232,9 @@ const BROWSER_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
     ("session_id", "string"),
     ("mode", "string"),
     ("selector", "string"),
-    ("text", "string"),
-    ("condition", "string"),
-    ("timeout_ms", "integer"),
+    ("link_id", "integer"),
+    ("limit", "integer"),
+    ("max_bytes", "integer"),
 ];
 const MEMORY_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
     ("query", "string"),
@@ -251,15 +249,7 @@ const WRITE_COVERED_TOOL_NAMES: &[&str] = &["file.write"];
 const EDIT_COVERED_TOOL_NAMES: &[&str] = &["file.edit"];
 const BASH_COVERED_TOOL_NAMES: &[&str] = &["shell.exec", "bash.exec"];
 const WEB_COVERED_TOOL_NAMES: &[&str] = &["web.fetch", "web.search", "http.request"];
-const BROWSER_COVERED_TOOL_NAMES: &[&str] = &[
-    "browser.companion.session.start",
-    "browser.companion.navigate",
-    "browser.companion.snapshot",
-    "browser.companion.wait",
-    "browser.companion.session.stop",
-    "browser.companion.click",
-    "browser.companion.type",
-];
+const BROWSER_COVERED_TOOL_NAMES: &[&str] = &["browser.open", "browser.extract", "browser.click"];
 const MEMORY_COVERED_TOOL_NAMES: &[&str] = &["memory_search", "memory_get"];
 
 const READ_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata {
@@ -298,11 +288,11 @@ const WEB_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata
     tags: &["surface", "web", "fetch", "search"],
 };
 const BROWSER_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata {
-    argument_hint: "action?:string,url?:string,session_id?:string,mode?:string,selector?:string,text?:string,condition?:string,timeout_ms?:integer",
-    search_hint: "start, navigate, snapshot, wait on, click within, type into, or stop a managed browser session through one direct browser tool",
+    argument_hint: "action?:string,url?:string,session_id?:string,mode?:string,selector?:string,link_id?:integer,limit?:integer,max_bytes?:integer",
+    search_hint: "open a page, extract text or links from a bounded page session, or follow one discovered link through one direct browser tool",
     parameter_types: BROWSER_DIRECT_PARAMETER_TYPES,
     required_fields: &[],
-    tags: &["surface", "browser", "managed", "interaction"],
+    tags: &["surface", "browse", "page", "extract"],
 };
 const MEMORY_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata {
     argument_hint: "query?:string,max_results?:integer,path?:string,from?:integer,lines?:integer",
@@ -373,9 +363,9 @@ const WEB_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
 };
 
 const BROWSER_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
-    id: "browser",
-    prompt_snippet: "drive a managed browser session.",
-    prompt_guidance: "Use browser for live page interaction through managed sessions.",
+    id: "browse",
+    prompt_snippet: "open a page, extract text or links, or follow one discovered page link.",
+    prompt_guidance: "Use browser for bounded page inspection and link traversal. Use the agent-browser skill for richer browser automation.",
     prompt_guidelines: BROWSER_GUIDELINES,
     direct_tool_name: Some(DIRECT_BROWSER_TOOL_NAME),
     covered_tool_names: BROWSER_COVERED_TOOL_NAMES,
@@ -656,6 +646,7 @@ pub(crate) fn hidden_tool_is_covered_by_visible_direct_tool(
     direct_tool_visible_in_view(direct_tool_name, view)
 }
 
+#[cfg(test)]
 pub(crate) fn tool_surface_visible_in_view(surface_id: &str, view: &ToolView) -> bool {
     let Some(surface) = tool_surface_descriptor_for_id(surface_id) else {
         return false;
@@ -746,7 +737,7 @@ mod tests {
         let view = ToolView::from_tool_names([
             "shell.exec",
             "browser.open",
-            "browser.companion.snapshot",
+            "browser.extract",
             "http.request",
         ]);
 
@@ -754,12 +745,12 @@ mod tests {
             "shell.exec",
             &view
         ));
-        assert!(!hidden_tool_is_covered_by_visible_direct_tool(
+        assert!(hidden_tool_is_covered_by_visible_direct_tool(
             "browser.open",
             &view
         ));
         assert!(hidden_tool_is_covered_by_visible_direct_tool(
-            "browser.companion.snapshot",
+            "browser.extract",
             &view
         ));
         assert!(hidden_tool_is_covered_by_visible_direct_tool(
@@ -803,12 +794,12 @@ mod tests {
         assert!(
             direct_tool_search_hint(DIRECT_BROWSER_TOOL_NAME)
                 .expect("page search hint")
-                .contains("managed browser session")
+                .contains("bounded page session")
         );
         assert!(
             direct_tool_parameter_types(DIRECT_BROWSER_TOOL_NAME)
                 .expect("browser parameter types")
-                .contains(&("text", "string"))
+                .contains(&("link_id", "integer"))
         );
         assert_eq!(direct_tool_argument_hint("shell.exec"), None);
     }
@@ -825,12 +816,12 @@ mod tests {
         );
         assert_eq!(discovery_tool_name_for_tool_name("file.edit"), "edit");
         assert_eq!(
-            discovery_tool_name_for_tool_name("browser.companion.session.start"),
+            discovery_tool_name_for_tool_name("browser.extract"),
             DIRECT_BROWSER_TOOL_NAME
         );
         assert_eq!(
             discovery_tool_name_for_tool_name("browser.open"),
-            "browser-open"
+            DIRECT_BROWSER_TOOL_NAME
         );
         assert_eq!(
             discovery_tool_name_for_tool_name("skills.install"),
@@ -851,14 +842,14 @@ mod tests {
         let view = ToolView::from_tool_names([
             "file.read",
             "shell.exec",
-            "browser.companion.snapshot",
+            "browser.extract",
             "provider.switch",
             "feishu.messages.send",
         ]);
 
         assert!(tool_surface_visible_in_view("read", &view));
         assert!(tool_surface_visible_in_view("bash", &view));
-        assert!(tool_surface_visible_in_view("browser", &view));
+        assert!(tool_surface_visible_in_view("browse", &view));
         assert!(!tool_surface_visible_in_view("agent", &view));
         assert!(!tool_surface_visible_in_view("channel", &view));
         assert!(!tool_surface_visible_in_view("skills", &view));

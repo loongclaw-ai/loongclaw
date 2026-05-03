@@ -279,26 +279,6 @@ pub fn render_runtime_snapshot_text(snapshot: &RuntimeSnapshotCliState) -> Strin
         snapshot.tool_runtime.browser.max_text_chars
     ));
     lines.push(format!(
-        "tool_runtime browser_companion enabled={} ready={} tier={} command={} expected_version={}",
-        snapshot.tool_runtime.browser_companion.enabled,
-        snapshot.tool_runtime.browser_companion.ready,
-        snapshot
-            .tool_runtime
-            .browser_companion_execution_security_tier(),
-        snapshot
-            .tool_runtime
-            .browser_companion
-            .command
-            .as_deref()
-            .unwrap_or("-"),
-        snapshot
-            .tool_runtime
-            .browser_companion
-            .expected_version
-            .as_deref()
-            .unwrap_or("-")
-    ));
-    lines.push(format!(
         "tool_runtime web_fetch enabled={} allow_private_hosts={} timeout_seconds={} max_bytes={} max_redirects={} allowed_domains={} blocked_domains={}",
         snapshot.tool_runtime.web_fetch.enabled,
         snapshot.tool_runtime.web_fetch.allow_private_hosts,
@@ -680,13 +660,6 @@ pub(crate) fn runtime_snapshot_tool_runtime_json(
             "max_sessions": runtime.browser.max_sessions,
             "max_links": runtime.browser.max_links,
             "max_text_chars": runtime.browser.max_text_chars,
-        },
-        "browser_companion": {
-            "enabled": runtime.browser_companion.enabled,
-            "ready": runtime.browser_companion.ready,
-            "execution_tier": runtime.browser_companion_execution_security_tier().as_str(),
-            "command": runtime.browser_companion.command,
-            "expected_version": runtime.browser_companion.expected_version,
         },
         "web_fetch": {
             "enabled": runtime.web_fetch.enabled,

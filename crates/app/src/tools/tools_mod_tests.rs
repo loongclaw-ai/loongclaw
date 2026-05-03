@@ -154,7 +154,7 @@ fn expected_tool_request_error_classifies_validation_failures() {
         "direct_exec_ambiguous: provide either `command` or `script`, not both"
     ));
     assert!(super::is_expected_tool_request_error(
-        "tool_surface_unavailable: `browser` cannot route to `managed browser actions` in this runtime; read-only browser inspection is still available"
+        "direct_browser_interactive_automation_unavailable: built-in browser only supports `open`, `extract`, and page-link `click`; use the `agent-browser` skill for richer browser automation"
     ));
     assert!(super::is_expected_tool_request_error(
         "web.fetch response exceeded max_bytes limit (120000 bytes); retry with a smaller `max_bytes` or a narrower web request"
@@ -172,77 +172,18 @@ fn unique_tool_temp_dir(prefix: &str) -> PathBuf {
     unique_temp_dir(prefix)
 }
 
-const TEST_BROWSER_COMPANION_TIMEOUT_SECONDS: u64 = 120;
-
-fn browser_companion_runtime_config(
-    root: &Path,
-    command: String,
-) -> runtime_config::ToolRuntimeConfig {
-    let mut config = test_tool_runtime_config(root).into_inner();
-    config.browser_companion.enabled = true;
-    config.browser_companion.ready = true;
-    config.browser_companion.command = Some(command);
-    config.browser_companion.timeout_seconds = TEST_BROWSER_COMPANION_TIMEOUT_SECONDS;
-    config
-}
-
 mod bash_exec_tests;
 
-#[cfg(unix)]
-fn write_browser_companion_script(
-    root: &Path,
-    name: &str,
-    stdout_body: &str,
-    log_path: &Path,
-) -> PathBuf {
-    let path = root.join(name);
-    let script = format!(
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '1.2.3\\n'\n  exit 0\nfi\nBODY=''\nIFS= read -r BODY || true\nprintf '%s' \"$BODY\" > \"{}\"\nprintf '%s' '{}'\n",
-        log_path.display(),
-        stdout_body.replace('\'', "'\"'\"'")
-    );
-    crate::test_support::write_executable_script_atomically(&path, &script)
-        .expect("write browser companion script");
-    path
-}
-
 #[cfg(windows)]
-fn write_browser_companion_script(
-    root: &Path,
-    name: &str,
-    stdout_body: &str,
-    log_path: &Path,
-) -> PathBuf {
+fn write_agent_browser_cli_script(root: &Path, log_path: &Path) -> PathBuf {
     use std::fs;
 
-    let path = root.join(format!("{name}.cmd"));
+    let path = root.join("agent-browser.cmd");
     let script = format!(
-        "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo 1.2.3\r\n  exit /b 0\r\n)\r\nsetlocal enableextensions\r\nset /p BODY=\r\n> \"{}\" <nul set /p =%BODY%\r\necho {}\r\n",
-        log_path.display(),
-        stdout_body
+        "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo agent-browser 0.23.0\r\n  exit /b 0\r\n)\r\n> \"{log}\" (\r\n  for %%A in (%*) do @echo %%~A\r\n)\r\nset \"CMD=\"\r\nset \"NEXT_IS_SESSION=\"\r\n:parse\r\nif \"%~1\"==\"\" goto parsed\r\nif /I \"%~1\"==\"--session\" (\r\n  set \"SESSION=%~2\"\r\n  shift\r\n  shift\r\n  goto parse\r\n)\r\nif /I \"%~1\"==\"--json\" (\r\n  shift\r\n  goto parse\r\n)\r\nset \"CMD=%~1\"\r\nshift\r\ngoto parsed\r\n:parsed\r\nif /I \"%CMD%\"==\"open\" (\r\n  echo {{\"success\":true,\"data\":{{\"title\":\"Example Domain\",\"url\":\"%~1\"}},\"error\":null}}\r\n  exit /b 0\r\n)\r\nif /I \"%CMD%\"==\"snapshot\" (\r\n  echo {{\"success\":true,\"data\":{{\"origin\":\"https://example.com/\",\"snapshot\":\"- link \\\"Learn more\\\" [ref=e1]\"}},\"error\":null}}\r\n  exit /b 0\r\n)\r\nif /I \"%CMD%\"==\"click\" (\r\n  echo {{\"success\":true,\"data\":{{\"clicked\":\"%~1\",\"session\":\"%SESSION%\"}},\"error\":null}}\r\n  exit /b 0\r\n)\r\nif /I \"%CMD%\"==\"close\" (\r\n  echo {{\"success\":true,\"data\":{{\"closed\":true}},\"error\":null}}\r\n  exit /b 0\r\n)\r\necho {{\"success\":false,\"data\":null,\"error\":\"unsupported command\"}}\r\nexit /b 1\r\n",
+        log = log_path.display()
     );
-    fs::write(&path, script).expect("write browser companion script");
-    path
-}
-
-#[cfg(unix)]
-fn write_browser_companion_sleep_script(root: &Path, name: &str, sleep_seconds: u64) -> PathBuf {
-    let path = root.join(name);
-    let script = format!(
-        "#!/bin/sh\nsleep {sleep_seconds}\nprintf '%s' '{{\"ok\":true,\"result\":{{\"delayed\":true}}}}'\n"
-    );
-    crate::test_support::write_executable_script_atomically(&path, &script)
-        .expect("write browser companion sleep script");
-    path
-}
-
-#[cfg(windows)]
-fn write_browser_companion_sleep_script(root: &Path, name: &str, _sleep_seconds: u64) -> PathBuf {
-    use std::fs;
-
-    let path = root.join(format!("{name}.cmd"));
-    let script = "@echo off\r\nping -n 3 127.0.0.1 > nul\r\necho {\"ok\":true,\"result\":{\"delayed\":true}}\r\n";
-    fs::write(&path, script).expect("write browser companion sleep script");
+    fs::write(&path, script).expect("write fake agent-browser cli script");
     path
 }
 
@@ -701,7 +642,7 @@ fn delegate_child_tool_view_can_allow_shell_when_enabled() {
 fn provider_tool_definitions_are_stable_and_cover_direct_surface() {
     let config = runtime_config::ToolRuntimeConfig::default();
     let defs = provider_tool_definitions_with_config(Some(&config));
-    let expected_names = vec!["bash", "edit", "read", "web", "write"];
+    let expected_names = vec!["bash", "browse", "edit", "read", "web", "write"];
     assert_eq!(defs.len(), expected_names.len());
 
     let names: Vec<&str> = defs
@@ -747,13 +688,6 @@ fn provider_tool_definitions_are_stable_and_cover_direct_surface() {
         .expect("web provider description should be text");
     assert!(web_provider_description.contains("`web { query }` / `web.search`"));
     assert!(web_provider_description.contains("plain URL fetch/request mode"));
-
-    assert!(!defs.iter().any(|item| {
-        item.get("function")
-            .and_then(|function| function.get("name"))
-            .and_then(Value::as_str)
-            == Some("browser")
-    }));
 }
 
 #[test]
@@ -762,7 +696,7 @@ fn provider_exposed_tool_gate_covers_direct_and_gateway_tools() {
     assert!(is_provider_exposed_tool_name("write"));
     assert!(is_provider_exposed_tool_name("bash"));
     assert!(is_provider_exposed_tool_name("edit"));
-    assert!(is_provider_exposed_tool_name("browser"));
+    assert!(is_provider_exposed_tool_name("browse"));
     assert!(!is_provider_exposed_tool_name("file.read"));
     assert!(!is_provider_exposed_tool_name("shell.exec"));
 }
@@ -993,56 +927,50 @@ fn provider_tool_definitions_trim_web_query_mode_when_search_is_runtime_disabled
 }
 
 #[test]
-fn provider_tool_definitions_hide_browser_surface_when_companion_is_runtime_disabled() {
+fn provider_tool_definitions_include_browse_surface_when_browser_is_enabled() {
     let defs =
         provider_tool_definitions_with_config(Some(&runtime_config::ToolRuntimeConfig::default()));
-    assert!(!defs.iter().any(|item| {
+    assert!(defs.iter().any(|item| {
         item.get("function")
             .and_then(|function| function.get("name"))
             .and_then(Value::as_str)
-            == Some("browser")
+            == Some("browse")
     }));
 }
 
 #[test]
-fn provider_tool_definitions_expose_managed_browser_surface_when_companion_is_runtime_enabled() {
-    let root = unique_tool_temp_dir("loong-managed-browser-provider-surface");
-    let config = browser_companion_runtime_config(&root, "browser-companion".to_owned());
-
-    let defs = provider_tool_definitions_with_config(Some(&config));
-    let browser = defs
+fn provider_tool_definitions_expose_browse_page_actions() {
+    let defs =
+        provider_tool_definitions_with_config(Some(&runtime_config::ToolRuntimeConfig::default()));
+    let browse = defs
         .iter()
         .find(|item| {
             item.get("function")
                 .and_then(|function| function.get("name"))
                 .and_then(Value::as_str)
-                == Some("browser")
+                == Some("browse")
         })
-        .expect("browser definition should exist");
-    let properties = browser["function"]["parameters"]["properties"]
+        .expect("browse definition should exist");
+    let properties = browse["function"]["parameters"]["properties"]
         .as_object()
-        .expect("browser properties should be an object");
+        .expect("browse properties should be an object");
 
     let action_enum = properties["action"]["enum"]
         .as_array()
-        .expect("browser action enum should exist");
-    assert!(action_enum.contains(&json!("start")));
-    assert!(action_enum.contains(&json!("navigate")));
-    assert!(action_enum.contains(&json!("snapshot")));
-    assert!(action_enum.contains(&json!("wait")));
+        .expect("browse action enum should exist");
+    assert!(action_enum.contains(&json!("open")));
+    assert!(action_enum.contains(&json!("extract")));
     assert!(action_enum.contains(&json!("click")));
-    assert!(action_enum.contains(&json!("type")));
-    assert!(action_enum.contains(&json!("stop")));
-    assert!(!action_enum.contains(&json!("open")));
-    assert!(!action_enum.contains(&json!("extract")));
+    assert!(!action_enum.contains(&json!("start")));
+    assert!(!action_enum.contains(&json!("type")));
 
     let mode_enum = properties["mode"]["enum"]
         .as_array()
-        .expect("browser mode enum should exist");
-    assert!(mode_enum.contains(&json!("summary")));
-    assert!(mode_enum.contains(&json!("html")));
-    assert!(!mode_enum.contains(&json!("page_text")));
-    assert!(!mode_enum.contains(&json!("selector_text")));
+        .expect("browse mode enum should exist");
+    assert!(mode_enum.contains(&json!("page_text")));
+    assert!(mode_enum.contains(&json!("selector_text")));
+    assert!(!mode_enum.contains(&json!("summary")));
+    assert!(!mode_enum.contains(&json!("html")));
 }
 
 #[test]
@@ -1071,30 +999,30 @@ fn runtime_tool_search_entries_trim_web_search_mode_when_query_mode_is_disabled(
 }
 
 #[test]
-fn runtime_tool_search_entries_hide_browser_surface_when_companion_is_runtime_disabled() {
-    let entries =
-        runtime_tool_search_entries(&runtime_config::ToolRuntimeConfig::default(), None, false);
-    assert!(!entries.iter().any(|entry| entry.tool_id == "browser"));
+fn runtime_tool_search_entries_hide_browse_surface_when_browser_is_disabled() {
+    let config = runtime_config::ToolRuntimeConfig {
+        browser: runtime_config::BrowserRuntimePolicy {
+            enabled: false,
+            ..runtime_config::BrowserRuntimePolicy::default()
+        },
+        ..runtime_config::ToolRuntimeConfig::default()
+    };
+    let entries = runtime_tool_search_entries(&config, None, false);
+    assert!(!entries.iter().any(|entry| entry.tool_id == "browse"));
 }
 
 #[test]
-fn runtime_tool_search_entries_expose_managed_browser_surface_when_companion_is_runtime_enabled() {
-    let root = unique_tool_temp_dir("loong-managed-browser-search-surface");
-    let config = browser_companion_runtime_config(&root, "browser-companion".to_owned());
-    let entries = runtime_tool_search_entries(&config, None, false);
-    let browser = entries
+fn runtime_tool_search_entries_expose_browse_surface_when_browser_is_enabled() {
+    let entries =
+        runtime_tool_search_entries(&runtime_config::ToolRuntimeConfig::default(), None, false);
+    let browse = entries
         .iter()
-        .find(|entry| entry.tool_id == "browser")
-        .expect("browser direct search entry");
+        .find(|entry| entry.tool_id == "browse")
+        .expect("browse direct search entry");
 
-    assert!(browser.summary.contains("Drive a managed browser session"));
-    assert!(!browser.argument_hint.contains("link_id"));
-    assert!(
-        browser
-            .usage_guidance
-            .as_deref()
-            .is_some_and(|guidance| guidance.contains("live page interaction"))
-    );
+    assert!(browse.summary.contains("Open a page"));
+    assert!(!browse.argument_hint.is_empty());
+    assert!(browse.usage_guidance.as_deref().is_some());
 }
 
 #[test]
@@ -1983,39 +1911,30 @@ fn direct_web_runtime_routing_keeps_network_mode_when_search_mode_is_unavailable
 
 #[cfg(feature = "tool-browser")]
 #[test]
-fn direct_browser_routes_managed_browser_actions_through_browser_surface() {
+fn direct_browse_routes_bounded_page_actions() {
     assert_eq!(
         route_direct_browser_tool_name(&json!({
-            "action": "start",
+            "action": "open",
             "url": "https://example.com"
         }))
-        .expect("managed browser start routing should succeed"),
-        "browser.companion.session.start"
+        .expect("browse open routing should succeed"),
+        "browser.open"
     );
     assert_eq!(
         route_direct_browser_tool_name(&json!({
-            "session_id": "browser-companion-1",
-            "selector": "#submit"
+            "session_id": "browser-1",
+            "mode": "links"
         }))
-        .expect("managed browser click routing should succeed"),
-        "browser.companion.click"
+        .expect("browse extract routing should succeed"),
+        "browser.extract"
     );
     assert_eq!(
         route_direct_browser_tool_name(&json!({
-            "session_id": "browser-companion-1",
-            "selector": "#query",
-            "text": "hello"
+            "session_id": "browser-1",
+            "link_id": 1
         }))
-        .expect("managed browser type routing should succeed"),
-        "browser.companion.type"
-    );
-    assert_eq!(
-        route_direct_browser_tool_name(&json!({
-            "action": "stop",
-            "session_id": "browser-companion-1"
-        }))
-        .expect("managed browser stop routing should succeed"),
-        "browser.companion.session.stop"
+        .expect("browse click routing should succeed"),
+        "browser.click"
     );
 }
 
@@ -2051,375 +1970,6 @@ fn tool_search_returns_coarse_fallback_for_zero_match_queries() {
                 .any(|reason| reason.as_str() == Some("coarse_fallback")))),
         "coarse fallback results should explain their fallback mode: {results:?}"
     );
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_tool_search_returns_runtime_ready_companion_entries() {
-    let root = std::env::temp_dir().join(format!(
-        "loongclaw-tool-search-browser-companion-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let log_path = root.join("request.json");
-    let script_path = write_browser_companion_script(
-        &root,
-        "browser-companion-search",
-        r#"{"ok":true,"result":{"ready":true}}"#,
-        &log_path,
-    );
-    let config = browser_companion_runtime_config(&root, script_path.display().to_string());
-
-    let outcome = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "tool.search".to_owned(),
-            payload: json!({"query": "browser companion session navigate click", "limit": 8}),
-        },
-        &config,
-    )
-    .expect("tool search should succeed");
-
-    let results = outcome.payload["results"].as_array().expect("results");
-    assert!(
-        results.iter().any(|entry| entry["tool_id"] == "browser"),
-        "browser should absorb managed browser companion capabilities once runtime-ready: {results:?}"
-    );
-    assert!(
-        results
-            .iter()
-            .all(|entry| entry["tool_id"] != "browser-session-start"),
-        "managed browser primitives should stay collapsed beneath browser: {results:?}"
-    );
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_tools_split_read_and_write_execution_kinds() {
-    let read =
-        resolve_tool_execution("browser.companion.snapshot").expect("snapshot tool should resolve");
-    assert_eq!(read.canonical_name, "browser.companion.snapshot");
-    assert_eq!(read.execution_kind, ToolExecutionKind::Core);
-
-    let write =
-        resolve_tool_execution("browser.companion.click").expect("click tool should resolve");
-    assert_eq!(write.canonical_name, "browser.companion.click");
-    assert_eq!(write.execution_kind, ToolExecutionKind::App);
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_protocol_start_issues_managed_session_id_and_records_request() {
-    let _subprocess_guard = crate::test_support::acquire_subprocess_test_guard();
-    let root = unique_tool_temp_dir("loongclaw-browser-companion-start");
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let log_path = root.join("request.json");
-    let script_path = write_browser_companion_script(
-        &root,
-        "browser-companion-ok",
-        r#"{"ok":true,"result":{"page_url":"https://example.com","title":"Example Domain"}}"#,
-        &log_path,
-    );
-    let config = browser_companion_runtime_config(&root, script_path.display().to_string());
-
-    let outcome = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.session.start".to_owned(),
-            payload: json!({
-                "url": "https://example.com"
-            }),
-        },
-        &config,
-    )
-    .expect("browser companion start should succeed");
-
-    assert_eq!(outcome.status, "ok");
-    assert_eq!(outcome.payload["adapter"], "browser-companion");
-    assert_eq!(
-        outcome.payload["tool_name"],
-        "browser.companion.session.start"
-    );
-    let session_id = outcome.payload["session_id"]
-        .as_str()
-        .expect("session id should be text");
-    assert!(
-        session_id.starts_with("browser-companion-"),
-        "session id should be issued by LoongClaw: {session_id}"
-    );
-    assert_eq!(outcome.payload["result"]["page_url"], "https://example.com");
-
-    let request: Value = serde_json::from_str(
-        &std::fs::read_to_string(&log_path).expect("request log should exist"),
-    )
-    .expect("request log should be valid json");
-    assert_eq!(request["tool_name"], "browser.companion.session.start");
-    assert_eq!(request["operation"], "session.start");
-    assert_eq!(request["action_class"], "read");
-    assert_eq!(request["arguments"]["url"], "https://example.com");
-    assert_eq!(request["session_id"], session_id);
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn direct_browser_url_starts_managed_session_when_companion_is_runtime_ready_and_page_browser_is_disabled()
- {
-    let _subprocess_guard = crate::test_support::acquire_subprocess_test_guard();
-    let root = unique_tool_temp_dir("loongclaw-browser-companion-direct-browser-start");
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let log_path = root.join("request.json");
-    let script_path = write_browser_companion_script(
-        &root,
-        "browser-companion-direct-browser-start",
-        r#"{"ok":true,"result":{"page_url":"https://example.com","title":"Example Domain"}}"#,
-        &log_path,
-    );
-    let mut config = browser_companion_runtime_config(&root, script_path.display().to_string());
-    config.browser.enabled = false;
-
-    let outcome = routing::execute_direct_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "browser".to_owned(),
-            payload: json!({
-                "url": "https://example.com"
-            }),
-        },
-        &config,
-    )
-    .expect("browser direct surface should start a managed session when that is the only browser lane left");
-
-    assert_eq!(outcome.status, "ok");
-    assert_eq!(
-        outcome.payload["tool_name"],
-        "browser.companion.session.start"
-    );
-    assert_eq!(outcome.payload["result"]["page_url"], "https://example.com");
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_protocol_rejects_unknown_session_for_read_tools() {
-    let root = unique_tool_temp_dir("loongclaw-browser-companion-unknown-session");
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let log_path = root.join("request.json");
-    let script_path = write_browser_companion_script(
-        &root,
-        "browser-companion-unused",
-        r#"{"ok":true,"result":{"page_url":"https://example.com"}}"#,
-        &log_path,
-    );
-    let config = browser_companion_runtime_config(&root, script_path.display().to_string());
-
-    let error = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.navigate".to_owned(),
-            payload: json!({
-                "session_id": "browser-companion-missing",
-                "url": "https://example.com/next"
-            }),
-        },
-        &config,
-    )
-    .expect_err("unknown companion session should fail closed");
-
-    assert!(
-        error.contains("browser_companion_unknown_session"),
-        "error={error}"
-    );
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_protocol_surfaces_invalid_json_from_command() {
-    let _subprocess_guard = crate::test_support::acquire_subprocess_test_guard();
-    let root = unique_tool_temp_dir("loongclaw-browser-companion-invalid-json");
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let log_path = root.join("request.json");
-    let script_path = write_browser_companion_script(
-        &root,
-        "browser-companion-invalid-json",
-        "not-json",
-        &log_path,
-    );
-    let config = browser_companion_runtime_config(&root, script_path.display().to_string());
-
-    let error = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.session.start".to_owned(),
-            payload: json!({
-                "url": "https://example.com"
-            }),
-        },
-        &config,
-    )
-    .expect_err("invalid json should become a typed adapter failure");
-
-    assert!(
-        error.contains("browser_companion_protocol_invalid_json"),
-        "error={error}"
-    );
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_protocol_times_out_stalled_command() {
-    let _subprocess_guard = crate::test_support::acquire_subprocess_test_guard();
-    let root = unique_tool_temp_dir("loong-browser-companion-timeout");
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let script_path = write_browser_companion_sleep_script(&root, "browser-companion-timeout", 2);
-    let mut config = browser_companion_runtime_config(&root, script_path.display().to_string());
-    config.browser_companion.timeout_seconds = 1;
-
-    let error = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.session.start".to_owned(),
-            payload: json!({
-                "url": "https://example.com"
-            }),
-        },
-        &config,
-    )
-    .expect_err("hung command should time out");
-
-    assert!(error.contains("browser_companion_timeout"), "error={error}");
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_app_tool_click_uses_current_session_scope() {
-    let _subprocess_guard = crate::test_support::acquire_subprocess_test_guard();
-    let mut env = ScopedEnv::new();
-    let root = unique_tool_temp_dir("loongclaw-browser-companion-app-click");
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let log_path = root.join("request.json");
-    let script_path = write_browser_companion_script(
-        &root,
-        "browser-companion-app-click",
-        r#"{"ok":true,"result":{"clicked":true}}"#,
-        &log_path,
-    );
-    let runtime_config = browser_companion_runtime_config(&root, script_path.display().to_string());
-    let start = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.session.start".to_owned(),
-            payload: json!({
-                "url": "https://example.com",
-                BROWSER_SESSION_SCOPE_FIELD: "root-session"
-            }),
-        },
-        &runtime_config,
-    )
-    .expect("browser companion start should succeed");
-    let session_id = start.payload["session_id"]
-        .as_str()
-        .expect("session id should exist")
-        .to_owned();
-
-    env.set("LOONG_BROWSER_COMPANION_READY", "true");
-
-    let mut tool_config = crate::config::ToolConfig::default();
-    tool_config.browser_companion.enabled = true;
-    tool_config.browser_companion.command = Some(script_path.display().to_string());
-
-    let outcome = execute_app_tool_with_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.click".to_owned(),
-            payload: json!({
-                "session_id": session_id,
-                "selector": "#submit"
-            }),
-        },
-        "root-session",
-        &crate::session::store::SessionStoreConfig::default(),
-        &tool_config,
-    )
-    .expect("browser companion click should succeed");
-
-    assert_eq!(outcome.status, "ok");
-    assert_eq!(outcome.payload["action_class"], "write");
-    assert_eq!(outcome.payload["result"]["clicked"], true);
-
-    let request: Value = serde_json::from_str(
-        &std::fs::read_to_string(&log_path).expect("request log should exist"),
-    )
-    .expect("request log should be valid json");
-    assert_eq!(request["operation"], "click");
-    assert_eq!(request["action_class"], "write");
-    assert_eq!(request["session_scope"], "root-session");
-    assert_eq!(request["arguments"]["selector"], "#submit");
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_visible_app_tool_click_skips_env_recheck_when_runtime_ready() {
-    let _subprocess_guard = crate::test_support::acquire_subprocess_test_guard();
-    let root = unique_tool_temp_dir("loongclaw-browser-companion-visible-app-click");
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let log_path = root.join("request.json");
-    let script_path = write_browser_companion_script(
-        &root,
-        "browser-companion-visible-app-click",
-        r#"{"ok":true,"result":{"clicked":true}}"#,
-        &log_path,
-    );
-    let runtime_config = browser_companion_runtime_config(&root, script_path.display().to_string());
-    let start = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.session.start".to_owned(),
-            payload: json!({
-                "url": "https://example.com",
-                BROWSER_SESSION_SCOPE_FIELD: "root-session"
-            }),
-        },
-        &runtime_config,
-    )
-    .expect("browser companion start should succeed");
-    let session_id = start.payload["session_id"]
-        .as_str()
-        .expect("session id should exist")
-        .to_owned();
-
-    let mut tool_config = crate::config::ToolConfig::default();
-    tool_config.browser_companion.enabled = true;
-    tool_config.browser_companion.command = Some(script_path.display().to_string());
-
-    let outcome = execute_app_tool_with_visibility_checked_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.click".to_owned(),
-            payload: json!({
-                "session_id": session_id,
-                "selector": "#submit"
-            }),
-        },
-        "root-session",
-        &crate::session::store::SessionStoreConfig::default(),
-        &tool_config,
-    )
-    .expect("browser companion visible click should succeed");
-
-    assert_eq!(outcome.status, "ok");
-    assert_eq!(outcome.payload["action_class"], "write");
-    assert_eq!(outcome.payload["result"]["clicked"], true);
-
-    let request: Value = serde_json::from_str(
-        &std::fs::read_to_string(&log_path).expect("request log should exist"),
-    )
-    .expect("request log should be valid json");
-    assert_eq!(request["operation"], "click");
-    assert_eq!(request["action_class"], "write");
-    assert_eq!(request["session_scope"], "root-session");
 
     std::fs::remove_dir_all(&root).ok();
 }
@@ -3376,13 +2926,14 @@ fn provider_tool_definitions_with_config_keeps_direct_surface_when_feishu_runtim
         .collect::<Vec<_>>();
 
     assert!(names.contains(&"bash"));
+    assert!(names.contains(&"browse"));
     assert!(names.contains(&"edit"));
     assert!(names.contains(&"read"));
     assert!(names.contains(&"web"));
     assert!(names.contains(&"write"));
     assert!(!names.contains(&"tool_invoke"));
     assert!(!names.contains(&"tool_search"));
-    assert_eq!(names.len(), 5);
+    assert_eq!(names.len(), 6);
 }
 
 #[cfg(feature = "feishu-integration")]

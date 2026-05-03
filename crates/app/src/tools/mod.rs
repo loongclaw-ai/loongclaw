@@ -34,8 +34,6 @@ mod bash_governance;
 mod bash_rules;
 #[cfg(feature = "tool-browser")]
 mod browser;
-#[cfg(feature = "tool-browser")]
-mod browser_companion;
 mod bundled_skills;
 mod catalog;
 mod config_import;
@@ -160,9 +158,6 @@ pub use web_http::build_ssrf_safe_client;
 
 pub(crate) const BROWSER_SESSION_SCOPE_FIELD: &str = "__loong_browser_scope";
 pub(crate) const LEGACY_BROWSER_SESSION_SCOPE_FIELD: &str = "__loong_browser_scope";
-pub const BROWSER_COMPANION_PREVIEW_SKILL_ID: &str =
-    bundled_skills::BROWSER_COMPANION_PREVIEW_SKILL_ID;
-pub const BROWSER_COMPANION_COMMAND: &str = bundled_skills::BROWSER_COMPANION_COMMAND;
 pub use bundled_skills::{
     BundledPreinstallTarget, BundledPreinstallTargetKind, BundledSkillPack,
     bundled_preinstall_targets, bundled_skill_pack, bundled_skill_pack_memberships,
@@ -180,11 +175,11 @@ pub use tool_snapshot::{
 pub use tool_surface::ToolSurfaceState;
 pub(crate) use tool_surface::visible_direct_tool_states_for_view;
 
+#[cfg(test)]
 pub(crate) fn tool_id_visible_in_view(tool_id: &str, view: &ToolView) -> bool {
     tool_search::tool_id_visible_in_view(tool_id, view)
 }
 
-const BROWSER_COMPANION_TOOL_PREFIX: &str = "browser.companion.";
 const DELEGATE_ASYNC_TOOL_NAME: &str = "delegate_async";
 const DELEGATE_TOOL_NAME: &str = "delegate";
 pub(crate) const SHELL_EXEC_TOOL_NAME: &str = "shell.exec";

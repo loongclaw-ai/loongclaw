@@ -12,13 +12,7 @@ pub fn execute_app_tool_with_config(
     memory_config: &SessionStoreConfig,
     tool_config: &ToolConfig,
 ) -> Result<ToolCoreOutcome, String> {
-    execute_app_tool_with_browser_companion_readiness(
-        request,
-        current_session_id,
-        memory_config,
-        tool_config,
-        false,
-    )
+    execute_app_tool_dispatch(request, current_session_id, memory_config, tool_config)
 }
 
 pub(crate) fn execute_app_tool_with_visibility_checked_config(
@@ -27,21 +21,14 @@ pub(crate) fn execute_app_tool_with_visibility_checked_config(
     memory_config: &SessionStoreConfig,
     tool_config: &ToolConfig,
 ) -> Result<ToolCoreOutcome, String> {
-    execute_app_tool_with_browser_companion_readiness(
-        request,
-        current_session_id,
-        memory_config,
-        tool_config,
-        true,
-    )
+    execute_app_tool_dispatch(request, current_session_id, memory_config, tool_config)
 }
 
-fn execute_app_tool_with_browser_companion_readiness(
+fn execute_app_tool_dispatch(
     request: ToolCoreRequest,
     current_session_id: &str,
     memory_config: &SessionStoreConfig,
     tool_config: &ToolConfig,
-    assume_browser_companion_ready: bool,
 ) -> Result<ToolCoreOutcome, String> {
     let canonical_name = canonical_tool_name(request.tool_name.as_str());
     let request = ToolCoreRequest {
@@ -89,22 +76,6 @@ fn execute_app_tool_with_browser_companion_readiness(
             memory_config,
             tool_config,
         ),
-        #[cfg(feature = "tool-browser")]
-        "browser.companion.click" | "browser.companion.type" => {
-            if assume_browser_companion_ready {
-                super::browser_companion::execute_browser_companion_visible_app_tool_with_config(
-                    request,
-                    current_session_id,
-                    tool_config,
-                )
-            } else {
-                super::browser_companion::execute_browser_companion_app_tool_with_config(
-                    request,
-                    current_session_id,
-                    tool_config,
-                )
-            }
-        }
         _ => Err(format!(
             "app_tool_not_found: unknown app tool `{}`",
             request.tool_name

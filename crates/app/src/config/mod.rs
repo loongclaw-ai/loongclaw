@@ -135,8 +135,7 @@ pub(crate) use shared::{
 };
 #[allow(unused_imports)]
 pub use tools::{
-    AUTONOMY_PROFILE_VALID_VALUES, AutonomyProfile, BrowserCompanionToolConfig, BrowserToolConfig,
-    DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS, DEFAULT_BROWSER_MAX_LINKS,
+    AUTONOMY_PROFILE_VALID_VALUES, AutonomyProfile, BrowserToolConfig, DEFAULT_BROWSER_MAX_LINKS,
     DEFAULT_BROWSER_MAX_SESSIONS, DEFAULT_BROWSER_MAX_TEXT_CHARS,
     DEFAULT_EXTERNAL_SKILLS_BLOCKED_DOMAIN_RULES, DEFAULT_RUNTIME_SELF_MAX_SOURCE_CHARS,
     DEFAULT_RUNTIME_SELF_MAX_TOTAL_CHARS, DEFAULT_SHELL_ALLOW, DEFAULT_WEB_FETCH_MAX_BYTES,
@@ -2807,7 +2806,7 @@ MCP_LOG = "warn"
         assert_eq!(config.queue_owner_ttl_ms(), 30_000);
         assert!(!config.bindings_enabled);
         assert!(!config.emit_runtime_events);
-        assert!(config.allow_mcp_server_injection);
+        assert!(!config.allow_mcp_server_injection);
         assert!(config.acpx_profile().is_none());
     }
 

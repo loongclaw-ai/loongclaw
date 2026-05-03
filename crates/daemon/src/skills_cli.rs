@@ -64,11 +64,6 @@ pub enum SkillsCommands {
         #[arg(long, default_value_t = false)]
         replace: bool,
     },
-    /// Enable the managed browser preview flow and install its bundled helper skill
-    EnableBrowserPreview {
-        #[arg(long, default_value_t = false)]
-        replace: bool,
-    },
     /// Remove an installed managed external skill
     Remove { skill_id: String },
     /// Inspect or update persisted runtime policy for external skills
@@ -141,9 +136,6 @@ pub fn execute_skills_command(options: SkillsCommandOptions) -> CliResult<Skills
     let outcome = match options.command {
         SkillsCommands::Policy { command } => {
             execute_policy_command(&resolved_path, &mut config, command)?
-        }
-        SkillsCommands::EnableBrowserPreview { replace } => {
-            execute_enable_browser_preview_command(&resolved_path, &mut config, replace)?
         }
         command @ (SkillsCommands::List
         | SkillsCommands::Search { .. }
@@ -253,7 +245,6 @@ fn execute_non_policy_skills_command(
                 | SkillsCommands::Info { .. }
                 | SkillsCommands::Fetch { .. }
                 | SkillsCommands::InstallBundled { .. }
-                | SkillsCommands::EnableBrowserPreview { .. }
                 | SkillsCommands::Remove { .. }
                 | SkillsCommands::Policy { .. } => {
                     return Err("unexpected skills install command routing".to_owned());
@@ -281,7 +272,6 @@ fn execute_non_policy_skills_command(
                 | SkillsCommands::Fetch { .. }
                 | SkillsCommands::Install { .. }
                 | SkillsCommands::InstallBundled { .. }
-                | SkillsCommands::EnableBrowserPreview { .. }
                 | SkillsCommands::Policy { .. } => {
                     return Err("unexpected skills remove command routing".to_owned());
                 }
@@ -291,7 +281,7 @@ fn execute_non_policy_skills_command(
                 &tool_runtime_config,
             )
         }
-        SkillsCommands::Policy { .. } | SkillsCommands::EnableBrowserPreview { .. } => {
+        SkillsCommands::Policy { .. } => {
             Err("unexpected skills CLI command routed through non-policy execution path".to_owned())
         }
     }
@@ -910,109 +900,6 @@ fn serialize_bundled_skill_pack(pack: &mvp::tools::BundledSkillPack) -> Value {
     })
 }
 
-fn execute_enable_browser_preview_command(
-    resolved_path: &Path,
-    config: &mut mvp::config::LoongConfig,
-    replace: bool,
-) -> CliResult<ToolCoreOutcome> {
-    let mut updated_config = config.clone();
-    let config_updated = crate::browser_preview::ensure_browser_preview_config(&mut updated_config);
-    if crate::browser_preview::shell_policy_explicitly_denies_command(
-        &updated_config,
-        mvp::tools::BROWSER_COMPANION_COMMAND,
-    ) {
-        return Err(
-            "browser preview cannot be enabled while [tools].shell_deny blocks `agent-browser`; remove that entry and retry"
-                .to_owned(),
-        );
-    }
-
-    if config_updated {
-        persist_config_update(resolved_path, &updated_config)?;
-    }
-    let install_result = execute_install_bundled_skill_command(
-        resolved_path,
-        &updated_config,
-        crate::browser_preview::BROWSER_PREVIEW_SKILL_ID,
-        replace
-            || crate::browser_preview::inspect_browser_preview_state(&updated_config)
-                .skill_installed,
-    );
-    let mut outcome = match install_result {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            if config_updated {
-                persist_config_update(resolved_path, config).map_err(|rollback_error| {
-                    format!("{error}; browser preview config rollback failed: {rollback_error}")
-                })?;
-            }
-            return Err(error);
-        }
-    };
-    *config = updated_config;
-    let resolved_config_path = resolved_path.display().to_string();
-    let runtime_available =
-        crate::browser_preview::inspect_browser_preview_state(config).runtime_available;
-    let cli_enabled = config.cli.enabled;
-    let recipes = if cli_enabled {
-        crate::browser_preview::browser_preview_recipe_commands(&resolved_config_path)
-    } else {
-        Vec::new()
-    };
-    let mut next_steps = if runtime_available {
-        let mut steps = Vec::new();
-        if cli_enabled && let Some(first_recipe) = recipes.first() {
-            steps.push(
-                crate::browser_preview::browser_preview_ready_step_from_command(
-                    first_recipe.command.as_str(),
-                ),
-            );
-        }
-        steps.push(crate::browser_preview::browser_preview_doctor_step(
-            &resolved_config_path,
-        ));
-        steps
-    } else {
-        vec![
-            crate::browser_preview::browser_preview_install_step(),
-            crate::browser_preview::browser_preview_verify_step(),
-            crate::browser_preview::browser_preview_doctor_step(&resolved_config_path),
-        ]
-    };
-    if !cli_enabled {
-        next_steps.push(crate::browser_preview::browser_preview_cli_disabled_step().to_owned());
-    }
-
-    if let Some(payload) = outcome.payload.as_object_mut() {
-        payload.insert(
-            "tool_name".to_owned(),
-            json!("skills.enable-browser-preview"),
-        );
-        payload.insert("config_updated".to_owned(), json!(config_updated));
-        payload.insert("browser_preview_enabled".to_owned(), json!(true));
-        payload.insert(
-            "runtime_binary_available".to_owned(),
-            json!(runtime_available),
-        );
-        payload.insert("cli_enabled".to_owned(), json!(cli_enabled));
-        payload.insert("next_steps".to_owned(), json!(next_steps));
-        payload.insert(
-            "recipes".to_owned(),
-            json!(
-                recipes
-                    .into_iter()
-                    .map(|recipe| json!({
-                        "label": recipe.label,
-                        "command": recipe.command,
-                    }))
-                    .collect::<Vec<_>>()
-            ),
-        );
-    }
-
-    Ok(outcome)
-}
-
 fn persistent_policy_payload(config: &mvp::config::LoongConfig) -> Value {
     json!({
         "enabled": config.external_skills.enabled,
@@ -1615,7 +1502,7 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                 }
             }
         }
-        "external_skills.install" | "skills.install" | "skills.enable-browser-preview" => {
+        "external_skills.install" | "skills.install" => {
             lines.push(format!(
                 "installed skill_id={}",
                 payload
@@ -1651,23 +1538,6 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
             ));
-            if tool_name == "skills.enable-browser-preview" {
-                lines.push("browser preview enabled via bundled helper skill".to_owned());
-                lines.push(format!(
-                    "config_updated={}",
-                    payload
-                        .get("config_updated")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                ));
-                lines.push(format!(
-                    "runtime_binary_available={}",
-                    payload
-                        .get("runtime_binary_available")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                ));
-            }
             render_optional_string_section(&mut lines, "next steps:", payload.get("next_steps"))?;
             render_optional_recipe_section(&mut lines, "recipes:", payload.get("recipes"))?;
         }

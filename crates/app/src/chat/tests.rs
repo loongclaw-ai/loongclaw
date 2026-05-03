@@ -1990,30 +1990,26 @@ fn cli_chat_live_surface_observer_renders_tool_lifecycle_updates() {
     let completed_batch = batches
         .iter()
         .rev()
-        .find(|lines| {
-            lines
-                .iter()
-                .any(|line| line.contains("[completed] read (id=call-tool-1) - ok"))
-        })
+        .find(|lines| lines.iter().any(|line| line.contains("• Closed read · ok")))
         .expect("completed tool batch");
 
     assert!(
         running_batch
             .iter()
-            .any(|line| line.contains("[running] read (id=call-tool-1)")),
+            .any(|line| line.contains("• Called read")),
         "tool batch should surface the running tool state: {running_batch:#?}"
     );
 
     assert!(
         completed_batch
             .iter()
-            .any(|line| line.contains("[completed] read (id=call-tool-1) - ok")),
+            .any(|line| line.contains("• Closed read · ok")),
         "tool batch should surface the completed tool state: {completed_batch:#?}"
     );
     assert!(
         completed_batch
             .iter()
-            .any(|line| line.contains("args: {\"path\":\"README.md\"}")),
+            .any(|line| line.contains("↳ args path=README.md")),
         "tool batch should preserve streamed tool args: {completed_batch:#?}"
     );
 }
@@ -2082,13 +2078,13 @@ fn cli_chat_live_surface_observer_renders_runtime_output_and_file_change_updates
     assert!(
         final_batch
             .iter()
-            .any(|line| line.contains("[completed] bash (id=call-tool-2) - ok")),
+            .any(|line| line.contains("• Closed bash · ok")),
         "runtime output should surface the visible tool name: {final_batch:#?}"
     );
     assert!(
         final_batch
             .iter()
-            .any(|line| line.contains("stdout: 2 lines · 22 bytes")),
+            .any(|line| line.contains("↳ stdout 2 lines · 22 bytes")),
         "runtime output should surface stdout counters: {final_batch:#?}"
     );
     assert!(
@@ -2098,13 +2094,13 @@ fn cli_chat_live_surface_observer_renders_runtime_output_and_file_change_updates
     assert!(
         final_batch
             .iter()
-            .any(|line| line.contains("file: edit src/lib.rs (+2 / -1)")),
+            .any(|line| line.contains("↳ file edit src/lib.rs (+2 / -1)")),
         "runtime output should surface file change summaries: {final_batch:#?}"
     );
     assert!(
         final_batch
             .iter()
-            .any(|line| line.contains("metrics: 42ms · exit=0")),
+            .any(|line| line.contains("↳ metrics 42ms · exit=0")),
         "runtime output should surface command metrics: {final_batch:#?}"
     );
 }
@@ -2329,7 +2325,7 @@ fn cli_chat_live_surface_observer_waits_for_tools_phase_before_rendering_tool_ac
     assert!(
         last_batch
             .iter()
-            .any(|line| line.contains("[running] search (id=call_123)")),
+            .any(|line| line.contains("• Called search")),
         "the tools phase should surface the streamed tool metadata: {last_batch:#?}"
     );
 }

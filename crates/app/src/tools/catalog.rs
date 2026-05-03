@@ -30,11 +30,7 @@ use core_definition_support::{
 #[path = "catalog_browser_definition_support.rs"]
 mod browser_definition_support;
 use browser_definition_support::{
-    browser_click_definition, browser_companion_click_definition,
-    browser_companion_navigate_definition, browser_companion_session_start_definition,
-    browser_companion_session_stop_definition, browser_companion_snapshot_definition,
-    browser_companion_type_definition, browser_companion_wait_definition,
-    browser_extract_definition, browser_open_definition,
+    browser_click_definition, browser_extract_definition, browser_open_definition,
 };
 #[path = "catalog_external_skills_definition_support.rs"]
 mod external_skills_definition_support;
@@ -281,7 +277,6 @@ pub enum ToolVisibilityGate {
     Feishu,
     Delegate,
     Browser,
-    BrowserCompanion,
     BashRuntime,
     ExternalSkills,
     MemorySearchCorpus,
@@ -309,7 +304,7 @@ pub struct ToolDescriptor {
 fn primary_surface_id(raw: &str) -> bool {
     matches!(
         raw,
-        "read" | "write" | "edit" | "bash" | "web" | "browser" | "memory"
+        "read" | "write" | "edit" | "bash" | "web" | "browse" | "memory"
     )
 }
 
@@ -637,15 +632,13 @@ fn declared_concurrency_class(tool_name: &str) -> ToolConcurrencyClass {
         | "content.search"
         | "memory_search"
         | "memory_get"
-        | "browser.companion.snapshot"
-        | "browser.companion.wait"
         | "browser.extract"
         | "web.fetch"
         | "web.search" => Some(ToolConcurrencyClass::ReadOnly),
         "write"
         | "edit"
         | "bash"
-        | "browser"
+        | "browse"
         | "config.import"
         | "provider.switch"
         | "approval_request_resolve"
@@ -669,11 +662,6 @@ fn declared_concurrency_class(tool_name: &str) -> ToolConcurrencyClass {
         | "shell.exec"
         | "bash.exec"
         | "browser.click"
-        | "browser.companion.click"
-        | "browser.companion.navigate"
-        | "browser.companion.session.start"
-        | "browser.companion.session.stop"
-        | "browser.companion.type"
         | "browser.open" => Some(ToolConcurrencyClass::Mutating),
         _ => None,
     };
@@ -768,10 +756,10 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: direct_web_definition,
         },
         ToolDescriptor {
-            name: "browser",
-            provider_name: "browser",
-            aliases: &[],
-            description: "Drive a managed browser session",
+            name: "browse",
+            provider_name: "browse",
+            aliases: &["browser"],
+            description: "Open a page, extract text or links, or follow discovered page links",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Direct,
@@ -1741,104 +1729,6 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: browser_click_definition,
         });
         descriptors.push(ToolDescriptor {
-            name: "browser.companion.click",
-            provider_name: "browser_companion_click",
-            aliases: &["browser_companion_click"],
-            description: "Click a page element inside a governed browser companion session after policy review",
-            execution_kind: ToolExecutionKind::App,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_click_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "browser.companion.navigate",
-            provider_name: "browser_companion_navigate",
-            aliases: &["browser_companion_navigate"],
-            description: "Navigate a governed browser companion session to a target URL",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_navigate_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "browser.companion.session.start",
-            provider_name: "browser_companion_session_start",
-            aliases: &["browser_companion_session_start"],
-            description: "Start a governed browser companion session at a target URL",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_session_start_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "browser.companion.session.stop",
-            provider_name: "browser_companion_session_stop",
-            aliases: &["browser_companion_session_stop"],
-            description: "Stop a governed browser companion session and release companion-side state",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_session_stop_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "browser.companion.snapshot",
-            provider_name: "browser_companion_snapshot",
-            aliases: &["browser_companion_snapshot"],
-            description: "Capture a readable snapshot of the current browser companion page",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_snapshot_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "browser.companion.type",
-            provider_name: "browser_companion_type",
-            aliases: &["browser_companion_type"],
-            description: "Type text into a page element inside a governed browser companion session after policy review",
-            execution_kind: ToolExecutionKind::App,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_type_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "browser.companion.wait",
-            provider_name: "browser_companion_wait",
-            aliases: &["browser_companion_wait"],
-            description: "Wait inside a governed browser companion session for a condition or timeout window",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_wait_definition,
-        });
-        descriptors.push(ToolDescriptor {
             name: "browser.extract",
             provider_name: "browser_extract",
             aliases: &["browser_extract"],
@@ -2221,7 +2111,6 @@ fn tool_visibility_gate_enabled_for_delegate_child(
         | ToolVisibilityGate::Feishu
         | ToolVisibilityGate::Delegate
         | ToolVisibilityGate::Browser
-        | ToolVisibilityGate::BrowserCompanion
         | ToolVisibilityGate::ExternalSkills
         | ToolVisibilityGate::MemorySearchCorpus
         | ToolVisibilityGate::MemoryFileRoot
@@ -2292,7 +2181,6 @@ fn tool_visibility_gate_enabled_for_runtime_view(
         ToolVisibilityGate::Feishu => false,
         ToolVisibilityGate::Delegate => config.delegate.enabled,
         ToolVisibilityGate::Browser => config.browser.enabled,
-        ToolVisibilityGate::BrowserCompanion => false,
         ToolVisibilityGate::BashRuntime => false,
         ToolVisibilityGate::ExternalSkills => external_skills_enabled,
         ToolVisibilityGate::MemorySearchCorpus => config
@@ -2349,7 +2237,6 @@ fn tool_visibility_gate_enabled_for_runtime_policy(
         }
         ToolVisibilityGate::Delegate => config.delegate_enabled,
         ToolVisibilityGate::Browser => config.browser.enabled,
-        ToolVisibilityGate::BrowserCompanion => config.browser_companion.is_runtime_ready(),
         ToolVisibilityGate::BashRuntime => config.bash_exec.is_discoverable(),
         ToolVisibilityGate::ExternalSkills => config.external_skills.enabled,
         ToolVisibilityGate::MemorySearchCorpus => {

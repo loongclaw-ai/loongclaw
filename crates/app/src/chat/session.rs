@@ -30,7 +30,7 @@ use self::live::*;
 mod term;
 use self::term::*;
 pub(crate) use self::term::{
-    interactive_terminal_surface_supported, run_cli_chat_surface, run_concurrent_cli_host_surface,
+    interactive_terminal_surface_supported, run_concurrent_cli_host_surface,
 };
 #[path = "session/actions.rs"]
 mod actions;
@@ -124,10 +124,6 @@ impl ChatSessionSurface {
             term,
             state: Arc::new(Mutex::new(state)),
         })
-    }
-
-    async fn run(self) -> CliResult<()> {
-        self.run_with_shutdown(None).await
     }
 
     async fn run_with_shutdown(self, shutdown: Option<ConcurrentCliShutdown>) -> CliResult<()> {

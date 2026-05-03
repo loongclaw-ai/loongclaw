@@ -118,8 +118,6 @@ pub use {base64, kernel, sha2};
 mod access_terms;
 pub mod acp_cli;
 pub mod audit_cli;
-mod browser_companion_diagnostics;
-pub mod browser_preview;
 mod channel_access_policy_render;
 mod channel_bridge_render;
 mod channel_cli_specs;
@@ -140,7 +138,6 @@ pub mod debug_cli;
 mod delegate_child_cli;
 pub mod doctor_cli;
 mod doctor_presentation;
-mod doctor_compaction_hygiene;
 pub mod doctor_security_cli;
 mod env_compat;
 mod external_skills_policy_probe;
@@ -172,8 +169,8 @@ pub mod personalize_cli;
 mod personalize_presentation;
 mod plugin_bridge_account_summary;
 pub mod plugins_cli;
-mod provider_credentials_guidance;
 mod provider_credential_policy;
+mod provider_credentials_guidance;
 mod provider_model_probe_policy;
 pub mod provider_presentation;
 mod provider_route_diagnostics;
@@ -1816,38 +1813,6 @@ pub(crate) use runtime_access::{
     RUNTIME_TOOL_ACCESS_SEPARATION_NOTE, RuntimeToolAccessSummary, runtime_tool_access_summary,
 };
 
-fn web_search_provider_credential_ready(
-    policy: &mvp::tools::runtime_config::WebSearchRuntimePolicy,
-) -> bool {
-    let provider = policy.default_provider.trim();
-    match provider {
-        mvp::config::WEB_SEARCH_PROVIDER_DUCKDUCKGO => true,
-        mvp::config::WEB_SEARCH_PROVIDER_BRAVE => {
-            option_has_non_empty_runtime_text(policy.brave_api_key.as_deref())
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_TAVILY => {
-            option_has_non_empty_runtime_text(policy.tavily_api_key.as_deref())
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_PERPLEXITY => {
-            option_has_non_empty_runtime_text(policy.perplexity_api_key.as_deref())
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_EXA => {
-            option_has_non_empty_runtime_text(policy.exa_api_key.as_deref())
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL => {
-            option_has_non_empty_runtime_text(policy.firecrawl_api_key.as_deref())
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_JINA => {
-            option_has_non_empty_runtime_text(policy.jina_api_key.as_deref())
-        }
-        _ => false,
-    }
-}
-
-fn option_has_non_empty_runtime_text(value: Option<&str>) -> bool {
-    value.is_some_and(|value| !value.trim().is_empty())
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeSnapshotArtifactMetadata {
     pub created_at: String,
@@ -2188,13 +2153,7 @@ fn collect_runtime_snapshot_external_skills_state(
         );
     }
 
-    match mvp::tools::execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "external_skills.list".to_owned(),
-            payload: json!({}),
-        },
-        &effective_tool_runtime,
-    ) {
+    match mvp::tools::external_skills_operator_list_with_config(&effective_tool_runtime) {
         Ok(outcome) => (
             RuntimeSnapshotExternalSkillsState {
                 policy: effective_policy,
@@ -2548,16 +2507,8 @@ fn runtime_snapshot_effective_external_skills_policy(
     ),
     String,
 > {
-    let outcome = mvp::tools::execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "external_skills.policy".to_owned(),
-            payload: json!({
-                "action": "get",
-            }),
-        },
-        tool_runtime,
-    )
-    .map_err(|error| format!("resolve effective external skills policy failed: {error}"))?;
+    let outcome = mvp::tools::external_skills_operator_policy_get_with_config(tool_runtime)
+        .map_err(|error| format!("resolve effective external skills policy failed: {error}"))?;
 
     let policy = runtime_snapshot_external_skills_policy_from_payload(&outcome.payload)?;
     let override_active = outcome

@@ -19,16 +19,6 @@ pub(crate) fn interactive_terminal_surface_supported() -> bool {
     terminal_surface_allowed(stdout_is_tty, stdin_is_tty)
 }
 
-pub(crate) async fn run_cli_chat_surface(
-    config_path: Option<&str>,
-    session_hint: Option<&str>,
-    options: &CliChatOptions,
-) -> CliResult<()> {
-    let runtime = initialize_cli_turn_runtime(config_path, session_hint, options, "cli-chat")?;
-    let surface = ChatSessionSurface::new(runtime, options.clone())?;
-    surface.run().await
-}
-
 pub(crate) fn run_concurrent_cli_host_surface(options: &ConcurrentCliHostOptions) -> CliResult<()> {
     reject_disabled_cli_channel(&options.config)?;
     let chat_options = CliChatOptions::default();

@@ -54,12 +54,7 @@ pub(crate) async fn load_compaction_session_snapshot(
     if !transcript_snapshot.is_complete()
         || transcript_snapshot.turn_count < window_snapshot.turn_count
     {
-        return Err(format!(
-            "load compaction transcript via kernel returned incomplete snapshot: window_turn_count={} transcript_turn_count={} transcript_len={}",
-            window_snapshot.turn_count,
-            transcript_snapshot.turn_count,
-            transcript_snapshot.turns.len()
-        ));
+        return Ok(window_snapshot);
     }
 
     Ok(transcript_snapshot)

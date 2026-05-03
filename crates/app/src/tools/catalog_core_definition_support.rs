@@ -337,39 +337,43 @@ pub(super) fn direct_browser_definition(descriptor: &ToolDescriptor) -> Value {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["start", "navigate", "snapshot", "wait", "stop", "click", "type"],
-                        "description": "Optional managed browser session action override. Leave it unset for the default route."
+                        "enum": ["open", "extract", "click"],
+                        "description": "Optional bounded page-browser action override. Leave it unset for the default route."
                     },
                     "url": {
                         "type": "string",
-                        "description": "Open or navigate this HTTP or HTTPS URL inside a managed browser session."
+                        "description": "HTTP or HTTPS URL to open in a bounded browser page session."
                     },
                     "session_id": {
                         "type": "string",
-                        "description": "Existing managed browser session identifier for follow-up interaction."
+                        "description": "Existing bounded browser session identifier for follow-up extraction or link traversal."
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["summary", "html"],
-                        "description": "Snapshot mode for the managed browser session."
+                        "enum": ["page_text", "title", "links", "selector_text"],
+                        "description": "Extraction mode used with `session_id`. Defaults to `page_text`."
                     },
                     "selector": {
                         "type": "string",
-                        "description": "CSS selector for managed browser interaction."
+                        "description": "Optional CSS selector used only with `selector_text` extraction."
                     },
-                    "text": {
-                        "type": "string",
-                        "description": "Text to type into the selected element."
-                    },
-                    "condition": {
-                        "type": "string",
-                        "description": "Optional wait condition for browser session progress."
-                    },
-                    "timeout_ms": {
+                    "link_id": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 30000,
-                        "description": "Optional wait timeout in milliseconds."
+                        "maximum": crate::config::MAX_BROWSER_MAX_LINKS,
+                        "description": "One-based link identifier returned by `browser.open` or `browser.extract` in `links` mode."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": crate::config::MAX_BROWSER_MAX_LINKS,
+                        "description": "Optional list limit used for `links` or `selector_text` extraction."
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": crate::config::MAX_WEB_FETCH_MAX_BYTES,
+                        "description": "Optional per-call read limit in bytes when opening a page."
                     }
                 },
                 "anyOf": [
@@ -380,13 +384,7 @@ pub(super) fn direct_browser_definition(descriptor: &ToolDescriptor) -> Value {
                         "required": ["session_id"]
                     },
                     {
-                        "required": ["session_id", "selector"]
-                    },
-                    {
-                        "required": ["session_id", "selector", "text"]
-                    },
-                    {
-                        "required": ["session_id", "url"]
+                        "required": ["session_id", "link_id"]
                     }
                 ],
                 "additionalProperties": false

@@ -92,7 +92,6 @@ pub(crate) use support::classify_kernel_error;
 use support::{
     RepairableToolPreflight, approval_required_tool_decision, denied_tool_decision,
     generic_allow_tool_decision, render_app_tool_denied_reason,
-    with_runtime_ready_browser_companion_tools,
 };
 pub(crate) use trace::{
     ToolBatchExecutionIntentStatus, ToolBatchExecutionIntentTrace, ToolBatchExecutionMode,

@@ -24,6 +24,16 @@ pub(super) fn augment_tool_payload_for_kernel(
     session_context: &SessionContext,
     memory_config: &SessionStoreConfig,
 ) -> AugmentedToolPayload {
+    let nested_browser_scope_required = if canonical_tool_name == "tool.invoke" {
+        payload
+            .as_object()
+            .and_then(|object| object.get("tool_id"))
+            .and_then(serde_json::Value::as_str)
+            .map(crate::tools::canonical_tool_name)
+            .is_some_and(browser_scope_injection_required)
+    } else {
+        false
+    };
     let augmented_runtime_narrowing =
         inject_runtime_narrowing_context_trusted(payload, session_context, false);
     let payload_after_runtime_narrowing = augmented_runtime_narrowing.payload;
@@ -56,6 +66,14 @@ pub(super) fn augment_tool_payload_for_kernel(
 
     if browser_scope_injection_required(canonical_tool_name) {
         payload = inject_browser_scope_field(payload, &session_context.session_id);
+        return AugmentedToolPayload {
+            payload,
+            trusted_internal_context,
+        };
+    }
+
+    if nested_browser_scope_required {
+        payload = inject_nested_browser_scope_field(payload, &session_context.session_id);
         return AugmentedToolPayload {
             payload,
             trusted_internal_context,
@@ -360,16 +378,7 @@ fn inject_workspace_root_path_context_trusted(
 fn browser_scope_injection_required(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "browser.open"
-            | "browser.extract"
-            | "browser.click"
-            | "browser.companion.session.start"
-            | "browser.companion.navigate"
-            | "browser.companion.snapshot"
-            | "browser.companion.wait"
-            | "browser.companion.session.stop"
-            | "browser.companion.click"
-            | "browser.companion.type"
+        "browse" | "browser" | "browser.open" | "browser.extract" | "browser.click"
     )
 }
 
@@ -387,5 +396,28 @@ fn inject_browser_scope_field(payload: serde_json::Value, session_id: &str) -> s
         | serde_json::Value::Number(_)
         | serde_json::Value::String(_)
         | serde_json::Value::Array(_)) => other,
+    }
+}
+
+fn inject_nested_browser_scope_field(
+    payload: serde_json::Value,
+    session_id: &str,
+) -> serde_json::Value {
+    match payload {
+        serde_json::Value::Object(mut object) => match object.remove("arguments") {
+            Some(arguments) => {
+                object.insert(
+                    "arguments".to_owned(),
+                    inject_browser_scope_field(arguments, session_id),
+                );
+                serde_json::Value::Object(object)
+            }
+            None => serde_json::Value::Object(object),
+        },
+        other @ serde_json::Value::Null
+        | other @ serde_json::Value::Bool(_)
+        | other @ serde_json::Value::Number(_)
+        | other @ serde_json::Value::String(_)
+        | other @ serde_json::Value::Array(_) => other,
     }
 }

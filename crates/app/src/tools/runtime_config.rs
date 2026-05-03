@@ -261,67 +261,6 @@ impl BrowserRuntimePolicy {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BrowserCompanionRuntimePolicy {
-    pub enabled: bool,
-    pub ready: bool,
-    pub command: Option<String>,
-    pub expected_version: Option<String>,
-    pub timeout_seconds: u64,
-    pub allow_private_hosts: bool,
-    pub enforce_allowed_domains: bool,
-    pub allowed_domains: BTreeSet<String>,
-    pub blocked_domains: BTreeSet<String>,
-}
-
-impl Default for BrowserCompanionRuntimePolicy {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            ready: false,
-            command: None,
-            expected_version: None,
-            timeout_seconds: crate::config::DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS,
-            allow_private_hosts: true,
-            enforce_allowed_domains: false,
-            allowed_domains: BTreeSet::new(),
-            blocked_domains: BTreeSet::new(),
-        }
-    }
-}
-
-impl BrowserCompanionRuntimePolicy {
-    #[must_use]
-    pub fn is_runtime_ready(&self) -> bool {
-        self.enabled && self.ready && self.command.is_some()
-    }
-
-    #[must_use]
-    pub fn execution_security_tier(&self) -> ExecutionSecurityTier {
-        if self.is_runtime_ready() {
-            ExecutionSecurityTier::Balanced
-        } else {
-            ExecutionSecurityTier::Restricted
-        }
-    }
-
-    /// Project the companion's destination-boundary policy into the shared web
-    /// policy shape without inheriting unrelated fetch-only transport limits.
-    #[must_use]
-    pub fn web_policy(&self) -> WebFetchRuntimePolicy {
-        WebFetchRuntimePolicy {
-            enabled: self.enabled,
-            allow_private_hosts: self.allow_private_hosts,
-            enforce_allowed_domains: self.enforce_allowed_domains,
-            allowed_domains: self.allowed_domains.clone(),
-            blocked_domains: self.blocked_domains.clone(),
-            timeout_seconds: self.timeout_seconds,
-            max_bytes: crate::config::DEFAULT_WEB_FETCH_MAX_BYTES,
-            max_redirects: crate::config::DEFAULT_WEB_FETCH_MAX_REDIRECTS,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BashGovernanceRuntimePolicy {
     pub rules_dir: PathBuf,
@@ -654,7 +593,6 @@ pub struct ToolRuntimeConfig {
     pub delegate_enabled: bool,
     pub runtime_self: RuntimeSelfRuntimePolicy,
     pub browser: BrowserRuntimePolicy,
-    pub browser_companion: BrowserCompanionRuntimePolicy,
     pub bash_exec: BashExecRuntimePolicy,
     pub web_fetch: WebFetchRuntimePolicy,
     pub web_search: WebSearchRuntimePolicy,
@@ -685,7 +623,6 @@ impl Default for ToolRuntimeConfig {
             delegate_enabled: true,
             runtime_self: RuntimeSelfRuntimePolicy::default(),
             browser: BrowserRuntimePolicy::default(),
-            browser_companion: BrowserCompanionRuntimePolicy::default(),
             bash_exec: BashExecRuntimePolicy::default(),
             web_fetch: WebFetchRuntimePolicy::default(),
             web_search: WebSearchRuntimePolicy::default(),
@@ -736,41 +673,6 @@ impl ToolRuntimeConfig {
         let selected_memory_system_id = memory_system_selection.id;
         let web_fetch_allowed_domains = config.tools.web.normalized_allowed_domains();
         let web_fetch_enforce_allowed_domains = !web_fetch_allowed_domains.is_empty();
-        let browser_companion_allowed_domains =
-            config.tools.browser_companion.normalized_allowed_domains();
-        let browser_companion_enforce_allowed_domains =
-            !browser_companion_allowed_domains.is_empty();
-        let env_browser_companion_command = parse_env_string("LOONG_BROWSER_COMPANION_COMMAND");
-        let discovered_browser_companion_command = env_browser_companion_command
-            .is_none()
-            .then(discover_browser_companion_command)
-            .flatten();
-        let env_browser_companion_ready = parse_env_bool("LOONG_BROWSER_COMPANION_READY");
-        let env_browser_companion_expected_version =
-            parse_env_string("LOONG_BROWSER_COMPANION_EXPECTED_VERSION");
-        let browser_companion_default_config = crate::config::BrowserCompanionToolConfig::default();
-        let browser_companion_uses_default_config =
-            config.tools.browser_companion == browser_companion_default_config;
-        let browser_companion_auto_enabled = browser_companion_uses_default_config
-            && (env_browser_companion_command.is_some()
-                || discovered_browser_companion_command.is_some());
-        let browser_companion_enabled =
-            config.tools.browser_companion.enabled || browser_companion_auto_enabled;
-        let browser_companion_ready =
-            env_browser_companion_ready.unwrap_or(browser_companion_auto_enabled);
-        let browser_companion_command = config
-            .tools
-            .browser_companion
-            .command
-            .as_deref()
-            .or(env_browser_companion_command.as_deref())
-            .or(discovered_browser_companion_command.as_deref());
-        let browser_companion_expected_version = config
-            .tools
-            .browser_companion
-            .expected_version
-            .as_deref()
-            .or(env_browser_companion_expected_version.as_deref());
         let shell_allow: BTreeSet<String> = config
             .tools
             .shell_allow
@@ -811,22 +713,6 @@ impl ToolRuntimeConfig {
                 max_links: config.tools.browser.max_links,
                 max_text_chars: config.tools.browser.max_text_chars,
             },
-            browser_companion: browser_companion_runtime_policy(
-                browser_companion_enabled,
-                browser_companion_ready,
-                browser_companion_command,
-                browser_companion_expected_version,
-                config.tools.browser_companion.timeout_seconds,
-                config.tools.browser_companion.allow_private_hosts,
-                browser_companion_allowed_domains.into_iter().collect(),
-                config
-                    .tools
-                    .browser_companion
-                    .normalized_blocked_domains()
-                    .into_iter()
-                    .collect(),
-                browser_companion_enforce_allowed_domains,
-            ),
             bash_exec: build_bash_exec_runtime_policy(
                 config.tools.bash.login_shell,
                 bash_governance,
@@ -921,19 +807,6 @@ impl ToolRuntimeConfig {
             .unwrap_or(crate::config::DEFAULT_BROWSER_MAX_LINKS);
         let browser_max_text_chars = parse_env_usize("LOONG_BROWSER_MAX_TEXT_CHARS")
             .unwrap_or(crate::config::DEFAULT_BROWSER_MAX_TEXT_CHARS);
-        let browser_companion_enabled =
-            parse_env_bool("LOONG_BROWSER_COMPANION_ENABLED").unwrap_or(false);
-        let browser_companion_ready = parse_env_bool("LOONG_BROWSER_COMPANION_READY");
-        let browser_companion_command = parse_env_string("LOONG_BROWSER_COMPANION_COMMAND");
-        let discovered_browser_companion_command = browser_companion_command
-            .is_none()
-            .then(discover_browser_companion_command)
-            .flatten();
-        let browser_companion_expected_version =
-            parse_env_string("LOONG_BROWSER_COMPANION_EXPECTED_VERSION");
-        let browser_companion_timeout_seconds =
-            parse_env_u64("LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS")
-                .unwrap_or(crate::config::DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS);
         let web_fetch_enabled = parse_env_bool("LOONG_WEB_FETCH_ENABLED").unwrap_or(true);
         let web_fetch_allow_private_hosts =
             parse_env_bool("LOONG_WEB_FETCH_ALLOW_PRIVATE_HOSTS").unwrap_or(false);
@@ -984,14 +857,6 @@ impl ToolRuntimeConfig {
             ),
         );
 
-        let browser_companion_allow_private_hosts = web_fetch_allow_private_hosts;
-        let browser_companion_allowed_domains = web_fetch_allowed_domains.clone();
-        let browser_companion_blocked_domains = web_fetch_blocked_domains.clone();
-        let browser_companion_enforce_allowed_domains =
-            !browser_companion_allowed_domains.is_empty();
-        let browser_companion_auto_enabled =
-            browser_companion_command.is_some() || discovered_browser_companion_command.is_some();
-
         Self {
             file_root,
             workspace_root,
@@ -1012,19 +877,6 @@ impl ToolRuntimeConfig {
                 max_links: browser_max_links,
                 max_text_chars: browser_max_text_chars,
             },
-            browser_companion: browser_companion_runtime_policy(
-                browser_companion_enabled || browser_companion_auto_enabled,
-                browser_companion_ready.unwrap_or(browser_companion_auto_enabled),
-                browser_companion_command
-                    .as_deref()
-                    .or(discovered_browser_companion_command.as_deref()),
-                browser_companion_expected_version.as_deref(),
-                browser_companion_timeout_seconds,
-                browser_companion_allow_private_hosts,
-                browser_companion_allowed_domains,
-                browser_companion_blocked_domains,
-                browser_companion_enforce_allowed_domains,
-            ),
             bash_exec,
             web_fetch: WebFetchRuntimePolicy {
                 enabled: web_fetch_enabled,
@@ -1354,129 +1206,8 @@ impl ToolRuntimeConfig {
     }
 
     #[must_use]
-    pub fn browser_companion_execution_security_tier(&self) -> ExecutionSecurityTier {
-        self.browser_companion.execution_security_tier()
-    }
-
-    #[must_use]
     pub fn autonomy_policy_snapshot(&self) -> AutonomyPolicySnapshot {
         AutonomyPolicySnapshot::from_profile(self.autonomy_profile)
-    }
-}
-
-fn discover_browser_companion_command() -> Option<String> {
-    which::which("loong-browser-companion")
-        .ok()
-        .and_then(|path| path.to_str().map(str::to_owned))
-}
-
-pub(crate) fn browser_companion_runtime_policy_from_tool_config(
-    config: &crate::config::ToolConfig,
-) -> BrowserCompanionRuntimePolicy {
-    let allowed_domains = config.browser_companion.normalized_allowed_domains();
-    let enforce_allowed_domains = !allowed_domains.is_empty();
-    browser_companion_runtime_policy(
-        config.browser_companion.enabled,
-        parse_env_bool("LOONG_BROWSER_COMPANION_READY").unwrap_or(false),
-        config.browser_companion.command.as_deref(),
-        config.browser_companion.expected_version.as_deref(),
-        config.browser_companion.timeout_seconds,
-        config.browser_companion.allow_private_hosts,
-        allowed_domains.into_iter().collect(),
-        config
-            .browser_companion
-            .normalized_blocked_domains()
-            .into_iter()
-            .collect(),
-        enforce_allowed_domains,
-    )
-}
-
-pub(crate) fn browser_companion_runtime_policy_with_env_fallback(
-    config: &crate::config::ToolConfig,
-) -> BrowserCompanionRuntimePolicy {
-    let env_command = parse_env_string("LOONG_BROWSER_COMPANION_COMMAND");
-    let discovered_command = env_command
-        .is_none()
-        .then(discover_browser_companion_command)
-        .flatten();
-    let env_expected_version = parse_env_string("LOONG_BROWSER_COMPANION_EXPECTED_VERSION");
-    let env_enabled = parse_env_bool("LOONG_BROWSER_COMPANION_ENABLED").unwrap_or(false);
-    let env_ready = parse_env_bool("LOONG_BROWSER_COMPANION_READY");
-    let default_browser_companion = crate::config::BrowserCompanionToolConfig::default();
-    let use_env_web_policy = config.browser_companion == default_browser_companion;
-    let allow_private_hosts = if use_env_web_policy {
-        parse_env_bool("LOONG_WEB_FETCH_ALLOW_PRIVATE_HOSTS").unwrap_or(false)
-    } else {
-        config.browser_companion.allow_private_hosts
-    };
-    let allowed_domains = if use_env_web_policy {
-        parse_env_domain_list("LOONG_WEB_FETCH_ALLOWED_DOMAINS")
-    } else {
-        config
-            .browser_companion
-            .normalized_allowed_domains()
-            .into_iter()
-            .collect()
-    };
-    let blocked_domains = if use_env_web_policy {
-        parse_env_domain_list("LOONG_WEB_FETCH_BLOCKED_DOMAINS")
-    } else {
-        config
-            .browser_companion
-            .normalized_blocked_domains()
-            .into_iter()
-            .collect()
-    };
-    let enforce_allowed_domains = !allowed_domains.is_empty();
-    let auto_enabled =
-        use_env_web_policy && (env_command.is_some() || discovered_command.is_some());
-    let effective_enabled = config.browser_companion.enabled || env_enabled || auto_enabled;
-    let effective_ready = env_ready.unwrap_or(auto_enabled);
-    browser_companion_runtime_policy(
-        effective_enabled,
-        effective_ready,
-        config
-            .browser_companion
-            .command
-            .as_deref()
-            .or(env_command.as_deref())
-            .or(discovered_command.as_deref()),
-        config
-            .browser_companion
-            .expected_version
-            .as_deref()
-            .or(env_expected_version.as_deref()),
-        parse_env_u64("LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS")
-            .unwrap_or(config.browser_companion.timeout_seconds),
-        allow_private_hosts,
-        allowed_domains,
-        blocked_domains,
-        enforce_allowed_domains,
-    )
-}
-
-fn browser_companion_runtime_policy(
-    enabled: bool,
-    ready: bool,
-    command: Option<&str>,
-    expected_version: Option<&str>,
-    timeout_seconds: u64,
-    allow_private_hosts: bool,
-    allowed_domains: BTreeSet<String>,
-    blocked_domains: BTreeSet<String>,
-    enforce_allowed_domains: bool,
-) -> BrowserCompanionRuntimePolicy {
-    BrowserCompanionRuntimePolicy {
-        enabled,
-        ready,
-        command: normalize_optional_string(command),
-        expected_version: normalize_optional_string(expected_version),
-        timeout_seconds: timeout_seconds.max(1),
-        allow_private_hosts,
-        enforce_allowed_domains,
-        allowed_domains,
-        blocked_domains,
     }
 }
 
@@ -1644,7 +1375,7 @@ pub fn get_tool_runtime_config() -> &'static ToolRuntimeConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{ScopedEnv, ScopedLoongHome, write_executable_script_atomically};
+    use crate::test_support::{ScopedEnv, ScopedLoongHome};
     #[cfg(feature = "feishu-integration")]
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -1667,11 +1398,6 @@ mod tests {
             "LOONG_BROWSER_MAX_SESSIONS",
             "LOONG_BROWSER_MAX_LINKS",
             "LOONG_BROWSER_MAX_TEXT_CHARS",
-            "LOONG_BROWSER_COMPANION_ENABLED",
-            "LOONG_BROWSER_COMPANION_READY",
-            "LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS",
-            "LOONG_BROWSER_COMPANION_COMMAND",
-            "LOONG_BROWSER_COMPANION_EXPECTED_VERSION",
             "LOONG_WEB_FETCH_ENABLED",
             "LOONG_WEB_FETCH_ALLOW_PRIVATE_HOSTS",
             "LOONG_WEB_FETCH_ALLOWED_DOMAINS",
@@ -1730,11 +1456,6 @@ mod tests {
         assert_eq!(config.browser.max_sessions, 8);
         assert_eq!(config.browser.max_links, 40);
         assert_eq!(config.browser.max_text_chars, 6000);
-        assert!(!config.browser_companion.enabled);
-        assert!(!config.browser_companion.ready);
-        assert!(config.browser_companion.command.is_none());
-        assert!(config.browser_companion.expected_version.is_none());
-        assert!(config.browser_companion.allow_private_hosts);
         assert!(config.web_fetch.enabled);
         assert!(config.web_fetch.allow_private_hosts);
         assert!(config.web_fetch.allowed_domains.is_empty());
@@ -2045,17 +1766,6 @@ mod tests {
                 max_links: 12,
                 max_text_chars: 2_048,
             },
-            browser_companion: BrowserCompanionRuntimePolicy {
-                enabled: true,
-                ready: true,
-                command: Some("loong-browser-companion".to_owned()),
-                expected_version: Some("1.2.3".to_owned()),
-                timeout_seconds: 9,
-                allow_private_hosts: false,
-                enforce_allowed_domains: false,
-                allowed_domains: BTreeSet::new(),
-                blocked_domains: BTreeSet::new(),
-            },
             web_fetch: WebFetchRuntimePolicy {
                 enabled: false,
                 allow_private_hosts: true,
@@ -2094,16 +1804,6 @@ mod tests {
         assert_eq!(config.browser.max_sessions, 4);
         assert_eq!(config.browser.max_links, 12);
         assert_eq!(config.browser.max_text_chars, 2_048);
-        assert!(config.browser_companion.enabled);
-        assert!(config.browser_companion.ready);
-        assert_eq!(
-            config.browser_companion.command.as_deref(),
-            Some("loong-browser-companion")
-        );
-        assert_eq!(
-            config.browser_companion.expected_version.as_deref(),
-            Some("1.2.3")
-        );
         assert!(!config.web_fetch.enabled);
         assert!(config.web_fetch.allow_private_hosts);
         assert!(
@@ -2308,87 +2008,6 @@ mod tests {
     }
 
     #[test]
-    fn from_loong_config_projects_browser_companion_policy() {
-        let mut env = ScopedEnv::new();
-        clear_tool_runtime_env(&mut env);
-        env.set("LOONG_BROWSER_COMPANION_READY", "true");
-        let mut config = crate::config::LoongConfig::default();
-        config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.timeout_seconds = 7;
-        config.tools.browser_companion.command = Some("loong-browser-companion".to_owned());
-        config.tools.browser_companion.expected_version = Some("1.2.3".to_owned());
-        config.tools.browser_companion.allow_private_hosts = true;
-        config.tools.browser_companion.allowed_domains =
-            vec!["Docs.Example.com".to_owned(), "api.example.com".to_owned()];
-        config.tools.browser_companion.blocked_domains = vec![
-            "internal.example".to_owned(),
-            " INTERNAL.EXAMPLE ".to_owned(),
-        ];
-
-        let runtime = ToolRuntimeConfig::from_loong_config(&config, None);
-        assert!(runtime.browser_companion.enabled);
-        assert!(runtime.browser_companion.ready);
-        assert_eq!(
-            runtime.browser_companion.command.as_deref(),
-            Some("loong-browser-companion")
-        );
-        assert_eq!(
-            runtime.browser_companion.expected_version.as_deref(),
-            Some("1.2.3")
-        );
-        assert_eq!(runtime.browser_companion.timeout_seconds, 7);
-        assert!(runtime.browser_companion.allow_private_hosts);
-        assert!(runtime.browser_companion.enforce_allowed_domains);
-        assert_eq!(
-            runtime.browser_companion.allowed_domains,
-            BTreeSet::from(["api.example.com".to_owned(), "docs.example.com".to_owned()])
-        );
-        assert_eq!(
-            runtime.browser_companion.blocked_domains,
-            BTreeSet::from(["internal.example".to_owned()])
-        );
-    }
-
-    #[test]
-    fn from_loong_config_auto_detects_browser_companion_command_on_path() {
-        let mut env = ScopedEnv::new();
-        clear_tool_runtime_env(&mut env);
-
-        let root = tempfile::tempdir().expect("create browser companion tempdir");
-        #[cfg(unix)]
-        let command_path = root.path().join("loong-browser-companion");
-        #[cfg(windows)]
-        let command_path = root.path().join("loong-browser-companion.cmd");
-
-        #[cfg(unix)]
-        write_executable_script_atomically(&command_path, "#!/bin/sh\nexit 0\n")
-            .expect("write fake browser companion");
-        #[cfg(windows)]
-        std::fs::write(&command_path, "@echo off\r\nexit /b 0\r\n")
-            .expect("write fake browser companion");
-
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        let joined = std::env::join_paths(
-            std::iter::once(root.path().to_path_buf()).chain(std::env::split_paths(&path)),
-        )
-        .expect("join PATH");
-        env.set("PATH", joined);
-
-        let config = crate::config::LoongConfig::default();
-        let runtime = ToolRuntimeConfig::from_loong_config(&config, None);
-
-        assert!(runtime.browser_companion.enabled);
-        assert!(runtime.browser_companion.ready);
-        assert!(
-            runtime
-                .browser_companion
-                .command
-                .as_deref()
-                .is_some_and(|value| value.contains("loong-browser-companion"))
-        );
-    }
-
-    #[test]
     fn from_loong_config_projects_runtime_self_policy() {
         let mut env = ScopedEnv::new();
         clear_tool_runtime_env(&mut env);
@@ -2533,11 +2152,6 @@ mod tests {
         env.set("LOONG_BROWSER_MAX_SESSIONS", "4");
         env.set("LOONG_BROWSER_MAX_LINKS", "12");
         env.set("LOONG_BROWSER_MAX_TEXT_CHARS", "2048");
-        env.set("LOONG_BROWSER_COMPANION_ENABLED", "true");
-        env.set("LOONG_BROWSER_COMPANION_READY", "true");
-        env.set("LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS", "11");
-        env.set("LOONG_BROWSER_COMPANION_COMMAND", "loong-browser-companion");
-        env.set("LOONG_BROWSER_COMPANION_EXPECTED_VERSION", "1.2.3");
         env.set("LOONG_WEB_FETCH_ENABLED", "false");
         env.set("LOONG_WEB_FETCH_ALLOW_PRIVATE_HOSTS", "true");
         env.set(
@@ -2570,37 +2184,6 @@ mod tests {
         assert_eq!(config.browser.max_sessions, 4);
         assert_eq!(config.browser.max_links, 12);
         assert_eq!(config.browser.max_text_chars, 2_048);
-        assert!(config.browser_companion.enabled);
-        assert!(config.browser_companion.ready);
-        assert_eq!(
-            config.browser_companion.command.as_deref(),
-            Some("loong-browser-companion")
-        );
-        assert_eq!(
-            config.browser_companion.expected_version.as_deref(),
-            Some("1.2.3")
-        );
-        assert_eq!(config.browser_companion.timeout_seconds, 11);
-        assert!(config.browser_companion.allow_private_hosts);
-        assert!(
-            config
-                .browser_companion
-                .allowed_domains
-                .contains("docs.example.com")
-        );
-        assert!(
-            config
-                .browser_companion
-                .allowed_domains
-                .contains("api.example.com")
-        );
-        assert!(
-            config
-                .browser_companion
-                .blocked_domains
-                .contains("internal.example")
-        );
-        assert!(config.browser_companion.enforce_allowed_domains);
         assert!(!config.web_fetch.enabled);
         assert!(config.web_fetch.allow_private_hosts);
         assert!(
@@ -2856,169 +2439,6 @@ mod tests {
         assert_eq!(policy.max_sessions, 4);
         assert_eq!(policy.max_links, 12);
         assert_eq!(policy.max_text_chars, 2_048);
-    }
-
-    #[test]
-    fn browser_companion_policy_struct_construction() {
-        let policy = BrowserCompanionRuntimePolicy {
-            enabled: true,
-            ready: false,
-            command: Some("loong-browser-companion".to_owned()),
-            expected_version: Some("1.2.3".to_owned()),
-            timeout_seconds: 9,
-            allow_private_hosts: false,
-            enforce_allowed_domains: true,
-            allowed_domains: BTreeSet::from(["docs.example.com".to_owned()]),
-            blocked_domains: BTreeSet::from(["internal.example".to_owned()]),
-        };
-
-        assert!(policy.enabled);
-        assert!(!policy.ready);
-        assert!(!policy.is_runtime_ready());
-        assert_eq!(policy.command.as_deref(), Some("loong-browser-companion"));
-        assert_eq!(policy.expected_version.as_deref(), Some("1.2.3"));
-        assert_eq!(policy.timeout_seconds, 9);
-        assert!(!policy.allow_private_hosts);
-        assert!(policy.enforce_allowed_domains);
-        assert_eq!(
-            policy.allowed_domains,
-            BTreeSet::from(["docs.example.com".to_owned()])
-        );
-        assert_eq!(
-            policy.blocked_domains,
-            BTreeSet::from(["internal.example".to_owned()])
-        );
-    }
-
-    #[test]
-    fn browser_companion_policy_from_tool_config_clamps_zero_timeout() {
-        let mut env = ScopedEnv::new();
-        clear_tool_runtime_env(&mut env);
-        let mut config = crate::config::ToolConfig::default();
-        config.browser_companion.enabled = true;
-        config.browser_companion.timeout_seconds = 0;
-        config.browser_companion.allowed_domains = vec!["Docs.Example.com".to_owned()];
-        config.browser_companion.blocked_domains = vec!["internal.example".to_owned()];
-
-        let policy = browser_companion_runtime_policy_from_tool_config(&config);
-
-        assert_eq!(policy.timeout_seconds, 1);
-        assert!(policy.enforce_allowed_domains);
-        assert_eq!(
-            policy.allowed_domains,
-            BTreeSet::from(["docs.example.com".to_owned()])
-        );
-        assert_eq!(
-            policy.blocked_domains,
-            BTreeSet::from(["internal.example".to_owned()])
-        );
-    }
-
-    #[test]
-    fn browser_companion_policy_with_env_fallback_uses_runtime_exports_for_default_config() {
-        let mut env = ScopedEnv::new();
-        clear_tool_runtime_env(&mut env);
-        env.set("LOONG_BROWSER_COMPANION_ENABLED", "true");
-        env.set("LOONG_BROWSER_COMPANION_READY", "false");
-        env.set("LOONG_BROWSER_COMPANION_COMMAND", "loong-browser-companion");
-        env.set("LOONG_BROWSER_COMPANION_EXPECTED_VERSION", "1.2.3");
-        env.set("LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS", "11");
-
-        let policy = browser_companion_runtime_policy_with_env_fallback(
-            &crate::config::ToolConfig::default(),
-        );
-
-        assert!(policy.enabled);
-        assert!(!policy.ready);
-        assert_eq!(policy.command.as_deref(), Some("loong-browser-companion"));
-        assert_eq!(policy.expected_version.as_deref(), Some("1.2.3"));
-        assert_eq!(policy.timeout_seconds, 11);
-    }
-
-    #[test]
-    fn browser_companion_policy_with_env_fallback_auto_enables_when_command_is_present() {
-        let mut env = ScopedEnv::new();
-        clear_tool_runtime_env(&mut env);
-        env.set("LOONG_BROWSER_COMPANION_READY", "true");
-        env.set("LOONG_BROWSER_COMPANION_COMMAND", "loong-browser-companion");
-        env.set("LOONG_BROWSER_COMPANION_EXPECTED_VERSION", "1.2.3");
-
-        let policy = browser_companion_runtime_policy_with_env_fallback(
-            &crate::config::ToolConfig::default(),
-        );
-
-        assert!(policy.enabled);
-        assert!(policy.ready);
-        assert_eq!(policy.command.as_deref(), Some("loong-browser-companion"));
-        assert_eq!(policy.expected_version.as_deref(), Some("1.2.3"));
-    }
-
-    #[test]
-    fn browser_companion_policy_with_env_fallback_auto_detects_command_on_path() {
-        let mut env = ScopedEnv::new();
-        clear_tool_runtime_env(&mut env);
-
-        let root = tempfile::tempdir().expect("create browser companion tempdir");
-        #[cfg(unix)]
-        let command_path = root.path().join("loong-browser-companion");
-        #[cfg(windows)]
-        let command_path = root.path().join("loong-browser-companion.cmd");
-
-        #[cfg(unix)]
-        write_executable_script_atomically(&command_path, "#!/bin/sh\nexit 0\n")
-            .expect("write fake browser companion");
-        #[cfg(windows)]
-        std::fs::write(&command_path, "@echo off\r\nexit /b 0\r\n")
-            .expect("write fake browser companion");
-
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        let joined = std::env::join_paths(
-            std::iter::once(root.path().to_path_buf()).chain(std::env::split_paths(&path)),
-        )
-        .expect("join PATH");
-        env.set("PATH", joined);
-
-        let policy = browser_companion_runtime_policy_with_env_fallback(
-            &crate::config::ToolConfig::default(),
-        );
-
-        assert!(policy.enabled);
-        assert!(policy.ready);
-        assert!(
-            policy
-                .command
-                .as_deref()
-                .is_some_and(|value| value.contains("loong-browser-companion"))
-        );
-    }
-
-    #[test]
-    fn browser_companion_runtime_policy_with_env_fallback_reuses_web_fetch_boundaries() {
-        let mut env = ScopedEnv::new();
-        clear_tool_runtime_env(&mut env);
-        env.set("LOONG_BROWSER_COMPANION_ENABLED", "true");
-        env.set("LOONG_BROWSER_COMPANION_READY", "true");
-        env.set("LOONG_WEB_FETCH_ALLOW_PRIVATE_HOSTS", "true");
-        env.set(
-            "LOONG_WEB_FETCH_ALLOWED_DOMAINS",
-            "docs.example.com,api.example.com",
-        );
-        env.set("LOONG_WEB_FETCH_BLOCKED_DOMAINS", "internal.example");
-
-        let policy = browser_companion_runtime_policy_with_env_fallback(
-            &crate::config::ToolConfig::default(),
-        );
-
-        assert!(policy.allow_private_hosts);
-        assert!(policy.enforce_allowed_domains);
-        assert_eq!(
-            policy.allowed_domains,
-            BTreeSet::from(["api.example.com".to_owned(), "docs.example.com".to_owned(),])
-        );
-        assert_eq!(
-            policy.blocked_domains,
-            BTreeSet::from(["internal.example".to_owned()])
-        );
     }
 
     #[test]

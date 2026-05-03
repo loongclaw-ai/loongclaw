@@ -19,7 +19,7 @@ pub(super) fn resolved_inner_tool_name_for_logs(canonical_name: &str, payload: &
 
     let is_direct_tool = matches!(
         canonical_name,
-        "read" | "write" | "edit" | "bash" | "web" | "browser" | "memory"
+        "read" | "write" | "edit" | "bash" | "web" | "browse" | "memory" | "browser"
     );
     if !is_direct_tool {
         return "-".to_owned();
@@ -73,45 +73,21 @@ fn route_direct_tool_name_for_view(
 ) -> Result<&'static str, String> {
     match tool_name {
         "web" => route_direct_web_tool_name_for_view(payload, view),
-        "browser" => route_direct_browser_tool_name_for_view(payload, view),
+        "browse" | "browser" => route_direct_browser_tool_name_for_view(payload, view),
         _ => route_direct_tool_name(tool_name, payload),
     }
-}
-
-fn route_browser_page_tool_name_for_view(
-    payload: &Value,
-    view: &ToolView,
-) -> Result<&'static str, String> {
-    let routed_tool_name = route_browser_page_tool_name(payload)?;
-    let page_inspection_available = tool_surface::browser_page_inspection_available_in_view(view);
-    if page_inspection_available {
-        return Ok(routed_tool_name);
-    }
-    Err("browser page inspection is unavailable in this runtime".to_owned())
 }
 
 fn route_direct_browser_tool_name_for_view(
     payload: &Value,
     view: &ToolView,
 ) -> Result<&'static str, String> {
-    let browser_runtime_modes = tool_surface::direct_browser_runtime_modes_for_view(view);
-    let managed_route = route_direct_browser_tool_name(payload);
-    if let Ok(routed_tool_name) = managed_route {
-        if browser_runtime_modes.managed_session_available {
-            return Ok(routed_tool_name);
-        }
-        let page_inspection_available =
-            tool_surface::browser_page_inspection_available_in_view(view);
-        if page_inspection_available {
-            return Err(
-                "managed browser session mode is unavailable in this runtime; read-only browser inspection still works"
-                    .to_owned(),
-            );
-        }
-        return Err("managed browser session mode is unavailable in this runtime".to_owned());
+    let routed_tool_name = route_direct_browser_tool_name(payload)?;
+    let page_inspection_available = tool_surface::browser_page_inspection_available_in_view(view);
+    if page_inspection_available {
+        return Ok(routed_tool_name);
     }
-
-    route_browser_page_tool_name_for_view(payload, view)
+    Err("browser page inspection is unavailable in this runtime".to_owned())
 }
 
 pub(crate) fn route_direct_tool_name(
@@ -124,7 +100,7 @@ pub(crate) fn route_direct_tool_name(
         "edit" => route_direct_edit_tool_name(payload),
         "bash" => route_direct_bash_tool_name(payload),
         "web" => route_direct_web_tool_name(payload),
-        "browser" => route_direct_browser_tool_name(payload),
+        "browse" | "browser" => route_direct_browser_tool_name(payload),
         "memory" => route_direct_memory_tool_name(payload),
         _ => Ok("-"),
     }
@@ -409,139 +385,24 @@ pub(super) fn route_direct_browser_tool_name(payload: &Value) -> Result<&'static
         .filter(|value| !value.is_empty());
     let has_url = payload_has_non_null_field(payload, "url");
     let has_session_id = payload_has_non_null_field(payload, "session_id");
-    let has_selector = payload_has_non_null_field(payload, "selector");
     let has_text = payload_has_non_null_field(payload, "text");
     let has_condition = payload_has_non_null_field(payload, "condition");
     let has_timeout_ms = payload_has_non_null_field(payload, "timeout_ms");
-    let mode_value = payload.get("mode").and_then(Value::as_str).map(str::trim);
 
-    if let Some(action) = action {
-        return match action {
-            "start" => {
-                if has_url {
-                    Ok("browser.companion.session.start")
-                } else {
-                    Err(
-                        "direct_browser_start_requires_url: expected `url` without `session_id`"
-                            .to_owned(),
-                    )
-                }
-            }
-            "navigate" => {
-                if has_url && has_session_id {
-                    Ok("browser.companion.navigate")
-                } else {
-                    Err("direct_browser_navigate_requires_session_and_url: expected `session_id` and `url`".to_owned())
-                }
-            }
-            "extract" => {
-                if has_session_id {
-                    Ok("browser.extract")
-                } else {
-                    Err(
-                        "direct_browser_extract_requires_session_id: expected `session_id`"
-                            .to_owned(),
-                    )
-                }
-            }
-            "snapshot" => {
-                if has_session_id {
-                    Ok("browser.companion.snapshot")
-                } else {
-                    Err(
-                        "direct_browser_snapshot_requires_session_id: expected `session_id`"
-                            .to_owned(),
-                    )
-                }
-            }
-            "wait" => {
-                if has_session_id {
-                    Ok("browser.companion.wait")
-                } else {
-                    Err("direct_browser_wait_requires_session_id: expected `session_id`".to_owned())
-                }
-            }
-            "stop" => {
-                if has_session_id {
-                    Ok("browser.companion.session.stop")
-                } else {
-                    Err("direct_browser_stop_requires_session_id: expected `session_id`".to_owned())
-                }
-            }
-            "click" => {
-                if has_session_id && has_selector {
-                    Ok("browser.companion.click")
-                } else {
-                    Err("direct_browser_click_requires_session_selector: expected `session_id` and `selector`".to_owned())
-                }
-            }
-            "type" => {
-                if has_session_id && has_selector && has_text {
-                    Ok("browser.companion.type")
-                } else {
-                    Err("direct_browser_type_requires_session_selector_text: expected `session_id`, `selector`, and `text`".to_owned())
-                }
-            }
-            _ => Err(format!(
-                "direct_browser_unknown_action: unknown browser action `{action}`"
-            )),
-        };
-    }
-
-    if has_text {
-        if has_session_id && has_selector {
-            return Ok("browser.companion.type");
-        }
-        return Err(
-            "direct_browser_type_requires_session_selector_text: expected `session_id`, `selector`, and `text`"
-                .to_owned(),
-        );
-    }
-
-    if has_url && has_session_id {
-        return Ok("browser.companion.navigate");
-    }
-
-    if has_url {
-        return Ok("browser.companion.session.start");
-    }
-
-    if has_condition || has_timeout_ms {
-        if has_session_id {
-            return Ok("browser.companion.wait");
-        }
-        return Err(
-            "direct_browser_wait_requires_session_id: expected `session_id` for browser wait"
-                .to_owned(),
-        );
-    }
-
-    if has_selector {
-        if has_session_id {
-            return Ok("browser.companion.click");
-        }
-        return Err(
-            "direct_browser_click_requires_session_selector: expected `session_id` and `selector`"
-                .to_owned(),
-        );
-    }
-
-    if let Some(mode_value) = mode_value
-        && matches!(mode_value, "summary" | "html")
+    if matches!(
+        action,
+        Some("start" | "navigate" | "snapshot" | "wait" | "stop" | "type")
+    ) || has_text
+        || has_condition
+        || has_timeout_ms
+        || (has_session_id && has_url)
     {
-        if has_session_id {
-            return Ok("browser.companion.snapshot");
-        }
         return Err(
-            "direct_browser_snapshot_requires_session_id: expected `session_id` for browser snapshot"
-                .to_owned(),
+            "direct_browser_interactive_automation_unavailable: built-in browser only supports `open`, `extract`, and page-link `click`; use the `agent-browser` skill for richer browser automation".to_owned(),
         );
     }
 
-    Err(
-        "direct_browser_requires_actionable_fields: expected `url`, or `session_id` plus the fields for navigate, snapshot, click, type, wait, or stop"
-            .to_owned(),
-    )
+    route_browser_page_tool_name(payload)
 }
 
 fn route_direct_memory_tool_name(payload: &Value) -> Result<&'static str, String> {
@@ -849,30 +710,21 @@ pub(super) fn count_true<const N: usize>(values: [bool; N]) -> usize {
 }
 
 fn unavailable_runtime_hint(routed_tool_name: &str, runtime_view: &ToolView) -> &'static str {
-    if !routed_tool_name.starts_with("browser.companion.") {
-        return "";
-    }
-
-    if runtime_view.contains("browser.open") || runtime_view.contains("browser.extract") {
-        return "; read-only browser inspection is still available";
-    }
-
-    "; browser interaction is unavailable in this runtime"
+    let _ = (routed_tool_name, runtime_view);
+    ""
 }
 
 fn routed_tool_display_name(routed_tool_name: &str) -> &str {
-    if routed_tool_name.starts_with("browser.companion.") {
-        return "managed browser actions";
-    }
-
     routed_tool_name
 }
 
 fn display_inner_tool_name_for_logs(tool_name: &str) -> &str {
-    if tool_name.starts_with("browser.companion.") {
-        return "browser";
+    if matches!(
+        tool_name,
+        "browser.open" | "browser.extract" | "browser.click"
+    ) {
+        return "browse";
     }
-
     tool_name
 }
 
@@ -910,48 +762,66 @@ mod tests {
             "text": "hello"
         });
         let request = loong_contracts::ToolCoreRequest {
-            tool_name: "browser".to_owned(),
-            payload: payload.clone(),
+            tool_name: "browse".to_owned(),
+            payload,
         };
-        let managed_browser_route =
-            route_direct_browser_tool_name(&payload).expect("managed browser payload should route");
-
         let error =
             route_direct_tool_request(request, &runtime_config::ToolRuntimeConfig::default())
-                .expect_err("managed browser type should be unavailable in default runtime");
+                .expect_err("interactive browser automation should be unavailable");
 
-        assert!(error.contains("managed browser session mode is unavailable"));
-        assert!(error.contains("read-only browser inspection"));
-        assert!(
-            unavailable_runtime_hint(managed_browser_route, &runtime_view)
-                .contains("read-only browser inspection")
+        assert!(error.contains("agent-browser"));
+        assert_eq!(
+            unavailable_runtime_hint("browser.extract", &runtime_view),
+            ""
         );
     }
 
     #[test]
-    fn direct_browser_start_ignores_caller_supplied_session_id_noise() {
-        let routed = route_direct_browser_tool_name(&json!({
-            "action": "start",
-            "url": "https://example.com",
-            "session_id": "stale-session"
+    fn direct_browse_routes_page_actions() {
+        let open = route_direct_browser_tool_name(&json!({
+            "action": "open",
+            "url": "https://example.com"
         }))
-        .expect("managed browser start should tolerate stale session ids");
+        .expect("browse open should route");
+        assert_eq!(open, "browser.open");
 
-        assert_eq!(routed, "browser.companion.session.start");
+        let extract = route_direct_browser_tool_name(&json!({
+            "session_id": "browser-1",
+            "mode": "links"
+        }))
+        .expect("browse extract should route");
+        assert_eq!(extract, "browser.extract");
+
+        let click = route_direct_browser_tool_name(&json!({
+            "session_id": "browser-1",
+            "link_id": 1
+        }))
+        .expect("browse click should route");
+        assert_eq!(click, "browser.click");
     }
 
     #[test]
-    fn browser_companion_routes_collapse_to_browser_in_logs() {
+    fn interactive_browser_payloads_surface_agent_browser_guidance() {
+        let error = route_direct_browser_tool_name(&json!({
+            "session_id": "browser-1",
+            "selector": "#submit",
+            "text": "hello"
+        }))
+        .expect_err("DOM interaction should not route through browse");
+        assert!(error.contains("agent-browser"));
+    }
+
+    #[test]
+    fn browse_routes_collapse_to_browse_in_logs() {
         let logged_tool_name = resolved_inner_tool_name_for_logs(
-            "browser",
+            "browse",
             &json!({
-                "session_id": "browser-companion-1",
-                "selector": "#submit",
-                "text": "hello"
+                "session_id": "browser-1",
+                "link_id": 1
             }),
         );
 
-        assert_eq!(logged_tool_name, "browser");
+        assert_eq!(logged_tool_name, "browse");
     }
 
     #[test]

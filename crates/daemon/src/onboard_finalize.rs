@@ -96,7 +96,6 @@ pub enum OnboardingActionKind {
     Chat,
     Personalize,
     Channel,
-    BrowserPreview,
     Doctor,
 }
 
@@ -134,9 +133,6 @@ pub(crate) fn build_onboarding_success_summary_with_memory(
                     OnboardingActionKind::Personalize
                 }
                 crate::next_actions::SetupNextActionKind::Channel => OnboardingActionKind::Channel,
-                crate::next_actions::SetupNextActionKind::BrowserPreview => {
-                    OnboardingActionKind::BrowserPreview
-                }
                 crate::next_actions::SetupNextActionKind::Doctor => OnboardingActionKind::Doctor,
             };
 
@@ -761,11 +757,6 @@ mod tests {
                     label: "channels".to_owned(),
                     command: "loong channels --config '/tmp/loong.toml'".to_owned(),
                 },
-                OnboardingAction {
-                    kind: OnboardingActionKind::BrowserPreview,
-                    label: "browser preview".to_owned(),
-                    command: "loong browser preview --config '/tmp/loong.toml'".to_owned(),
-                },
             ],
         }
     }
@@ -791,7 +782,7 @@ mod tests {
                 section,
                 TuiSectionSpec::ActionGroup { title: Some(title), items, .. }
                     if title == "also available"
-                        && items.iter().all(|item| item.label != "channels" && item.label != "browser preview")
+                        && items.iter().all(|item| item.label != "channels")
                         && items.iter().any(|item| item.label == "chat")
                         && items.iter().any(|item| item.label == personalize_action_label())
             )),
@@ -803,7 +794,7 @@ mod tests {
                 TuiSectionSpec::ActionGroup { title: Some(title), items, .. }
                     if title == "continue setup"
                         && items.iter().any(|item| item.label == "channels")
-                        && items.iter().any(|item| item.label == "browser preview")
+                        && items.iter().any(|item| item.label == "channels")
             )),
             "expected setup-surface actions to be grouped under continue setup: {spec:#?}"
         );
