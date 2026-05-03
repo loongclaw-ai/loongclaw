@@ -72,8 +72,8 @@ pub use plugin::{
 pub use plugin_ir::{
     BridgeSupportMatrix, PluginActivationCandidate, PluginActivationInventoryEntry,
     PluginActivationPlan, PluginActivationStatus, PluginBridgeKind, PluginChannelBridgeContract,
-    PluginChannelBridgeReadiness, PluginCompatibilityShimSupport, PluginIR,
-    PluginNativeExtensionDeclarations, PluginNativeExtensionEventSpec,
+    PluginChannelBridgeOperationSpec, PluginChannelBridgeReadiness, PluginCompatibilityShimSupport,
+    PluginIR, PluginNativeExtensionDeclarations, PluginNativeExtensionEventSpec,
     PluginNativeExtensionHostActionSpec, PluginNativeExtensionMethodSpec, PluginRuntimeProfile,
     PluginRuntimeScaffoldDefaults, PluginSetupReadiness, PluginSetupReadinessContext,
     PluginTranslationReport, PluginTranslator, PluginTrustedHostHookSpec,

@@ -1561,6 +1561,18 @@ fn render_managed_plugin_bridge_discovery_plugin(
         );
         segments.push(format!("runtime_operations={rendered_runtime_operations}"));
     }
+    if !plugin.runtime_operation_specs.is_empty() {
+        let rendered_runtime_operation_specs = crate::render_line_safe_text_values(
+            plugin
+                .runtime_operation_specs
+                .iter()
+                .map(|spec| spec.operation.as_str()),
+            ",",
+        );
+        segments.push(format!(
+            "runtime_operation_specs={rendered_runtime_operation_specs}"
+        ));
+    }
 
     segments.push(format!("source_path={source_path}"));
     segments.push(format!("package_root={package_root}"));
@@ -4482,6 +4494,22 @@ mod tests {
                     "send_message".to_owned(),
                     "receive_batch".to_owned(),
                 ],
+                runtime_operation_specs: vec![
+                    kernel::PluginChannelBridgeOperationSpec {
+                        operation: "send_message".to_owned(),
+                        label: Some("Send Message".to_owned()),
+                        summary: Some("Send one outbound message".to_owned()),
+                        sample_payload_json: None,
+                        operator_hint: None,
+                    },
+                    kernel::PluginChannelBridgeOperationSpec {
+                        operation: "receive_batch".to_owned(),
+                        label: Some("Receive Batch".to_owned()),
+                        summary: Some("Poll one inbound batch".to_owned()),
+                        sample_payload_json: None,
+                        operator_hint: None,
+                    },
+                ],
                 status: mvp::channel::ChannelDiscoveredPluginBridgeStatus::CompatibleIncompleteContract,
                 issues: vec!["missing\nfield".to_owned()],
                 missing_fields: vec!["metadata.transport family".to_owned()],
@@ -4536,6 +4564,7 @@ mod tests {
         assert!(detail.contains("target_contract=\"qqbot\\nreply\""));
         assert!(detail.contains("setup_docs_urls=\"https://example.test/docs bridge\""));
         assert!(detail.contains("setup_remediation=\"fix bridge\\nthen retry\""));
+        assert!(detail.contains("runtime_operation_specs=send_message,receive_batch"));
     }
 
     #[test]
@@ -4559,6 +4588,13 @@ mod tests {
             account_scope: Some("shared scope".to_owned()),
             runtime_contract: Some("loong_channel_bridge_v1".to_owned()),
             runtime_operations: vec!["send_message".to_owned(), "receive_batch".to_owned()],
+            runtime_operation_specs: vec![kernel::PluginChannelBridgeOperationSpec {
+                operation: "send_message".to_owned(),
+                label: Some("Send Message".to_owned()),
+                summary: Some("Send one outbound message".to_owned()),
+                sample_payload_json: None,
+                operator_hint: None,
+            }],
             status: mvp::channel::ChannelDiscoveredPluginBridgeStatus::CompatibleIncompleteContract,
             issues: vec!["missing\nfield".to_owned()],
             missing_fields: vec!["metadata.transport family".to_owned()],

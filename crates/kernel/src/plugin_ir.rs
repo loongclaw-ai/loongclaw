@@ -206,9 +206,21 @@ pub struct PluginChannelBridgeContract {
     #[serde(default)]
     pub runtime_operations: Vec<String>,
     #[serde(default)]
+    pub runtime_operation_specs: Vec<PluginChannelBridgeOperationSpec>,
+    #[serde(default)]
     pub runtime_metadata_issues: Vec<String>,
     #[serde(default)]
     pub readiness: PluginChannelBridgeReadiness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PluginChannelBridgeOperationSpec {
+    pub operation: String,
+    pub label: Option<String>,
+    pub summary: Option<String>,
+    pub sample_payload_json: Option<String>,
+    pub operator_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1395,9 +1407,20 @@ fn derive_channel_bridge_contract(
     let runtime_contract = normalized_manifest_metadata_value(manifest, "channel_runtime_contract");
     let runtime_operations =
         normalized_manifest_metadata_string_list(manifest, "channel_runtime_operations_json");
+    let runtime_operation_specs = normalized_manifest_metadata_operation_specs(
+        manifest,
+        "channel_runtime_operation_specs_json",
+    );
     let mut runtime_metadata_issues = Vec::new();
     let runtime_operations = match runtime_operations {
         Ok(runtime_operations) => runtime_operations,
+        Err(issue) => {
+            runtime_metadata_issues.push(issue);
+            Vec::new()
+        }
+    };
+    let mut runtime_operation_specs = match runtime_operation_specs {
+        Ok(runtime_operation_specs) => runtime_operation_specs,
         Err(issue) => {
             runtime_metadata_issues.push(issue);
             Vec::new()
@@ -1424,6 +1447,24 @@ fn derive_channel_bridge_contract(
         target_contract.as_deref(),
     );
 
+    for spec in &runtime_operation_specs {
+        if !runtime_operations
+            .iter()
+            .any(|operation| operation == &spec.operation)
+        {
+            runtime_metadata_issues.push(format!(
+                "metadata.channel_runtime_operation_specs_json declares `{}` without a matching entry in channel_runtime_operations_json",
+                spec.operation
+            ));
+        }
+    }
+    runtime_operation_specs.sort_by_key(|spec| {
+        runtime_operations
+            .iter()
+            .position(|operation| operation == &spec.operation)
+            .unwrap_or(usize::MAX)
+    });
+
     Some(PluginChannelBridgeContract {
         channel_id,
         setup_surface,
@@ -1432,6 +1473,7 @@ fn derive_channel_bridge_contract(
         account_scope,
         runtime_contract,
         runtime_operations,
+        runtime_operation_specs,
         runtime_metadata_issues,
         readiness,
     })
@@ -1498,6 +1540,50 @@ fn normalized_manifest_metadata_string_list(
     }
 
     Ok(normalized_values)
+}
+
+fn normalized_manifest_metadata_operation_specs(
+    manifest: &PluginManifest,
+    key: &str,
+) -> Result<Vec<PluginChannelBridgeOperationSpec>, String> {
+    let Some(raw_value) = manifest.metadata.get(key) else {
+        return Ok(Vec::new());
+    };
+
+    let parsed_specs = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(raw_value)
+        .map_err(|error| format!("metadata.{key} must be valid json object: {error}"))?;
+
+    let mut specs = Vec::new();
+    for (operation, spec_value) in parsed_specs {
+        let Some(spec_object) = spec_value.as_object() else {
+            return Err(format!(
+                "metadata.{key} entry `{operation}` must be a json object"
+            ));
+        };
+
+        let label = normalized_optional_json_string(spec_object.get("label"));
+        let summary = normalized_optional_json_string(spec_object.get("summary"));
+        let operator_hint = normalized_optional_json_string(spec_object.get("operator_hint"));
+        let sample_payload_json = spec_object
+            .get("sample_payload")
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| {
+                format!(
+                    "metadata.{key} entry `{operation}` has a non-serializable sample_payload: {error}"
+                )
+            })?;
+
+        specs.push(PluginChannelBridgeOperationSpec {
+            operation,
+            label,
+            summary,
+            sample_payload_json,
+            operator_hint,
+        });
+    }
+
+    Ok(specs)
 }
 
 pub fn plugin_native_extension_declarations_from_metadata(
@@ -2484,6 +2570,10 @@ mod tests {
                 "channel_runtime_operations_json".to_owned(),
                 "[\"send\",\"receive_batch\",\"ack_inbound\",\"complete_batch\"]".to_owned(),
             ),
+            (
+                "channel_runtime_operation_specs_json".to_owned(),
+                r#"{"send":{"label":"Send","summary":"Send one outbound message","sample_payload":{"target":"weixin:contact:demo","text":"hello"}},"receive_batch":{"label":"Receive Batch","summary":"Poll one inbound batch","sample_payload":{"limit":10}}}"#.to_owned(),
+            ),
         ]));
 
         let translator = PluginTranslator::new();
@@ -2521,6 +2611,8 @@ mod tests {
                 "complete_batch".to_owned(),
             ]
         );
+        assert_eq!(channel_bridge.runtime_operation_specs.len(), 2);
+        assert_eq!(channel_bridge.runtime_operation_specs[0].operation, "send");
         assert!(channel_bridge.readiness.ready);
         assert!(channel_bridge.readiness.missing_fields.is_empty());
     }
@@ -2581,6 +2673,41 @@ mod tests {
         assert!(issue.starts_with(
             "metadata.channel_runtime_operations_json must be valid json string array:"
         ));
+    }
+
+    #[test]
+    fn translator_flags_undeclared_channel_runtime_operation_spec() {
+        let descriptor = channel_bridge_descriptor(BTreeMap::from([
+            (
+                "transport_family".to_owned(),
+                "wechat_clawbot_ilink_bridge".to_owned(),
+            ),
+            (
+                "target_contract".to_owned(),
+                "weixin:<account>:contact:<id> | weixin:<account>:room:<id>".to_owned(),
+            ),
+            (
+                "channel_runtime_operations_json".to_owned(),
+                "[\"send\"]".to_owned(),
+            ),
+            (
+                "channel_runtime_operation_specs_json".to_owned(),
+                r#"{"receive_batch":{"label":"Receive Batch"}}"#.to_owned(),
+            ),
+        ]));
+
+        let translator = PluginTranslator::new();
+        let ir = translator.translate_descriptor(&descriptor);
+        let channel_bridge = ir
+            .channel_bridge
+            .as_ref()
+            .expect("channel bridge contract should exist");
+
+        assert!(channel_bridge.runtime_metadata_issues.iter().any(|issue| {
+            issue.contains(
+                "metadata.channel_runtime_operation_specs_json declares `receive_batch` without a matching entry in channel_runtime_operations_json",
+            )
+        }));
     }
 
     #[test]

@@ -140,6 +140,7 @@ pub struct ChannelDiscoveredPluginBridge {
     pub account_scope: Option<String>,
     pub runtime_contract: Option<String>,
     pub runtime_operations: Vec<String>,
+    pub runtime_operation_specs: Vec<loong_kernel::PluginChannelBridgeOperationSpec>,
     pub status: ChannelDiscoveredPluginBridgeStatus,
     pub issues: Vec<String>,
     pub missing_fields: Vec<String>,
@@ -782,6 +783,7 @@ fn discovered_plugin_match_from_descriptor(
     let account_scope = channel_bridge_account_scope(channel_bridge);
     let runtime_contract = channel_bridge_runtime_contract(channel_bridge);
     let runtime_operations = channel_bridge_runtime_operations(channel_bridge);
+    let runtime_operation_specs = channel_bridge_runtime_operation_specs(channel_bridge);
     let missing_fields = channel_bridge_missing_fields(channel_bridge);
     let setup_details = plugin_bridge_setup_details(&descriptor.manifest);
     let manifest_status = validation.status;
@@ -802,6 +804,7 @@ fn discovered_plugin_match_from_descriptor(
         account_scope,
         runtime_contract,
         runtime_operations,
+        runtime_operation_specs,
         status,
         issues,
         missing_fields,
@@ -954,6 +957,16 @@ fn channel_bridge_runtime_operations(
     };
 
     channel_bridge.runtime_operations.clone()
+}
+
+fn channel_bridge_runtime_operation_specs(
+    channel_bridge: Option<&loong_kernel::PluginChannelBridgeContract>,
+) -> Vec<loong_kernel::PluginChannelBridgeOperationSpec> {
+    let Some(channel_bridge) = channel_bridge else {
+        return Vec::new();
+    };
+
+    channel_bridge.runtime_operation_specs.clone()
 }
 
 fn channel_bridge_runtime_metadata_issues(

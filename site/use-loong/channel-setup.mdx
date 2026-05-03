@@ -104,6 +104,7 @@ Operational rule:
 - they do not join `gateway run` or `gateway run` because their runtime owner is still the external bridge
 - the important setup milestone is a passing contract + discovery result, not a native runtime loop that does not exist yet
 - managed bridge command execution also requires `[runtime_plugins].enabled = true` plus one or more `runtime_plugins.roots`
+- when authoring a managed bridge plugin, keep `channel_runtime_operation_specs_json` aligned with each declared runtime operation so Loong can surface labels, summaries, and sample payload hints instead of only raw operation ids
 - grouped `channels serve <surface>` flows and their legacy `*-serve` aliases retry transient managed bridge runtime failures locally with bounded backoff before surfacing a hard failure
 - retry/failure metadata is surfaced through `loong doctor` and `loong channels`, so operators can see when a bridge is actively retrying instead of guessing from stderr
 

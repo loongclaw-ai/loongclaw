@@ -151,6 +151,7 @@ fn build_channels_cli_json_payload_includes_managed_plugin_bridge_guidance_field
         account_scope: Some("shared".to_owned()),
         runtime_contract: Some("loong_channel_bridge_v1".to_owned()),
         runtime_operations: vec!["send_message".to_owned(), "receive_batch".to_owned()],
+        runtime_operation_specs: Vec::new(),
         status: mvp::channel::ChannelDiscoveredPluginBridgeStatus::CompatibleReady,
         issues: Vec::new(),
         missing_fields: Vec::new(),

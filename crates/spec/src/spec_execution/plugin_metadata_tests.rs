@@ -180,6 +180,7 @@ fn test_channel_bridge_translation(descriptor: &PluginDescriptor) -> PluginTrans
                 account_scope: Some("multi_account".to_owned()),
                 runtime_contract: Some("loong_channel_bridge_v1".to_owned()),
                 runtime_operations: vec!["send_message".to_owned(), "receive_batch".to_owned()],
+                runtime_operation_specs: Vec::new(),
                 runtime_metadata_issues: Vec::new(),
                 readiness: kernel::PluginChannelBridgeReadiness {
                     ready: true,
