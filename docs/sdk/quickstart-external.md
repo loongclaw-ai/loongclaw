@@ -64,6 +64,8 @@ For trusted host extensions, the shortest current loop is:
 5. probe with:
    - `loong plugins invoke-host-hook`
    - `loong plugins invoke-tui-surface`
+6. execute runtime-managed trusted TUI surfaces with:
+   - `loong plugins run-tui-surface`
 
 If you are already inside the shell-first TUI, Loong now exposes matching live
 operator routes:
@@ -78,8 +80,8 @@ Current live shell-first surfaces:
 - `settings_flow`
 - `startup_onboarding`
 
-Those live routes are bounded probe surfaces, not a general-purpose in-process
-executor promise.
+Those live routes now use the runtime-managed trusted host lane. They still do
+not imply an implicit in-process executor promise.
 
 ## Current Scaffold Boundary
 
@@ -89,7 +91,7 @@ Right now, trusted host scaffolds are intentionally limited to:
 - explicit source-language selection
 - additive capability declaration on top of the default `invoke_connector` baseline
 - generated local runtime stub files
-- bounded smoke probes, not implicit live execution
+- bounded smoke probes plus runtime-managed trusted TUI execution, not implicit in-process execution
 
 ## Reference Examples
 
@@ -276,9 +278,9 @@ loong plugins init ./weather-host-ui \
   --tui-surface command_palette
 ```
 
-These TUI declarations are contract-first today: Loong inventories and validates
-them on the trusted host lane, but live TUI dispatch is still a separate follow-up
-seam.
+These TUI declarations are now both contract-first and runtime-backed: Loong
+inventories and validates them on the trusted host lane, and the same runtime
+roots can dispatch them through the live trusted TUI executor.
 
 You can still probe the declared TUI contract through the bounded bridge:
 
@@ -291,8 +293,16 @@ loong plugins invoke-tui-surface \
   --allow-command node
 ```
 
-with the current live runtime coverage intentionally bounded to daemon-owned
-surfaces first.
+When you want the runtime-managed path instead of the bounded authoring probe,
+use:
+
+```bash
+loong plugins run-tui-surface \
+  --config ./loong.toml \
+  --plugin-id weather-host-ui \
+  --tui-surface command_palette \
+  --payload '{"query":":ext"}'
+```
 
 The scaffolded runtime file already handles a small starter surface:
 

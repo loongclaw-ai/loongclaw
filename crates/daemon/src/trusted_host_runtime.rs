@@ -39,6 +39,23 @@ pub(crate) struct TrustedHostHookDispatchResult {
     pub runtime_evidence: Value,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct TrustedHostTuiSurfaceDispatchResult {
+    pub plugin_id: String,
+    pub source_path: String,
+    pub package_root: String,
+    pub bridge_kind: String,
+    pub source_language: String,
+    pub response_payload: Value,
+    pub runtime_evidence: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrustedHostDeclarationFilter<'a> {
+    HostHook(&'a str),
+    TuiSurface(&'a str),
+}
+
 pub(crate) fn build_process_stdio_bridge_policy_from_allow_commands(
     allow_commands: Vec<String>,
     empty_error_message: &str,
@@ -116,7 +133,8 @@ pub(crate) async fn dispatch_trusted_host_hook(
     hook: &str,
     payload: Value,
 ) -> CliResult<Vec<TrustedHostHookDispatchResult>> {
-    let trusted_plugins = collect_trusted_host_hook_plugins(config, hook)?;
+    let trusted_plugins =
+        collect_trusted_host_plugins(config, TrustedHostDeclarationFilter::HostHook(hook))?;
     if trusted_plugins.is_empty() {
         return Ok(Vec::new());
     }
@@ -156,6 +174,58 @@ pub(crate) async fn dispatch_trusted_host_hook(
     }
 
     Ok(results)
+}
+
+pub(crate) async fn dispatch_trusted_tui_surface_for_plugin(
+    config: &mvp::config::LoongConfig,
+    plugin_id: &str,
+    surface: &str,
+    payload: Value,
+) -> CliResult<TrustedHostTuiSurfaceDispatchResult> {
+    let plugin_id = plugin_id.trim();
+    if plugin_id.is_empty() {
+        return Err("trusted TUI surface dispatch requires a non-empty plugin id".to_owned());
+    }
+
+    let trusted_plugins =
+        collect_trusted_host_plugins(config, TrustedHostDeclarationFilter::TuiSurface(surface))?;
+    let plugin = trusted_plugins
+        .into_iter()
+        .find(|plugin| plugin.plugin_id == plugin_id)
+        .ok_or_else(|| {
+            format!(
+                "no ready trusted TUI surface `{surface}` extension named `{plugin_id}` is currently visible"
+            )
+        })?;
+
+    let bridge_policy = build_process_stdio_bridge_policy_from_allow_commands(
+        config.runtime_plugins.normalized_allowed_process_commands(),
+        "runtime_plugins.allowed_process_commands is empty; trusted TUI surface runtime execution needs at least one allowlisted process command",
+    )?;
+    let surface_payload = build_read_only_trusted_host_tui_surface_payload(surface, payload);
+    let outcome = invoke_process_stdio_extension_operation(
+        &plugin,
+        "extension/event",
+        surface_payload,
+        &bridge_policy,
+    )
+    .await
+    .map_err(|error| {
+        format!(
+            "trusted TUI surface `{surface}` failed for plugin {}: {error}",
+            plugin.plugin_id
+        )
+    })?;
+
+    Ok(TrustedHostTuiSurfaceDispatchResult {
+        plugin_id: plugin.plugin_id.clone(),
+        source_path: plugin.source_path.clone(),
+        package_root: plugin.package_root.clone(),
+        bridge_kind: plugin.runtime.bridge_kind.as_str().to_owned(),
+        source_language: plugin.runtime.source_language.clone(),
+        response_payload: outcome.response_payload,
+        runtime_evidence: outcome.runtime_evidence,
+    })
 }
 
 pub(crate) async fn dispatch_turn_start_hook_for_request(
@@ -305,9 +375,9 @@ fn trusted_host_request_context_payload(
     })
 }
 
-fn collect_trusted_host_hook_plugins(
+fn collect_trusted_host_plugins(
     config: &mvp::config::LoongConfig,
-    hook: &str,
+    filter: TrustedHostDeclarationFilter<'_>,
 ) -> CliResult<Vec<PluginIR>> {
     if !config.runtime_plugins.enabled {
         return Ok(Vec::new());
@@ -346,12 +416,25 @@ fn collect_trusted_host_hook_plugins(
         {
             continue;
         }
-        if !declarations.host_hooks.iter().any(|value| value == hook) {
+        let matches_filter = match filter {
+            TrustedHostDeclarationFilter::HostHook(hook) => {
+                declarations.host_hooks.iter().any(|value| value == hook)
+            }
+            TrustedHostDeclarationFilter::TuiSurface(surface) => declarations
+                .tui_surfaces
+                .iter()
+                .any(|value| value == surface),
+        };
+        if !matches_filter {
             continue;
         }
         if !declarations.metadata_issues.is_empty() {
+            let declaration_kind = match filter {
+                TrustedHostDeclarationFilter::HostHook(_) => "host hook",
+                TrustedHostDeclarationFilter::TuiSurface(_) => "TUI surface",
+            };
             return Err(format!(
-                "trusted host extension {} declares invalid host hook metadata: {}",
+                "trusted host extension {} declares invalid {declaration_kind} metadata: {}",
                 plugin.plugin_id,
                 declarations.metadata_issues.join("; ")
             ));

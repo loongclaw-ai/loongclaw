@@ -14,7 +14,11 @@ fn plugins_bridge_profiles_cli_parses_selected_profile_and_json_flag() {
     .expect("plugins bridge-profiles CLI should parse");
 
     match cli.command {
-        Some(Commands::Plugins { json, command }) => {
+        Some(Commands::Plugins {
+            config: _,
+            json,
+            command,
+        }) => {
             assert!(json);
             match command {
                 loong_daemon::plugins_cli::PluginsCommands::BridgeProfiles(command) => {
@@ -52,7 +56,11 @@ fn plugins_inventory_cli_parses_bridge_profile_and_examples_flag() {
     .expect("plugins inventory CLI should parse");
 
     match cli.command {
-        Some(Commands::Plugins { json, command }) => {
+        Some(Commands::Plugins {
+            config: _,
+            json,
+            command,
+        }) => {
             assert!(json);
             match command {
                 loong_daemon::plugins_cli::PluginsCommands::Inventory(command) => {
@@ -96,7 +104,11 @@ fn plugins_doctor_cli_defaults_to_sdk_release_profile() {
     .expect("plugins doctor CLI should parse");
 
     match cli.command {
-        Some(Commands::Plugins { json, command }) => {
+        Some(Commands::Plugins {
+            config: _,
+            json,
+            command,
+        }) => {
             assert!(json);
             match command {
                 loong_daemon::plugins_cli::PluginsCommands::Doctor(command) => {
@@ -152,7 +164,11 @@ fn plugins_actions_cli_parses_filters_and_global_json_after_subcommand() {
     .expect("plugins actions CLI should parse");
 
     match cli.command {
-        Some(Commands::Plugins { json, command }) => {
+        Some(Commands::Plugins {
+            config: _,
+            json,
+            command,
+        }) => {
             assert!(json);
             match command {
                 loong_daemon::plugins_cli::PluginsCommands::Actions(command) => {
@@ -208,7 +224,11 @@ fn plugins_bridge_template_cli_parses_output_and_bridge_profile() {
     .expect("plugins bridge-template CLI should parse");
 
     match cli.command {
-        Some(Commands::Plugins { json, command }) => {
+        Some(Commands::Plugins {
+            config: _,
+            json,
+            command,
+        }) => {
             assert!(json);
             match command {
                 loong_daemon::plugins_cli::PluginsCommands::BridgeTemplate(command) => {
@@ -251,7 +271,11 @@ fn plugins_preflight_cli_parses_bridge_support_delta_selector() {
     .expect("plugins preflight CLI should parse");
 
     match cli.command {
-        Some(Commands::Plugins { json, command }) => {
+        Some(Commands::Plugins {
+            config: _,
+            json,
+            command,
+        }) => {
             assert!(json);
             match command {
                 loong_daemon::plugins_cli::PluginsCommands::Preflight(command) => {
@@ -303,7 +327,11 @@ fn plugins_init_cli_parses_manifest_scaffold_request() {
     .expect("plugins init CLI should parse");
 
     match cli.command {
-        Some(Commands::Plugins { json, command }) => {
+        Some(Commands::Plugins {
+            config: _,
+            json,
+            command,
+        }) => {
             assert!(json);
             match command {
                 loong_daemon::plugins_cli::PluginsCommands::Init(command) => {
@@ -353,7 +381,11 @@ fn plugins_invoke_extension_cli_parses_native_smoke_request() {
     .expect("plugins invoke-extension CLI should parse");
 
     match cli.command {
-        Some(Commands::Plugins { json, command }) => {
+        Some(Commands::Plugins {
+            config: _,
+            json,
+            command,
+        }) => {
             assert!(!json);
             match command {
                 loong_daemon::plugins_cli::PluginsCommands::InvokeExtension(command) => {
@@ -390,7 +422,11 @@ fn plugins_invoke_host_hook_cli_parses_trusted_host_probe_request() {
     .expect("plugins invoke-host-hook CLI should parse");
 
     match cli.command {
-        Some(Commands::Plugins { json, command }) => {
+        Some(Commands::Plugins {
+            config: _,
+            json,
+            command,
+        }) => {
             assert!(!json);
             match command {
                 loong_daemon::plugins_cli::PluginsCommands::InvokeHostHook(command) => {
@@ -427,7 +463,11 @@ fn plugins_invoke_tui_surface_cli_parses_trusted_host_probe_request() {
     .expect("plugins invoke-tui-surface CLI should parse");
 
     match cli.command {
-        Some(Commands::Plugins { json, command }) => {
+        Some(Commands::Plugins {
+            config: _,
+            json,
+            command,
+        }) => {
             assert!(!json);
             match command {
                 loong_daemon::plugins_cli::PluginsCommands::InvokeTuiSurface(command) => {
@@ -436,6 +476,41 @@ fn plugins_invoke_tui_surface_cli_parses_trusted_host_probe_request() {
                     assert_eq!(command.tui_surface, "command_palette");
                     assert_eq!(command.payload, "{\"query\":\":ext\"}");
                     assert_eq!(command.allow_commands, vec!["node".to_owned()]);
+                }
+                other => panic!("unexpected plugins subcommand parsed: {other:?}"),
+            }
+        }
+        other => panic!("unexpected parse result: {other:?}"),
+    }
+}
+
+#[test]
+fn plugins_run_tui_surface_cli_parses_runtime_managed_request() {
+    let cli = try_parse_cli([
+        "loong",
+        "plugins",
+        "run-tui-surface",
+        "--plugin-id",
+        "weather-host",
+        "--tui-surface",
+        "command_palette",
+        "--payload",
+        "{\"query\":\":ext\"}",
+    ])
+    .expect("plugins run-tui-surface CLI should parse");
+
+    match cli.command {
+        Some(Commands::Plugins {
+            config: _,
+            json,
+            command,
+        }) => {
+            assert!(!json);
+            match command {
+                loong_daemon::plugins_cli::PluginsCommands::RunTuiSurface(command) => {
+                    assert_eq!(command.plugin_id, "weather-host");
+                    assert_eq!(command.tui_surface, "command_palette");
+                    assert_eq!(command.payload, "{\"query\":\":ext\"}");
                 }
                 other => panic!("unexpected plugins subcommand parsed: {other:?}"),
             }
@@ -459,6 +534,7 @@ fn plugins_help_mentions_preflight_and_action_plan() {
     assert!(help.contains("invoke-extension"), "help: {help}");
     assert!(help.contains("invoke-host-hook"), "help: {help}");
     assert!(help.contains("invoke-tui-surface"), "help: {help}");
+    assert!(help.contains("run-tui-surface"), "help: {help}");
     assert!(help.contains("inventory"), "help: {help}");
     assert!(help.contains("bridge-profiles"), "help: {help}");
     assert!(help.contains("bridge-template"), "help: {help}");

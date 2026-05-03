@@ -2513,7 +2513,6 @@ fn build_runtime_extension_settings_entries(_runtime: &CliTurnRuntime) -> Vec<Se
 #[derive(Debug, Clone)]
 struct TrustedTuiSurfaceExtensionEntry {
     plugin_id: String,
-    package_root: String,
     source_language: String,
     bridge_kind: String,
 }
@@ -2563,7 +2562,6 @@ fn collect_ready_trusted_tui_surface_extensions(
 
         entries.push(TrustedTuiSurfaceExtensionEntry {
             plugin_id: plugin.plugin_id.clone(),
-            package_root: plugin.package_root.clone(),
             source_language: plugin.runtime.source_language.clone(),
             bridge_kind: plugin.runtime.bridge_kind.as_str().to_owned(),
         });
@@ -2579,39 +2577,25 @@ fn run_trusted_tui_surface_probe(
     plugin: &TrustedTuiSurfaceExtensionEntry,
     tui_surface: &str,
 ) -> CliResult<TrustedTuiSurfaceProbeExecution> {
-    let allowed_commands = runtime
-        .config
-        .runtime_plugins
-        .normalized_allowed_process_commands();
-    if allowed_commands.is_empty() {
-        return Err(
-            "runtime_plugins.allowed_process_commands is empty; trusted TUI surface probes need at least one allowlisted process command"
-                .to_owned(),
-        );
-    }
-
     let executable_path = resolve_tui_surface_probe_executable_path()?;
     let payload = sample_tui_surface_probe_payload(tui_surface);
     let mut command = Command::new(executable_path);
     command
         .arg("plugins")
         .arg("--json")
-        .arg("invoke-tui-surface")
-        .arg("--root")
-        .arg(plugin.package_root.as_str())
+        .arg("--config")
+        .arg(runtime.resolved_path.as_os_str())
+        .arg("run-tui-surface")
         .arg("--plugin-id")
         .arg(plugin.plugin_id.as_str())
         .arg("--tui-surface")
         .arg(tui_surface)
         .arg("--payload")
         .arg(payload);
-    for allow_command in allowed_commands {
-        command.arg("--allow-command").arg(allow_command);
-    }
 
-    let output = command
-        .output()
-        .map_err(|error| format!("failed to launch trusted TUI surface probe: {error}"))?;
+    let output = command.output().map_err(|error| {
+        format!("failed to launch trusted TUI surface runtime execution: {error}")
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
@@ -2622,7 +2606,9 @@ fn run_trusted_tui_surface_probe(
         } else {
             format!("exit status {}", output.status)
         };
-        return Err(format!("trusted TUI surface probe failed: {detail}"));
+        return Err(format!(
+            "trusted TUI surface runtime execution failed: {detail}"
+        ));
     }
 
     serde_json::from_slice::<TrustedTuiSurfaceProbeExecution>(&output.stdout).map_err(|error| {
@@ -5812,6 +5798,8 @@ fn render_extensions_command_lines_with_width(
         ),
         "Probe declared runtime surfaces with `loong plugins invoke-extension`, `loong plugins invoke-host-hook`, or `loong plugins invoke-tui-surface`."
             .to_owned(),
+        "Execute ready trusted TUI surfaces with `/extensions run <plugin-id> <surface>` or `loong plugins run-tui-surface`."
+            .to_owned(),
     ];
     if inventory.activation.has_blockers() {
         footer_lines.push(format!(
@@ -5904,7 +5892,7 @@ fn render_extension_tui_surface_probe_lines_with_width(
         )),
         sections: vec![
             TuiSectionSpec::KeyValues {
-                title: Some("trusted tui surface probe".to_owned()),
+                title: Some("trusted tui surface runtime".to_owned()),
                 items: vec![
                     TuiKeyValueSpec::Plain {
                         key: "plugin".to_owned(),
@@ -5928,7 +5916,7 @@ fn render_extension_tui_surface_probe_lines_with_width(
         footer_lines: vec![
             format!("Use `/extensions {plugin_id}` to inspect the declaration and package truth."),
             format!(
-                "Rerun with `/extensions run {plugin_id} {tui_surface}` whenever you want a fresh bounded probe."
+                "Rerun with `/extensions run {plugin_id} {tui_surface}` whenever you want a fresh runtime-backed execution."
             ),
         ],
     };
@@ -6061,6 +6049,12 @@ fn render_extension_detail_lines_with_width(
             surface,
             sample_tui_surface_payload(surface),
             allow_command_hint,
+        )
+    }));
+    footer_lines.extend(declared_tui_surfaces.iter().map(|surface| {
+        format!(
+            "Execute runtime-managed TUI surface `{surface}` with `/extensions run {} {}`.",
+            entry.plugin_id, surface
         )
     }));
     if declared_host_hooks.is_empty() && declared_tui_surfaces.is_empty() {
@@ -8690,7 +8684,7 @@ mod tests {
     }
 
     #[test]
-    fn extensions_command_run_tui_surface_renders_probe_output() {
+    fn extensions_command_run_tui_surface_renders_runtime_output() {
         let root = std::env::temp_dir().join(format!(
             "loong-chat-extension-run-surface-{}",
             std::time::SystemTime::now()
@@ -8709,14 +8703,31 @@ mod tests {
         crate::test_support::write_executable_script_atomically(
             &fake_cli,
             r#"#!/bin/sh
+expected_subcommand="run-tui-surface"
+seen_subcommand=""
+seen_config=""
 surface=""
 previous=""
 for arg in "$@"; do
+  if [ "$arg" = "$expected_subcommand" ]; then
+    seen_subcommand="$arg"
+  fi
+  if [ "$previous" = "--config" ]; then
+    seen_config="$arg"
+  fi
   if [ "$previous" = "--tui-surface" ]; then
     surface="$arg"
   fi
   previous="$arg"
 done
+if [ "$seen_subcommand" != "$expected_subcommand" ]; then
+  echo "expected $expected_subcommand" >&2
+  exit 1
+fi
+if [ -z "$seen_config" ]; then
+  echo "missing --config" >&2
+  exit 1
+fi
 printf '{"plugin_id":"weather-extension","tui_surface":"%s","response_payload":{"handled_tui_surface":"%s","probe":"ok"},"runtime_evidence":{"executor":"fake-cli"}}\n' "$surface" "$surface"
 "#,
         )
@@ -8726,7 +8737,14 @@ printf '{"plugin_id":"weather-extension","tui_surface":"%s","response_payload":{
         config.runtime_plugins.enabled = true;
         config.runtime_plugins.roots = vec![root.display().to_string()];
         config.runtime_plugins.allowed_process_commands = vec!["node".to_owned()];
-        let runtime = test_runtime_with_config(root.join("loong.toml"), config);
+        let config_path = root.join("loong.toml");
+        crate::config::write(
+            Some(config_path.display().to_string().as_str()),
+            &config,
+            true,
+        )
+        .expect("write runtime config");
+        let runtime = test_runtime_with_config(config_path, config);
         let mut env = crate::test_support::ScopedEnv::new();
         env.set(
             super::TEST_TUI_SURFACE_EXECUTABLE_ENV,
@@ -8741,7 +8759,7 @@ printf '{"plugin_id":"weather-extension","tui_surface":"%s","response_payload":{
         .expect("render executed tui surface")
         .join("\n");
 
-        assert!(rendered.contains("trusted tui surface probe"));
+        assert!(rendered.contains("trusted tui surface runtime"));
         assert!(rendered.contains("handled_tui_surface"));
         assert!(rendered.contains("command_palette"));
         assert!(rendered.contains("fake-cli"));

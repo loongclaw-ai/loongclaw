@@ -62,6 +62,7 @@ They currently support:
 - declared host hooks
 - declared shell-first TUI surfaces
 - bounded probe execution through the Loong CLI
+- runtime-managed trusted TUI execution through the Loong CLI
 - operator-visible runtime and doctor truth
 
 Current shell-first TUI surface declarations include:
@@ -101,8 +102,9 @@ Today, an external author can rely on these operator-visible surfaces:
 - `loong plugins doctor`
 - `loong plugins invoke-host-hook`
 - `loong plugins invoke-tui-surface`
+- `loong plugins run-tui-surface`
 - shell-first TUI inspection with `/extensions`
-- shell-first bounded TUI probe routing with `/extensions run <plugin-id> <surface>`
+- shell-first runtime routing with `/extensions run <plugin-id> <surface>`
 
 The live shell-first TUI currently routes these declared surfaces:
 

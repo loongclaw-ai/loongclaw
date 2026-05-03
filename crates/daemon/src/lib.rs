@@ -892,6 +892,8 @@ pub enum Commands {
         long_about = "Manifest-first plugin namespace for bounded authoring bootstrap, inspecting manifest-first package inventory, diagnosing package-author contract issues, evaluating profile-aware preflight, and consuming the deduplicated operator action plan.\n\nThis command does not introduce a second policy engine. It reuses the existing spec `plugin_inventory` and `plugin_preflight` surfaces for shared plugin truth and adds thin author-facing surfaces for external package roots."
     )]
     Plugins {
+        #[arg(long)]
+        config: Option<String>,
         #[arg(long, global = true, default_value_t = false)]
         json: bool,
         #[command(subcommand)]

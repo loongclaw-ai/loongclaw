@@ -506,8 +506,17 @@ async fn run_command(command: Commands, invoked_as_default_entry: bool) -> CliRe
             })
             .await
         }
-        Commands::Plugins { json, command } => {
-            plugins_cli::run_plugins_cli(plugins_cli::PluginsCommandOptions { json, command }).await
+        Commands::Plugins {
+            config,
+            json,
+            command,
+        } => {
+            plugins_cli::run_plugins_cli(plugins_cli::PluginsCommandOptions {
+                json,
+                config,
+                command,
+            })
+            .await
         }
         Commands::Channels {
             config,

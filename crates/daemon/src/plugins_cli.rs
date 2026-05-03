@@ -36,6 +36,8 @@ pub const PLUGINS_INIT_SCHEMA_PURPOSE: &str = "package_scaffold";
 pub const PLUGINS_INVOKE_EXTENSION_SCHEMA_PURPOSE: &str = "native_extension_smoke_probe";
 pub const PLUGINS_INVOKE_HOST_HOOK_SCHEMA_PURPOSE: &str = "trusted_host_hook_probe";
 pub const PLUGINS_INVOKE_TUI_SURFACE_SCHEMA_PURPOSE: &str = "trusted_host_tui_surface_probe";
+pub const PLUGINS_RUN_TUI_SURFACE_SCHEMA_PURPOSE: &str =
+    "trusted_host_tui_surface_runtime_execution";
 
 fn plugins_command_schema(purpose: &str) -> JsonSchemaDescriptor {
     let version = PLUGINS_COMMAND_SCHEMA_VERSION;
@@ -54,6 +56,8 @@ pub enum PluginsCommands {
     InvokeHostHook(PluginInvokeHostHookCommand),
     /// Probe a declared trusted-host TUI surface through the bounded process bridge
     InvokeTuiSurface(PluginInvokeTuiSurfaceCommand),
+    /// Execute a declared trusted-host TUI surface through the runtime-managed trusted host lane
+    RunTuiSurface(PluginRunTuiSurfaceCommand),
     /// Inspect manifest-first package truth across one or more plugin roots
     Inventory(PluginInventoryCommand),
     /// Diagnose manifest-first plugin packages with author-facing remediation
@@ -384,9 +388,24 @@ pub struct PluginInvokeTuiSurfaceCommand {
     pub allow_commands: Vec<String>,
 }
 
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[command(
+    about = "Execute a declared trusted-host TUI surface through the runtime-managed trusted host lane",
+    long_about = "Execute a declared trusted-host TUI surface through the runtime-managed trusted host lane.\n\nThis command loads the active Loong config, resolves ready trusted-host extensions from runtime_plugins roots, verifies that the named plugin declares the requested shell-first TUI surface, and dispatches it through the existing process_stdio trusted-host runtime with the configured allowlist. It is the live runtime path behind `/extensions run`."
+)]
+pub struct PluginRunTuiSurfaceCommand {
+    #[arg(long)]
+    pub plugin_id: String,
+    #[arg(long = "tui-surface")]
+    pub tui_surface: String,
+    #[arg(long, default_value = "{}")]
+    pub payload: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct PluginsCommandOptions {
     pub json: bool,
+    pub config: Option<String>,
     pub command: PluginsCommands,
 }
 
@@ -926,12 +945,31 @@ pub struct PluginsInvokeTuiSurfaceExecution {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct PluginsRunTuiSurfaceExecution {
+    pub schema_version: u32,
+    pub schema: JsonSchemaDescriptor,
+    pub plugin_id: String,
+    pub package_root: String,
+    pub source_path: String,
+    pub extension_family: Option<String>,
+    pub extension_trust_lane: Option<String>,
+    pub bridge_kind: String,
+    pub source_language: Option<String>,
+    pub tui_surface: String,
+    pub payload: Value,
+    pub dispatched_method: String,
+    pub response_payload: Value,
+    pub runtime_evidence: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum PluginsCommandExecution {
     Init(Box<PluginsInitExecution>),
     InvokeExtension(Box<PluginsInvokeExtensionExecution>),
     InvokeHostHook(Box<PluginsInvokeHostHookExecution>),
     InvokeTuiSurface(Box<PluginsInvokeTuiSurfaceExecution>),
+    RunTuiSurface(Box<PluginsRunTuiSurfaceExecution>),
     Inventory(Box<PluginsInventoryExecution>),
     Doctor(Box<PluginsDoctorExecution>),
     BridgeProfiles(Box<PluginsBridgeProfilesExecution>),
@@ -957,7 +995,13 @@ pub async fn run_plugins_cli(options: PluginsCommandOptions) -> CliResult<()> {
 pub async fn execute_plugins_command(
     options: PluginsCommandOptions,
 ) -> CliResult<PluginsCommandExecution> {
-    match options.command {
+    let PluginsCommandOptions {
+        json: _,
+        config,
+        command,
+    } = options;
+
+    match command {
         PluginsCommands::Init(command) => {
             let execution = execute_plugins_init(command)?;
             Ok(PluginsCommandExecution::Init(Box::new(execution)))
@@ -977,6 +1021,10 @@ pub async fn execute_plugins_command(
             Ok(PluginsCommandExecution::InvokeTuiSurface(Box::new(
                 execution,
             )))
+        }
+        PluginsCommands::RunTuiSurface(command) => {
+            let execution = execute_plugins_run_tui_surface(command, config.as_deref()).await?;
+            Ok(PluginsCommandExecution::RunTuiSurface(Box::new(execution)))
         }
         PluginsCommands::Inventory(command) => {
             let context = build_plugin_inventory_context(
@@ -1301,6 +1349,7 @@ pub(crate) async fn runtime_plugin_inventory_read_model(
 
     let options = PluginsCommandOptions {
         json: false,
+        config: None,
         command: PluginsCommands::Inventory(PluginInventoryCommand {
             source: PluginScanSourceArgs {
                 roots,
@@ -1842,6 +1891,50 @@ async fn execute_plugins_invoke_tui_surface(
         dispatched_method: "extension/event".to_owned(),
         response_payload: outcome.response_payload,
         runtime_evidence: outcome.runtime_evidence,
+    })
+}
+
+async fn execute_plugins_run_tui_surface(
+    command: PluginRunTuiSurfaceCommand,
+    config_path: Option<&str>,
+) -> CliResult<PluginsRunTuiSurfaceExecution> {
+    let plugin_id = normalize_required_cli_value("--plugin-id", &command.plugin_id)?;
+    let tui_surface = normalize_required_cli_value("--tui-surface", &command.tui_surface)?;
+    let payload = serde_json::from_str::<Value>(command.payload.as_str()).map_err(|error| {
+        format!("plugins run-tui-surface requires --payload to be valid JSON: {error}")
+    })?;
+    if !crate::kernel::TRUSTED_HOST_TUI_EXTENSION_SURFACES.contains(&tui_surface.as_str()) {
+        return Err(format!(
+            "plugins run-tui-surface requires supported surface `{tui_surface}`; supported surfaces are {}",
+            crate::kernel::TRUSTED_HOST_TUI_EXTENSION_SURFACES.join(", ")
+        ));
+    }
+
+    let (_resolved_config_path, config) = mvp::config::load(config_path)?;
+    let dispatch = crate::trusted_host_runtime::dispatch_trusted_tui_surface_for_plugin(
+        &config,
+        plugin_id.as_str(),
+        tui_surface.as_str(),
+        payload.clone(),
+    )
+    .await
+    .map_err(|error| format!("plugins run-tui-surface failed: {error}"))?;
+
+    Ok(PluginsRunTuiSurfaceExecution {
+        schema_version: PLUGINS_COMMAND_SCHEMA_VERSION,
+        schema: plugins_command_schema(PLUGINS_RUN_TUI_SURFACE_SCHEMA_PURPOSE),
+        plugin_id: dispatch.plugin_id,
+        package_root: dispatch.package_root,
+        source_path: dispatch.source_path,
+        extension_family: Some(crate::kernel::TRUSTED_HOST_EXTENSION_FAMILY.to_owned()),
+        extension_trust_lane: Some(crate::kernel::TRUSTED_HOST_EXTENSION_TRUST_LANE.to_owned()),
+        bridge_kind: dispatch.bridge_kind,
+        source_language: Some(dispatch.source_language),
+        tui_surface,
+        payload,
+        dispatched_method: "extension/event".to_owned(),
+        response_payload: dispatch.response_payload,
+        runtime_evidence: dispatch.runtime_evidence,
     })
 }
 
@@ -2541,6 +2634,10 @@ fn render_plugins_cli_text(execution: &PluginsCommandExecution) -> String {
         PluginsCommandExecution::InvokeTuiSurface(execution) => (
             "plugins invoke-tui-surface",
             render_plugins_invoke_tui_surface_text(execution),
+        ),
+        PluginsCommandExecution::RunTuiSurface(execution) => (
+            "plugins run-tui-surface",
+            render_plugins_run_tui_surface_text(execution),
         ),
         PluginsCommandExecution::Inventory(execution) => (
             "plugins inventory",
@@ -3534,6 +3631,35 @@ fn build_plugin_doctor_context(
         include_deferred,
         false,
         surface_spec,
+    )
+}
+
+fn render_plugins_run_tui_surface_text(execution: &PluginsRunTuiSurfaceExecution) -> String {
+    let source_language = execution.source_language.as_deref().unwrap_or("-");
+    let response_payload = serde_json::to_string_pretty(&execution.response_payload)
+        .unwrap_or_else(|_| execution.response_payload.to_string());
+    let runtime_evidence = serde_json::to_string_pretty(&execution.runtime_evidence)
+        .unwrap_or_else(|_| execution.runtime_evidence.to_string());
+
+    format!(
+        concat!(
+            "plugins run-tui-surface plugin_id={} package_root={} source_path={} extension_family={} extension_trust_lane={} bridge_kind={} source_language={} tui_surface={} dispatched_method={}\n",
+            "payload={}\n",
+            "response_payload={}\n",
+            "runtime_evidence={}"
+        ),
+        execution.plugin_id,
+        execution.package_root,
+        execution.source_path,
+        execution.extension_family.as_deref().unwrap_or("-"),
+        execution.extension_trust_lane.as_deref().unwrap_or("-"),
+        execution.bridge_kind,
+        source_language,
+        execution.tui_surface,
+        execution.dispatched_method,
+        execution.payload,
+        response_payload,
+        runtime_evidence,
     )
 }
 
@@ -4679,6 +4805,7 @@ mod tests {
     async fn execute_plugins_bridge_profiles_returns_bundled_profiles() {
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::BridgeProfiles(PluginBridgeProfilesCommand {
                 profiles: vec![PluginBridgeProfileArg::OpenclawEcosystemBalanced],
             }),
@@ -4736,6 +4863,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Inventory(PluginInventoryCommand {
                 source,
                 include_ready: true,
@@ -4825,6 +4953,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Inventory(PluginInventoryCommand {
                 source: plugin_scan_source(&plugin_root, "trusted-host-extension"),
                 include_ready: true,
@@ -4909,6 +5038,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Doctor(PluginDoctorCommand {
                 source,
                 include_passed: true,
@@ -5004,6 +5134,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Doctor(PluginDoctorCommand {
                 source: plugin_doctor_source(&plugin_root, "trusted-host-extension"),
                 include_passed: true,
@@ -5118,6 +5249,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Actions(PluginActionsCommand {
                 source,
                 include_passed: false,
@@ -5183,6 +5315,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Preflight(PluginPreflightCommand {
                 source,
                 include_passed: true,
@@ -5329,6 +5462,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Preflight(PluginPreflightCommand {
                 source,
                 include_passed: true,
@@ -5412,6 +5546,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Preflight(PluginPreflightCommand {
                 source,
                 include_passed: true,
@@ -5492,6 +5627,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Preflight(PluginPreflightCommand {
                 source,
                 include_passed: true,
@@ -5578,6 +5714,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::BridgeTemplate(PluginBridgeTemplateCommand {
                 source,
                 include_passed: true,
@@ -5658,6 +5795,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::BridgeTemplate(PluginBridgeTemplateCommand {
                 source,
                 include_passed: true,
@@ -5743,6 +5881,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Init(PluginInitCommand {
                 package_root: package_root.clone(),
                 plugin_id: "tavily-search".to_owned(),
@@ -5866,6 +6005,7 @@ mod tests {
 
         let error = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Init(PluginInitCommand {
                 package_root,
                 plugin_id: "tavily-search".to_owned(),
@@ -5894,6 +6034,7 @@ mod tests {
 
         let error = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Init(PluginInitCommand {
                 package_root,
                 plugin_id: "tavily-search".to_owned(),
@@ -5922,6 +6063,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Init(PluginInitCommand {
                 package_root,
                 plugin_id: "weather-python".to_owned(),
@@ -6175,6 +6317,7 @@ mod tests {
 
             let execution = execute_plugins_command(PluginsCommandOptions {
                 json: false,
+                config: None,
                 command: PluginsCommands::Init(PluginInitCommand {
                     package_root: package_root.clone(),
                     plugin_id: spec.plugin_id.to_owned(),
@@ -6324,6 +6467,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Init(PluginInitCommand {
                 package_root,
                 plugin_id: "weather-python".to_owned(),
@@ -6347,6 +6491,7 @@ mod tests {
 
         let inventory_execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Inventory(PluginInventoryCommand {
                 source: PluginScanSourceArgs {
                     roots: vec![execution.package_root.clone()],
@@ -6437,6 +6582,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Init(PluginInitCommand {
                 package_root,
                 plugin_id: "weather-host".to_owned(),
@@ -6499,6 +6645,7 @@ mod tests {
 
         let execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Init(PluginInitCommand {
                 package_root: package_root.clone(),
                 plugin_id: "weather-host".to_owned(),
@@ -6522,6 +6669,7 @@ mod tests {
 
         let hook_execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::InvokeHostHook(PluginInvokeHostHookCommand {
                 root: execution.package_root.clone(),
                 plugin_id: "weather-host".to_owned(),
@@ -6549,6 +6697,7 @@ mod tests {
 
         let error = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Init(PluginInitCommand {
                 package_root,
                 plugin_id: "weather-host".to_owned(),
@@ -6576,6 +6725,7 @@ mod tests {
 
         let error = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Init(PluginInitCommand {
                 package_root,
                 plugin_id: "weather-host".to_owned(),
@@ -6606,6 +6756,7 @@ mod tests {
 
         let error = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::Init(PluginInitCommand {
                 package_root: package_root.clone(),
                 plugin_id: "occupied".to_owned(),
@@ -6635,6 +6786,7 @@ mod tests {
 
         let invoke_execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::InvokeExtension(PluginInvokeExtensionCommand {
                 root: package_root,
                 plugin_id: "trusted-host-extension".to_owned(),
@@ -6663,6 +6815,7 @@ mod tests {
 
         let hook_execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::InvokeHostHook(PluginInvokeHostHookCommand {
                 root: package_root,
                 plugin_id: "trusted-host-extension".to_owned(),
@@ -6709,6 +6862,7 @@ mod tests {
 
         let surface_execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::InvokeTuiSurface(PluginInvokeTuiSurfaceCommand {
                 root: package_root,
                 plugin_id: "trusted-host-extension".to_owned(),
@@ -6743,6 +6897,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_plugins_run_tui_surface_uses_runtime_managed_trusted_host_lane() {
+        let temp_root = unique_temp_dir("loong-plugins-cli-run-tui-surface");
+        let package_root = format!("{temp_root}/trusted-host-extension");
+        write_trusted_host_extension_package(&package_root);
+
+        let config_path = format!("{temp_root}/loong.toml");
+        let mut config = mvp::config::LoongConfig::default();
+        config.runtime_plugins.enabled = true;
+        config.runtime_plugins.roots = vec![temp_root.clone()];
+        config.runtime_plugins.supported_bridges = vec!["process_stdio".to_owned()];
+        config.runtime_plugins.allowed_process_commands = vec!["node".to_owned()];
+        mvp::config::write(Some(config_path.as_str()), &config, true)
+            .expect("write runtime plugin config");
+
+        let surface_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            config: Some(config_path),
+            command: PluginsCommands::RunTuiSurface(PluginRunTuiSurfaceCommand {
+                plugin_id: "trusted-host-extension".to_owned(),
+                tui_surface: "command_palette".to_owned(),
+                payload: "{\"query\":\":ext\"}".to_owned(),
+            }),
+        })
+        .await
+        .expect("run-tui-surface should execute trusted host extension");
+
+        let PluginsCommandExecution::RunTuiSurface(surface_execution) = surface_execution else {
+            panic!("expected run-tui-surface execution");
+        };
+        assert_eq!(
+            surface_execution.extension_family.as_deref(),
+            Some(crate::kernel::TRUSTED_HOST_EXTENSION_FAMILY)
+        );
+        assert_eq!(surface_execution.tui_surface, "command_palette");
+        assert_eq!(
+            surface_execution.response_payload["handled_event"],
+            serde_json::json!("tui_surface")
+        );
+        assert_eq!(
+            surface_execution.response_payload["handled_tui_surface"],
+            serde_json::json!("command_palette")
+        );
+        assert_eq!(
+            surface_execution.response_payload["received_surface_payload"]["query"],
+            serde_json::json!(":ext")
+        );
+    }
+
+    #[tokio::test]
     async fn execute_plugins_invoke_host_hook_rejects_governed_sidecar_extension() {
         let temp_root = unique_temp_dir("loong-plugins-cli-invoke-host-hook-governed");
         let package_root = format!("{temp_root}/host-hook-extension");
@@ -6750,6 +6953,7 @@ mod tests {
 
         let error = execute_plugins_command(PluginsCommandOptions {
             json: false,
+            config: None,
             command: PluginsCommands::InvokeHostHook(PluginInvokeHostHookCommand {
                 root: package_root,
                 plugin_id: "host-hook-extension".to_owned(),
@@ -6792,6 +6996,7 @@ mod tests {
 
             let hook_execution = execute_plugins_command(PluginsCommandOptions {
                 json: false,
+                config: None,
                 command: PluginsCommands::InvokeHostHook(PluginInvokeHostHookCommand {
                     root: package_root.clone(),
                     plugin_id: plugin_id.to_owned(),
@@ -6815,6 +7020,7 @@ mod tests {
 
             let surface_execution = execute_plugins_command(PluginsCommandOptions {
                 json: false,
+                config: None,
                 command: PluginsCommands::InvokeTuiSurface(PluginInvokeTuiSurfaceCommand {
                     root: package_root,
                     plugin_id: plugin_id.to_owned(),
@@ -6876,6 +7082,7 @@ mod tests {
 
             let invoke_execution = execute_plugins_command(PluginsCommandOptions {
                 json: false,
+                config: None,
                 command: PluginsCommands::InvokeExtension(PluginInvokeExtensionCommand {
                     root: package_root,
                     plugin_id: plugin_id.to_owned(),
@@ -6935,6 +7142,10 @@ mod tests {
             assert!(
                 doc.contains("native-extension-trusted-host-javascript"),
                 "doc should mention the trusted-host example lane"
+            );
+            assert!(
+                doc.contains("loong plugins run-tui-surface"),
+                "doc should mention the runtime-managed trusted TUI execution surface"
             );
         }
     }

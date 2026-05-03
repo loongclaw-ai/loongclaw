@@ -18,7 +18,7 @@ bounded routes the runtime uses today.
 | --- | --- | --- |
 | ship reusable prompt or workflow guidance | managed skills | installable, inspectable, no runtime bridge required |
 | add a governed runtime package without host-level trust | governed plugin package | manifest-first, policy-shaped, bounded by bridge/runtime support |
-| declare host hooks or shell-first TUI surfaces | trusted host extension | explicit high-trust lane with bounded probe execution |
+| declare host hooks or shell-first TUI surfaces | trusted host extension | explicit high-trust lane with bounded probes plus runtime-managed TUI execution |
 
 ## Current Trusted Host Boundary
 
@@ -27,7 +27,7 @@ Today, trusted host authoring is deliberately narrow:
 - runnable `process_stdio` packages only
 - explicit `--source-language`
 - explicit host-hook and TUI-surface declarations
-- bounded probe execution, not implicit in-process execution
+- bounded probe execution plus runtime-managed TUI execution, not implicit in-process execution
 
 Current trusted shell-first TUI surfaces:
 
@@ -138,8 +138,8 @@ Current live routes already project:
 - `settings_flow`
 - `startup_onboarding`
 
-Those routes are still bounded probe surfaces. They do not imply a general
-in-process TUI executor contract yet.
+Those routes now execute through the runtime-managed trusted host lane. They do
+not imply a general in-process TUI executor contract.
 
 If `[runtime_plugins].enabled = true` and explicit roots are omitted, the
 current branch also auto-discovers the standard local roots first:
@@ -166,7 +166,8 @@ You can rely on:
 - trusted-host manifest declarations
 - shared declaration parsing in the kernel
 - daemon-side bounded probe commands
-- shell-first live routing onto those probe commands
+- daemon-side runtime-managed `loong plugins run-tui-surface`
+- shell-first live routing onto that runtime-managed command
 - public and source-facing docs that describe the same current surface
 
 You should not assume:
