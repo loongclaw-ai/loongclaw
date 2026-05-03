@@ -19,6 +19,8 @@
     "loong_extension_family": "trusted_host_extension",
     "loong_extension_trust_lane": "trusted_host",
     "loong_extension_methods_json": "[\"extension/event\"]",
+    "loong_extension_host_actions_json": "[\"open_settings\"]",
+    "loong_extension_host_action_specs_json": "{\"open_settings\":{\"label\":\"Open Settings\",\"summary\":\"Advertise the trusted host action `open_settings`.\",\"sample_payload\":{},\"operator_hint\":\"This action is contract-first today. Keep its semantics aligned in docs and operator surfaces until a concrete execution lane exists.\"}}",
     "loong_extension_host_hooks_json": "[\"turn_start\",\"turn_end\"]",
     "loong_extension_host_hook_specs_json": "{\"turn_start\":{\"label\":\"Turn Start\",\"summary\":\"Observe the start of a trusted host turn.\",\"sample_payload\":{\"turn_id\":\"demo-turn\"},\"operator_hint\":\"Probe this hook with `loong plugins invoke-host-hook --root \\\"examples/plugins-process/native-extension-trusted-host-rust\\\" --plugin-id \\\"trusted-host-extension-rust-example\\\" --hook turn_start --payload '{\\\"turn_id\\\":\\\"demo-turn\\\"}' --allow-command cargo`.\"},\"turn_end\":{\"label\":\"Turn End\",\"summary\":\"Observe the completion of a trusted host turn.\",\"sample_payload\":{\"turn_id\":\"demo-turn\",\"status\":\"ok\"},\"operator_hint\":\"Probe this hook with `loong plugins invoke-host-hook --root \\\"examples/plugins-process/native-extension-trusted-host-rust\\\" --plugin-id \\\"trusted-host-extension-rust-example\\\" --hook turn_end --payload '{\\\"turn_id\\\":\\\"demo-turn\\\",\\\"status\\\":\\\"ok\\\"}' --allow-command cargo`.\"}}",
     "loong_extension_tui_surfaces_json": "[\"command_palette\",\"settings_flow\",\"startup_onboarding\",\"sidebar_widget\"]",

@@ -296,7 +296,7 @@ impl PluginInitBridgeKindArg {
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 #[command(
     about = "Scaffold a manifest-first plugin package root for external authors",
-    long_about = "Scaffold a manifest-first plugin package root for external authors.\n\nThe generated package contains a canonical `loong.plugin.json` plus a README that points authors to `loong plugins doctor` and `loong plugins actions` for shared governance validation. Use `--host-hook` and `--tui-surface` to scaffold the bounded trusted host lane on top of the same process_stdio runtime path. This command scaffolds package metadata and local runtime stubs only; it does not widen trust policy by itself."
+    long_about = "Scaffold a manifest-first plugin package root for external authors.\n\nThe generated package contains a canonical `loong.plugin.json` plus a README that points authors to `loong plugins doctor` and `loong plugins actions` for shared governance validation. Use `--host-hook`, `--host-action`, and `--tui-surface` to scaffold the bounded trusted host lane on top of the same process_stdio runtime path. This command scaffolds package metadata and local runtime stubs only; it does not widen trust policy by itself."
 )]
 pub struct PluginInitCommand {
     /// Target package root to create or reuse when the directory is empty
@@ -323,6 +323,9 @@ pub struct PluginInitCommand {
     /// Declared read-only trusted host hook names to scaffold on the trusted host lane
     #[arg(long = "host-hook")]
     pub host_hooks: Vec<String>,
+    /// Declared trusted host actions to scaffold on the trusted host lane
+    #[arg(long = "host-action")]
+    pub host_actions: Vec<String>,
     /// Declared trusted-host TUI surfaces to scaffold on the trusted host lane
     #[arg(long = "tui-surface")]
     pub tui_surfaces: Vec<String>,
@@ -610,6 +613,7 @@ pub struct RuntimePluginInventoryResultView {
     pub capabilities: Vec<String>,
     pub extension_family: Option<String>,
     pub extension_trust_lane: Option<String>,
+    pub extension_host_actions: Vec<String>,
     pub extension_host_hooks: Vec<String>,
     pub extension_tui_surfaces: Vec<String>,
     pub activation_status: Option<String>,
@@ -886,6 +890,7 @@ pub struct NativeExtensionAuthoringProfileExecution {
     pub reference_example_path: String,
     pub methods: Vec<String>,
     pub events: Vec<String>,
+    pub host_actions: Vec<String>,
     pub host_hooks: Vec<String>,
     pub tui_surfaces: Vec<String>,
     pub runtime_files: Vec<String>,
@@ -1421,6 +1426,7 @@ pub(crate) async fn runtime_plugin_inventory_read_model(
                         capabilities: result.capabilities,
                         extension_family: result.native_extension.family,
                         extension_trust_lane: result.native_extension.trust_lane,
+                        extension_host_actions: result.native_extension.host_actions,
                         extension_host_hooks: result.native_extension.host_hooks,
                         extension_tui_surfaces: result.native_extension.tui_surfaces,
                         activation_status: result.activation_status,
@@ -1545,6 +1551,7 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
     let declared_capabilities =
         resolve_scaffold_declared_capabilities(command.capabilities.as_slice())?;
     let declared_host_hooks = resolve_scaffold_host_hooks(command.host_hooks.as_slice())?;
+    let declared_host_actions = resolve_scaffold_host_actions(command.host_actions.as_slice())?;
     let declared_tui_surfaces = resolve_scaffold_tui_surfaces(command.tui_surfaces.as_slice())?;
 
     validate_plugin_scaffold_version(&version)?;
@@ -1556,11 +1563,13 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         crate::native_extension_authoring::process_stdio_native_extension_language_profile(
             &scaffold_defaults,
         )?;
-    if (!declared_host_hooks.is_empty() || !declared_tui_surfaces.is_empty())
+    if (!declared_host_hooks.is_empty()
+        || !declared_host_actions.is_empty()
+        || !declared_tui_surfaces.is_empty())
         && process_stdio_profile.is_none()
     {
         return Err(
-            "plugins init only scaffolds trusted host hooks and TUI surfaces on runnable process_stdio extension entrypoints"
+            "plugins init only scaffolds trusted host hooks, host actions, and TUI surfaces on runnable process_stdio extension entrypoints"
                 .to_owned(),
         );
     }
@@ -1574,6 +1583,7 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         &scaffold_defaults,
         declared_capabilities,
         declared_host_hooks.clone(),
+        declared_host_actions.clone(),
         declared_tui_surfaces.clone(),
         process_stdio_profile,
     );
@@ -1609,6 +1619,7 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         command.source_language.as_deref(),
         &scaffold_defaults,
         declared_host_hooks.as_slice(),
+        declared_host_actions.as_slice(),
         declared_tui_surfaces.as_slice(),
     );
     let rendered_readme = render_plugin_scaffold_readme(
@@ -2141,6 +2152,33 @@ fn resolve_scaffold_host_hooks(raw: &[String]) -> CliResult<Vec<String>> {
     Ok(declared_host_hooks)
 }
 
+fn resolve_scaffold_host_actions(raw: &[String]) -> CliResult<Vec<String>> {
+    let mut declared_host_actions = Vec::new();
+
+    for action_name in raw {
+        let trimmed = action_name.trim();
+        if trimmed.is_empty() {
+            return Err(
+                "plugins init requires each --host-action value to be non-empty".to_owned(),
+            );
+        }
+        if !crate::kernel::trusted_host_tui_surface_identifier_is_valid(trimmed) {
+            return Err(format!(
+                "plugins init received invalid --host-action `{trimmed}`; expected a lowercase identifier starting with a letter and using only a-z, 0-9, `_`, or `-`"
+            ));
+        }
+        if declared_host_actions
+            .iter()
+            .any(|existing| existing == trimmed)
+        {
+            continue;
+        }
+        declared_host_actions.push(trimmed.to_owned());
+    }
+
+    Ok(declared_host_actions)
+}
+
 fn resolve_scaffold_tui_surfaces(raw: &[String]) -> CliResult<Vec<String>> {
     let mut declared_tui_surfaces = Vec::new();
 
@@ -2245,6 +2283,7 @@ fn build_native_extension_authoring_profile(
     source_language_arg: Option<&str>,
     scaffold_defaults: &crate::kernel::PluginRuntimeScaffoldDefaults,
     declared_host_hooks: &[String],
+    declared_host_actions: &[String],
     declared_tui_surfaces: &[String],
 ) -> Option<NativeExtensionAuthoringProfileExecution> {
     let profile =
@@ -2268,8 +2307,9 @@ fn build_native_extension_authoring_profile(
             surface.as_str(),
         )
     });
-    let has_trusted_host_projection =
-        !declared_host_hooks.is_empty() || !declared_tui_surfaces.is_empty();
+    let has_trusted_host_projection = !declared_host_hooks.is_empty()
+        || !declared_host_actions.is_empty()
+        || !declared_tui_surfaces.is_empty();
     let example_package_root = if has_trusted_host_projection {
         trusted_host_example_package_root(source_language)
             .or_else(|| governed_native_example_package_root(source_language))
@@ -2301,6 +2341,7 @@ fn build_native_extension_authoring_profile(
                 .map(|value| (*value).to_owned())
                 .collect()
         },
+        host_actions: declared_host_actions.to_vec(),
         host_hooks: declared_host_hooks.to_vec(),
         tui_surfaces: declared_tui_surfaces.to_vec(),
         runtime_files: profile
@@ -2374,6 +2415,7 @@ fn build_plugin_scaffold_manifest(
     scaffold_defaults: &crate::kernel::PluginRuntimeScaffoldDefaults,
     capabilities: BTreeSet<Capability>,
     host_hooks: Vec<String>,
+    host_actions: Vec<String>,
     tui_surfaces: Vec<String>,
     process_stdio_profile: Option<
         crate::native_extension_authoring::ProcessStdioNativeExtensionLanguageProfile,
@@ -2412,7 +2454,7 @@ fn build_plugin_scaffold_manifest(
             "loong_extension_contract".to_owned(),
             crate::native_extension_authoring::PROCESS_STDIO_NATIVE_EXTENSION_CONTRACT.to_owned(),
         );
-        if !host_hooks.is_empty() || !tui_surfaces.is_empty() {
+        if !host_hooks.is_empty() || !host_actions.is_empty() || !tui_surfaces.is_empty() {
             metadata.insert(
                 "loong_extension_family".to_owned(),
                 crate::kernel::TRUSTED_HOST_EXTENSION_FAMILY.to_owned(),
@@ -2435,6 +2477,9 @@ fn build_plugin_scaffold_manifest(
             if !host_hooks.is_empty() {
                 facets.push("host_hooks".to_owned());
             }
+            if !host_actions.is_empty() {
+                facets.push("host_actions".to_owned());
+            }
             if !tui_surfaces.is_empty() {
                 facets.push("tui_surfaces".to_owned());
             }
@@ -2444,8 +2489,16 @@ fn build_plugin_scaffold_manifest(
             );
             metadata.insert(
                 "loong_extension_host_actions_json".to_owned(),
-                "[]".to_owned(),
+                serde_json::to_string(&host_actions).unwrap_or_else(|_| "[]".to_owned()),
             );
+            if let Some(host_action_specs_json) =
+                render_scaffold_host_action_specs_json(host_actions.as_slice())
+            {
+                metadata.insert(
+                    "loong_extension_host_action_specs_json".to_owned(),
+                    host_action_specs_json,
+                );
+            }
         } else {
             metadata.insert(
                 "loong_extension_family".to_owned(),
@@ -2642,6 +2695,33 @@ fn render_scaffold_host_hook_specs_json(host_hooks: &[String]) -> Option<String>
     serde_json::to_string(&specs).ok()
 }
 
+fn render_scaffold_host_action_specs_json(host_actions: &[String]) -> Option<String> {
+    if host_actions.is_empty() {
+        return None;
+    }
+
+    let specs = host_actions
+        .iter()
+        .map(|action| {
+            let human_label = humanize_tui_surface_identifier(action);
+            let summary = format!("Advertise the trusted host action `{action}`.");
+            (
+                action.clone(),
+                serde_json::json!({
+                    "label": human_label,
+                    "summary": summary,
+                    "sample_payload": {},
+                    "operator_hint": format!(
+                        "This action is contract-first today. Keep its semantics aligned in docs and operator surfaces until a concrete execution lane exists."
+                    ),
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    serde_json::to_string(&specs).ok()
+}
+
 fn render_scaffold_method_specs_json() -> Option<String> {
     let specs = BTreeMap::from([
         (
@@ -2826,7 +2906,7 @@ fn render_plugin_scaffold_readme(
     if has_native_extension_projection {
         lines.extend([
             String::new(),
-            "Keep `loong_extension_method_specs_json`, `loong_extension_host_hook_specs_json`, and `loong_extension_tui_surface_specs_json` aligned with each declared native extension method, trusted host hook, or trusted TUI surface so Loong can surface labels, summaries, sample payloads, and operator hints."
+            "Keep `loong_extension_method_specs_json`, `loong_extension_host_action_specs_json`, `loong_extension_host_hook_specs_json`, and `loong_extension_tui_surface_specs_json` aligned with each declared native extension method, host action, trusted host hook, or trusted TUI surface so Loong can surface labels, summaries, sample payloads, and operator hints."
                 .to_owned(),
         ]);
     }
@@ -3162,6 +3242,7 @@ fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> Strin
             || !native_extension.method_specs.is_empty()
             || !native_extension.events.is_empty()
             || !native_extension.event_specs.is_empty()
+            || !native_extension.host_actions.is_empty()
             || !native_extension.host_hooks.is_empty()
             || !native_extension.host_hook_specs.is_empty()
             || !native_extension.tui_surfaces.is_empty()
@@ -3169,7 +3250,7 @@ fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> Strin
             || !native_extension.metadata_issues.is_empty();
         if has_native_extension_projection {
             lines.push(format!(
-                "  native_extension contract={} family={} trust_lane={} methods={} method_specs={} events={} event_specs={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
+                "  native_extension contract={} family={} trust_lane={} methods={} method_specs={} events={} event_specs={} host_actions={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
                 display_text_or_dash(native_extension.contract.as_deref()),
                 display_text_or_dash(native_extension.family.as_deref()),
                 display_text_or_dash(native_extension.trust_lane.as_deref()),
@@ -3177,6 +3258,7 @@ fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> Strin
                 format_method_specs_or_dash(&native_extension.method_specs),
                 format_csv_or_dash(&native_extension.events),
                 format_event_specs_or_dash(&native_extension.event_specs),
+                format_csv_or_dash(&native_extension.host_actions),
                 format_csv_or_dash(&native_extension.host_hooks),
                 format_host_hook_specs_or_dash(&native_extension.host_hook_specs),
                 format_csv_or_dash(&native_extension.tui_surfaces),
@@ -3522,6 +3604,7 @@ fn render_plugin_doctor_result_lines(result: &PluginPreflightResult) -> Vec<Stri
         || !native_extension.method_specs.is_empty()
         || !native_extension.events.is_empty()
         || !native_extension.event_specs.is_empty()
+        || !native_extension.host_actions.is_empty()
         || !native_extension.host_hooks.is_empty()
         || !native_extension.host_hook_specs.is_empty()
         || !native_extension.tui_surfaces.is_empty()
@@ -3529,7 +3612,7 @@ fn render_plugin_doctor_result_lines(result: &PluginPreflightResult) -> Vec<Stri
         || !native_extension.metadata_issues.is_empty();
     if has_native_extension_projection {
         lines.push(format!(
-            "  native_extension contract={} family={} trust_lane={} methods={} method_specs={} events={} event_specs={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
+            "  native_extension contract={} family={} trust_lane={} methods={} method_specs={} events={} event_specs={} host_actions={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
             display_text_or_dash(native_extension.contract.as_deref()),
             display_text_or_dash(native_extension.family.as_deref()),
             display_text_or_dash(native_extension.trust_lane.as_deref()),
@@ -3537,6 +3620,7 @@ fn render_plugin_doctor_result_lines(result: &PluginPreflightResult) -> Vec<Stri
             format_method_specs_or_dash(&native_extension.method_specs),
             format_csv_or_dash(&native_extension.events),
             format_event_specs_or_dash(&native_extension.event_specs),
+            format_csv_or_dash(&native_extension.host_actions),
             format_csv_or_dash(&native_extension.host_hooks),
             format_host_hook_specs_or_dash(&native_extension.host_hook_specs),
             format_csv_or_dash(&native_extension.tui_surfaces),
@@ -5031,6 +5115,8 @@ mod tests {
                 "loong_extension_family": "trusted_host_extension",
                 "loong_extension_trust_lane": "trusted_host",
                 "loong_extension_methods_json": "[\"extension/event\"]",
+                "loong_extension_host_actions_json": "[\"open_settings\"]",
+                "loong_extension_host_action_specs_json": "{\"open_settings\":{\"label\":\"Open Settings\",\"summary\":\"Advertise the trusted host action `open_settings`.\",\"sample_payload\":{},\"operator_hint\":\"This action is contract-first today. Keep its semantics aligned in docs and operator surfaces until a concrete execution lane exists.\"}}",
                 "loong_extension_host_hooks_json": "[\"turn_start\",\"turn_end\"]",
                 "loong_extension_host_hook_specs_json": "{\"turn_start\":{\"label\":\"Turn Start\",\"summary\":\"Observe the start of a trusted host turn.\",\"sample_payload\":{\"turn_id\":\"demo-turn\"}},\"turn_end\":{\"label\":\"Turn End\",\"summary\":\"Observe the completion of a trusted host turn.\",\"sample_payload\":{\"turn_id\":\"demo-turn\",\"status\":\"ok\"}}}",
                 "loong_extension_tui_surfaces_json": "[\"command_palette\"]",
@@ -5334,6 +5420,15 @@ mod tests {
             "turn_start"
         );
         assert_eq!(
+            result.native_extension.host_actions,
+            vec!["open_settings".to_owned()]
+        );
+        assert_eq!(result.native_extension.host_action_specs.len(), 1);
+        assert_eq!(
+            result.native_extension.host_action_specs[0].action,
+            "open_settings"
+        );
+        assert_eq!(
             result.native_extension.tui_surfaces,
             vec!["command_palette".to_owned()]
         );
@@ -5355,6 +5450,7 @@ mod tests {
         assert!(rendered.contains("methods=extension/event"));
         assert!(rendered.contains("host_hooks=turn_start,turn_end"));
         assert!(rendered.contains("host_hook_specs=turn_start:Turn Start,turn_end:Turn End"));
+        assert!(rendered.contains("host_actions=open_settings"));
         assert!(rendered.contains("tui_surfaces=command_palette"));
         assert!(rendered.contains("tui_surface_specs=command_palette:Command Palette"));
         assert!(rendered.contains("authoring validate=loong plugins doctor --root"));
@@ -5374,6 +5470,14 @@ mod tests {
         assert_eq!(
             encoded["results"][0]["native_extension"]["host_hook_specs"][0]["hook"],
             serde_json::json!("turn_start")
+        );
+        assert_eq!(
+            encoded["results"][0]["native_extension"]["host_actions"],
+            serde_json::json!(["open_settings"])
+        );
+        assert_eq!(
+            encoded["results"][0]["native_extension"]["host_action_specs"][0]["action"],
+            serde_json::json!("open_settings")
         );
         assert_eq!(
             encoded["results"][0]["native_extension"]["tui_surfaces"],
@@ -5539,6 +5643,15 @@ mod tests {
             "turn_start"
         );
         assert_eq!(
+            result.native_extension.host_actions,
+            vec!["open_settings".to_owned()]
+        );
+        assert_eq!(result.native_extension.host_action_specs.len(), 1);
+        assert_eq!(
+            result.native_extension.host_action_specs[0].action,
+            "open_settings"
+        );
+        assert_eq!(
             result.native_extension.tui_surfaces,
             vec!["command_palette".to_owned()]
         );
@@ -5559,6 +5672,7 @@ mod tests {
         assert!(rendered.contains("trust_lane=trusted_host"));
         assert!(rendered.contains("host_hooks=turn_start,turn_end"));
         assert!(rendered.contains("host_hook_specs=turn_start:Turn Start,turn_end:Turn End"));
+        assert!(rendered.contains("host_actions=open_settings"));
         assert!(rendered.contains("tui_surfaces=command_palette"));
         assert!(rendered.contains("tui_surface_specs=command_palette:Command Palette"));
         assert!(rendered.contains("authoring validate=loong plugins doctor --root"));
@@ -5578,6 +5692,14 @@ mod tests {
         assert_eq!(
             encoded["results"][0]["plugin"]["native_extension"]["host_hook_specs"][0]["hook"],
             serde_json::json!("turn_start")
+        );
+        assert_eq!(
+            encoded["results"][0]["plugin"]["native_extension"]["host_actions"],
+            serde_json::json!(["open_settings"])
+        );
+        assert_eq!(
+            encoded["results"][0]["plugin"]["native_extension"]["host_action_specs"][0]["action"],
+            serde_json::json!("open_settings")
         );
         assert_eq!(
             encoded["results"][0]["plugin"]["native_extension"]["tui_surface_specs"][0]["surface"],
@@ -6290,6 +6412,7 @@ mod tests {
                 source_language: None,
                 capabilities: Vec::new(),
                 host_hooks: Vec::new(),
+                host_actions: Vec::new(),
                 tui_surfaces: Vec::new(),
                 version: "0.1.0".to_owned(),
                 summary: Some("Tavily-backed search package".to_owned()),
@@ -6414,6 +6537,7 @@ mod tests {
                 source_language: None,
                 capabilities: Vec::new(),
                 host_hooks: Vec::new(),
+                host_actions: Vec::new(),
                 tui_surfaces: Vec::new(),
                 version: "0.1.0".to_owned(),
                 summary: None,
@@ -6443,6 +6567,7 @@ mod tests {
                 source_language: None,
                 capabilities: Vec::new(),
                 host_hooks: Vec::new(),
+                host_actions: Vec::new(),
                 tui_surfaces: Vec::new(),
                 version: "not-semver".to_owned(),
                 summary: None,
@@ -6472,6 +6597,7 @@ mod tests {
                 source_language: Some("py".to_owned()),
                 capabilities: Vec::new(),
                 host_hooks: Vec::new(),
+                host_actions: Vec::new(),
                 tui_surfaces: Vec::new(),
                 version: "0.2.0".to_owned(),
                 summary: Some("Python weather bridge".to_owned()),
@@ -6744,6 +6870,7 @@ mod tests {
                     source_language: Some(spec.source_language_arg.to_owned()),
                     capabilities: Vec::new(),
                     host_hooks: Vec::new(),
+                    host_actions: Vec::new(),
                     tui_surfaces: Vec::new(),
                     version: "0.1.0".to_owned(),
                     summary: Some(spec.expected_summary.to_owned()),
@@ -6894,6 +7021,7 @@ mod tests {
                 source_language: Some("py".to_owned()),
                 capabilities: vec!["observe_telemetry".to_owned()],
                 host_hooks: Vec::new(),
+                host_actions: Vec::new(),
                 tui_surfaces: Vec::new(),
                 version: "0.2.0".to_owned(),
                 summary: Some("Python weather bridge".to_owned()),
@@ -7009,6 +7137,7 @@ mod tests {
                 source_language: Some("js".to_owned()),
                 capabilities: Vec::new(),
                 host_hooks: vec!["turn_start".to_owned()],
+                host_actions: vec!["open_settings".to_owned()],
                 tui_surfaces: vec!["command_palette".to_owned()],
                 version: "0.2.0".to_owned(),
                 summary: Some("Trusted host weather hook".to_owned()),
@@ -7048,6 +7177,13 @@ mod tests {
         assert_eq!(
             manifest
                 .metadata
+                .get("loong_extension_host_actions_json")
+                .map(String::as_str),
+            Some("[\"open_settings\"]")
+        );
+        assert_eq!(
+            manifest
+                .metadata
                 .get("loong_extension_tui_surfaces_json")
                 .map(String::as_str),
             Some("[\"command_palette\"]")
@@ -7062,6 +7198,12 @@ mod tests {
         assert!(
             manifest
                 .metadata
+                .contains_key("loong_extension_host_action_specs_json"),
+            "trusted host scaffold should emit trusted host action specs"
+        );
+        assert!(
+            manifest
+                .metadata
                 .contains_key("loong_extension_tui_surface_specs_json"),
             "trusted host scaffold should emit trusted TUI surface specs"
         );
@@ -7070,6 +7212,10 @@ mod tests {
         assert!(
             rendered_readme.contains("loong plugins run-tui-surface"),
             "README should mention the runtime-managed trusted TUI lane: {rendered_readme}"
+        );
+        assert!(
+            rendered_readme.contains("loong_extension_host_action_specs_json"),
+            "README should mention the trusted host action spec contract: {rendered_readme}"
         );
         assert!(
             rendered_readme.contains("loong_extension_tui_surface_specs_json"),
@@ -7094,6 +7240,7 @@ mod tests {
                 source_language: Some("js".to_owned()),
                 capabilities: Vec::new(),
                 host_hooks: vec!["turn_start".to_owned()],
+                host_actions: Vec::new(),
                 tui_surfaces: Vec::new(),
                 version: "0.2.0".to_owned(),
                 summary: Some("Trusted host weather hook".to_owned()),
@@ -7146,6 +7293,7 @@ mod tests {
                 source_language: Some("js".to_owned()),
                 capabilities: Vec::new(),
                 host_hooks: vec!["provider_request".to_owned()],
+                host_actions: Vec::new(),
                 tui_surfaces: Vec::new(),
                 version: "0.2.0".to_owned(),
                 summary: None,
@@ -7174,6 +7322,7 @@ mod tests {
                 source_language: Some("js".to_owned()),
                 capabilities: Vec::new(),
                 host_hooks: Vec::new(),
+                host_actions: Vec::new(),
                 tui_surfaces: vec!["Sidebar Widget".to_owned()],
                 version: "0.2.0".to_owned(),
                 summary: None,
@@ -7205,6 +7354,7 @@ mod tests {
                 source_language: None,
                 capabilities: Vec::new(),
                 host_hooks: Vec::new(),
+                host_actions: Vec::new(),
                 tui_surfaces: Vec::new(),
                 version: "0.1.0".to_owned(),
                 summary: None,
@@ -7538,6 +7688,12 @@ mod tests {
             assert!(
                 manifest
                     .metadata
+                    .contains_key("loong_extension_host_action_specs_json"),
+                "{plugin_id} should carry checked-in trusted host action specs"
+            );
+            assert!(
+                manifest
+                    .metadata
                     .contains_key("loong_extension_host_hook_specs_json"),
                 "{plugin_id} should carry checked-in trusted host hook specs"
             );
@@ -7738,6 +7894,14 @@ mod tests {
             assert!(
                 doc.contains("loong_extension_host_hook_specs_json"),
                 "doc should mention the trusted host hook spec metadata field"
+            );
+            assert!(
+                doc.contains("loong_extension_host_action_specs_json"),
+                "doc should mention the trusted host action spec metadata field"
+            );
+            assert!(
+                doc.contains("--host-action"),
+                "doc should mention the trusted host action scaffold flag"
             );
             assert!(
                 doc.contains("loong_extension_method_specs_json"),

@@ -566,6 +566,7 @@ fn render_runtime_plugins_lines(snapshot: &RuntimeSnapshotRuntimePluginsState) -
             || !native_extension.method_specs.is_empty()
             || !native_extension.events.is_empty()
             || !native_extension.event_specs.is_empty()
+            || !native_extension.host_actions.is_empty()
             || !native_extension.host_hooks.is_empty()
             || !native_extension.host_hook_specs.is_empty()
             || !native_extension.tui_surfaces.is_empty()
@@ -573,7 +574,7 @@ fn render_runtime_plugins_lines(snapshot: &RuntimeSnapshotRuntimePluginsState) -
             || !native_extension.metadata_issues.is_empty();
         if has_native_extension_projection {
             lines.push(format!(
-                "    native_extension contract={} family={} trust_lane={} methods={} method_specs={} events={} event_specs={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
+                "    native_extension contract={} family={} trust_lane={} methods={} method_specs={} events={} event_specs={} host_actions={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
                 crate::render_line_safe_optional_text_value(native_extension.contract.as_deref()),
                 crate::render_line_safe_optional_text_value(native_extension.family.as_deref()),
                 crate::render_line_safe_optional_text_value(native_extension.trust_lane.as_deref()),
@@ -593,6 +594,7 @@ fn render_runtime_plugins_lines(snapshot: &RuntimeSnapshotRuntimePluginsState) -
                         .map(|spec| spec.event.as_str()),
                     ",",
                 ),
+                crate::render_line_safe_text_values(native_extension.host_actions.iter().map(String::as_str), ","),
                 crate::render_line_safe_text_values(native_extension.host_hooks.iter().map(String::as_str), ","),
                 crate::render_line_safe_text_values(
                     native_extension

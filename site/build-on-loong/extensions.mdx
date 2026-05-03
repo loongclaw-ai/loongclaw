@@ -48,6 +48,9 @@ surfaces.
 Trusted host hooks can do the same through
 `loong_extension_host_hook_specs_json`.
 
+Trusted host actions can do the same through
+`loong_extension_host_action_specs_json`.
+
 Governed native runtime packages can do the same for
 `extension/event`, `extension/command`, and `extension/resource` through
 `loong_extension_method_specs_json`.
@@ -66,6 +69,7 @@ loong plugins init ./weather-host \
   --bridge-kind process_stdio \
   --source-language js \
   --host-hook turn_start \
+  --host-action open_settings \
   --capability observe_telemetry
 ```
 

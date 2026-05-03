@@ -6029,6 +6029,14 @@ fn render_extension_detail_lines_with_width(
         .as_ref()
         .map(|declarations| declarations.event_specs.clone())
         .unwrap_or_default();
+    let declared_host_actions = extension_declarations
+        .as_ref()
+        .map(|declarations| declarations.host_actions.clone())
+        .unwrap_or_default();
+    let trusted_host_action_specs = extension_declarations
+        .as_ref()
+        .map(|declarations| declarations.host_action_specs.clone())
+        .unwrap_or_default();
     let declared_host_hooks = extension_declarations
         .as_ref()
         .map(|declarations| declarations.host_hooks.clone())
@@ -6172,12 +6180,32 @@ fn render_extension_detail_lines_with_width(
                             values: declared_events,
                         },
                         TuiKeyValueSpec::Csv {
+                            key: "host actions".to_owned(),
+                            values: declared_host_actions,
+                        },
+                        TuiKeyValueSpec::Csv {
                             key: "tui surfaces".to_owned(),
                             values: declared_tui_surfaces.clone(),
                         },
                     ],
                 },
             ];
+            if !trusted_host_action_specs.is_empty() {
+                sections.push(TuiSectionSpec::KeyValues {
+                    title: Some("native extension host action specs".to_owned()),
+                    items: trusted_host_action_specs
+                        .iter()
+                        .map(|spec| {
+                            let label = spec.label.as_deref().unwrap_or(spec.action.as_str());
+                            let summary = spec.summary.as_deref().unwrap_or("declared");
+                            TuiKeyValueSpec::Plain {
+                                key: spec.action.clone(),
+                                value: format!("{label} · {summary}"),
+                            }
+                        })
+                        .collect(),
+                });
+            }
             if !trusted_event_specs.is_empty() {
                 sections.push(TuiSectionSpec::KeyValues {
                     title: Some("native extension event specs".to_owned()),
@@ -8170,6 +8198,14 @@ mod tests {
                     "{\"session_start\":{\"label\":\"Session Start\",\"summary\":\"Advertise that this extension handles session_start events.\",\"sample_payload\":{\"event\":\"session_start\"},\"operator_hint\":\"Probe this event through `loong plugins invoke-extension --root \\\"<package-root>\\\" --plugin-id \\\"<plugin-id>\\\" --method extension/event --payload '{\\\"event\\\":\\\"session_start\\\"}' --allow-command <allow-command>`.\"}}".to_owned(),
                 ),
                 (
+                    "loong_extension_host_actions_json".to_owned(),
+                    "[\"open_settings\"]".to_owned(),
+                ),
+                (
+                    "loong_extension_host_action_specs_json".to_owned(),
+                    "{\"open_settings\":{\"label\":\"Open Settings\",\"summary\":\"Advertise the trusted host action `open_settings`.\",\"sample_payload\":{},\"operator_hint\":\"This action is contract-first today. Keep its semantics aligned in docs and operator surfaces until a concrete execution lane exists.\"}}".to_owned(),
+                ),
+                (
                     "loong_extension_tui_surfaces_json".to_owned(),
                     "[\"command_palette\"]".to_owned(),
                 ),
@@ -8831,6 +8867,10 @@ mod tests {
         assert!(rendered.contains("command_palette"));
         assert!(rendered.contains("turn_start"));
         assert!(rendered.contains("package root"));
+        assert!(rendered.contains("host actions"));
+        assert!(rendered.contains("open_settings"));
+        assert!(rendered.contains("native extension host action specs"));
+        assert!(rendered.contains("Open Settings"));
         assert!(rendered.contains("trusted host hook specs"));
         assert!(rendered.contains("Turn Start"));
         assert!(rendered.contains("Observe the start of a trusted host turn."));

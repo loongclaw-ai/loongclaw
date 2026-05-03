@@ -56,7 +56,7 @@ For trusted host extensions, the shortest current loop is:
 
 1. scaffold the package:
    - `loong plugins init ... --bridge-kind process_stdio --source-language <lang>`
-   - add `--host-hook <hook>` and/or `--tui-surface <surface>` as needed
+   - add `--host-hook <hook>`, `--host-action <action>`, and/or `--tui-surface <surface>` as needed
    - add `--capability <name>` when the package needs additive capability intent beyond the default connector baseline
 2. inspect the generated smoke command from `plugins init`
 3. run `loong plugins inventory`
@@ -288,6 +288,10 @@ label, summary, sample payload, and operator hint.
 The same applies to trusted host hooks: keep
 `loong_extension_host_hook_specs_json` aligned with each declared hook's label,
 summary, sample payload, and operator hint.
+
+If a trusted package declares host actions, keep
+`loong_extension_host_action_specs_json` aligned with each action's label,
+summary, sample payload, and operator hint too.
 
 Scaffold them with one or more `--tui-surface` flags:
 

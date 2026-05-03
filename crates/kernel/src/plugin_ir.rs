@@ -114,11 +114,23 @@ pub struct PluginNativeExtensionDeclarations {
     pub method_specs: Vec<PluginNativeExtensionMethodSpec>,
     pub events: Vec<String>,
     pub event_specs: Vec<PluginNativeExtensionEventSpec>,
+    pub host_actions: Vec<String>,
+    pub host_action_specs: Vec<PluginNativeExtensionHostActionSpec>,
     pub host_hooks: Vec<String>,
     pub host_hook_specs: Vec<PluginTrustedHostHookSpec>,
     pub tui_surfaces: Vec<String>,
     pub tui_surface_specs: Vec<PluginTrustedTuiSurfaceSpec>,
     pub metadata_issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PluginNativeExtensionHostActionSpec {
+    pub action: String,
+    pub label: Option<String>,
+    pub summary: Option<String>,
+    pub sample_payload_json: Option<String>,
+    pub operator_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1517,6 +1529,16 @@ pub fn plugin_native_extension_declarations_from_metadata(
         "loong_extension_event_specs_json",
         &mut declarations.metadata_issues,
     );
+    declarations.host_actions = normalized_metadata_string_list_with_issue(
+        metadata,
+        "loong_extension_host_actions_json",
+        &mut declarations.metadata_issues,
+    );
+    declarations.host_action_specs = normalized_host_action_specs_with_issue(
+        metadata,
+        "loong_extension_host_action_specs_json",
+        &mut declarations.metadata_issues,
+    );
     declarations.host_hooks = normalized_metadata_string_list_with_issue(
         metadata,
         "loong_extension_host_hooks_json",
@@ -1544,16 +1566,21 @@ pub fn plugin_native_extension_declarations_from_metadata(
 fn validate_plugin_native_extension_declarations(
     declarations: &mut PluginNativeExtensionDeclarations,
 ) {
-    if declarations.methods.is_empty()
-        && declarations.events.is_empty()
-        && declarations.host_hooks.is_empty()
-        && declarations.tui_surfaces.is_empty()
-    {
+    let has_method_facets = !declarations.methods.is_empty() || !declarations.events.is_empty();
+    let has_trusted_host_facets = !declarations.host_actions.is_empty()
+        || !declarations.host_hooks.is_empty()
+        || !declarations.tui_surfaces.is_empty()
+        || !declarations.host_action_specs.is_empty()
+        || !declarations.host_hook_specs.is_empty()
+        || !declarations.tui_surface_specs.is_empty();
+
+    if !has_method_facets && !has_trusted_host_facets {
         return;
     }
 
-    if declarations.family.as_deref() != Some(TRUSTED_HOST_EXTENSION_FAMILY)
-        || declarations.trust_lane.as_deref() != Some(TRUSTED_HOST_EXTENSION_TRUST_LANE)
+    if has_trusted_host_facets
+        && (declarations.family.as_deref() != Some(TRUSTED_HOST_EXTENSION_FAMILY)
+            || declarations.trust_lane.as_deref() != Some(TRUSTED_HOST_EXTENSION_TRUST_LANE))
     {
         declarations.metadata_issues.push(format!(
             "trusted host declarations require loong_extension_family=`{TRUSTED_HOST_EXTENSION_FAMILY}` and loong_extension_trust_lane=`{TRUSTED_HOST_EXTENSION_TRUST_LANE}`"
@@ -1578,6 +1605,26 @@ fn validate_plugin_native_extension_declarations(
             declarations.metadata_issues.push(format!(
                 "native extension event spec `{}` requires a matching declaration in loong_extension_events_json",
                 spec.event
+            ));
+        }
+    }
+
+    for spec in &declarations.host_action_specs {
+        if !trusted_host_tui_surface_identifier_is_valid(spec.action.as_str()) {
+            declarations.metadata_issues.push(format!(
+                "invalid native extension host action spec `{}`; expected a lowercase identifier starting with a letter and using only a-z, 0-9, `_`, or `-`",
+                spec.action
+            ));
+            continue;
+        }
+        if !declarations
+            .host_actions
+            .iter()
+            .any(|action| action == &spec.action)
+        {
+            declarations.metadata_issues.push(format!(
+                "native extension host action spec `{}` requires a matching declaration in loong_extension_host_actions_json",
+                spec.action
             ));
         }
     }
@@ -1659,6 +1706,13 @@ fn validate_plugin_native_extension_declarations(
             .events
             .iter()
             .position(|event| event == &spec.event)
+            .unwrap_or(usize::MAX)
+    });
+    declarations.host_action_specs.sort_by_key(|spec| {
+        declarations
+            .host_actions
+            .iter()
+            .position(|action| action == &spec.action)
             .unwrap_or(usize::MAX)
     });
     declarations.tui_surface_specs.sort_by_key(|spec| {
@@ -1927,6 +1981,64 @@ fn normalized_event_specs_with_issue(
 
         specs.push(PluginNativeExtensionEventSpec {
             event,
+            label,
+            summary,
+            sample_payload_json,
+            operator_hint,
+        });
+    }
+
+    specs
+}
+
+fn normalized_host_action_specs_with_issue(
+    metadata: &BTreeMap<String, String>,
+    key: &str,
+    metadata_issues: &mut Vec<String>,
+) -> Vec<PluginNativeExtensionHostActionSpec> {
+    let Some(raw_value) = metadata.get(key) else {
+        return Vec::new();
+    };
+    if raw_value.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let parsed_specs = match serde_json::from_str::<BTreeMap<String, serde_json::Value>>(raw_value)
+    {
+        Ok(parsed_specs) => parsed_specs,
+        Err(error) => {
+            metadata_issues.push(format!(
+                "metadata `{key}` must be a JSON object keyed by native extension host action id: {error}"
+            ));
+            return Vec::new();
+        }
+    };
+
+    let mut specs = Vec::new();
+    for (action, spec_value) in parsed_specs {
+        let Some(spec_object) = spec_value.as_object() else {
+            metadata_issues.push(format!(
+                "native extension host action spec `{action}` in `{key}` must be a JSON object"
+            ));
+            continue;
+        };
+
+        let label = normalized_optional_json_string(spec_object.get("label"));
+        let summary = normalized_optional_json_string(spec_object.get("summary"));
+        let operator_hint = normalized_optional_json_string(spec_object.get("operator_hint"));
+        let sample_payload_json = spec_object
+            .get("sample_payload")
+            .map(serde_json::to_string)
+            .transpose()
+            .unwrap_or_else(|error| {
+                metadata_issues.push(format!(
+                    "native extension host action spec `{action}` in `{key}` has a non-serializable sample_payload: {error}"
+                ));
+                None
+            });
+
+        specs.push(PluginNativeExtensionHostActionSpec {
+            action,
             label,
             summary,
             sample_payload_json,
@@ -3831,6 +3943,14 @@ mod tests {
                 r#"{"session_start":{"label":"Session Start","summary":"Handle session_start events","sample_payload":{"event":"session_start"},"operator_hint":"Probe through extension/event."}}"#.to_owned(),
             ),
             (
+                "loong_extension_host_actions_json".to_owned(),
+                "[\"open_settings\"]".to_owned(),
+            ),
+            (
+                "loong_extension_host_action_specs_json".to_owned(),
+                r#"{"open_settings":{"label":"Open Settings","summary":"Request the host to open extension settings","sample_payload":{"section":"general"},"operator_hint":"Reserved for future host-action execution lanes."}}"#.to_owned(),
+            ),
+            (
                 "loong_extension_host_hooks_json".to_owned(),
                 "[\"turn_start\"]".to_owned(),
             ),
@@ -3867,6 +3987,9 @@ mod tests {
         assert_eq!(declarations.events, vec!["session_start".to_owned()]);
         assert_eq!(declarations.event_specs.len(), 1);
         assert_eq!(declarations.event_specs[0].event, "session_start");
+        assert_eq!(declarations.host_actions, vec!["open_settings".to_owned()]);
+        assert_eq!(declarations.host_action_specs.len(), 1);
+        assert_eq!(declarations.host_action_specs[0].action, "open_settings");
         assert_eq!(declarations.host_hook_specs.len(), 1);
         assert_eq!(declarations.host_hook_specs[0].hook, "turn_start");
         assert_eq!(
@@ -3956,6 +4079,62 @@ mod tests {
         assert!(declarations.metadata_issues.iter().any(|issue| {
             issue.contains(
                 "native extension event spec `turn_start` requires a matching declaration",
+            )
+        }));
+    }
+
+    #[test]
+    fn governed_native_extension_declarations_do_not_require_trusted_host_lane() {
+        let metadata = BTreeMap::from([
+            (
+                "loong_extension_family".to_owned(),
+                "governed_native_runtime_extension".to_owned(),
+            ),
+            (
+                "loong_extension_trust_lane".to_owned(),
+                "governed_sidecar".to_owned(),
+            ),
+            (
+                "loong_extension_methods_json".to_owned(),
+                "[\"extension/event\",\"extension/command\",\"extension/resource\"]".to_owned(),
+            ),
+            (
+                "loong_extension_method_specs_json".to_owned(),
+                r#"{"extension/event":{"label":"Extension Event"},"extension/command":{"label":"Extension Command"},"extension/resource":{"label":"Extension Resource"}}"#.to_owned(),
+            ),
+            (
+                "loong_extension_events_json".to_owned(),
+                "[\"session_start\"]".to_owned(),
+            ),
+            (
+                "loong_extension_event_specs_json".to_owned(),
+                r#"{"session_start":{"label":"Session Start"}}"#.to_owned(),
+            ),
+        ]);
+
+        let declarations = plugin_native_extension_declarations_from_metadata(&metadata);
+
+        assert!(declarations.metadata_issues.is_empty());
+    }
+
+    #[test]
+    fn plugin_native_extension_declarations_flag_undeclared_host_action_spec() {
+        let metadata = BTreeMap::from([
+            (
+                "loong_extension_host_actions_json".to_owned(),
+                "[\"open_settings\"]".to_owned(),
+            ),
+            (
+                "loong_extension_host_action_specs_json".to_owned(),
+                r#"{"open_workspace":{"label":"Open Workspace"}}"#.to_owned(),
+            ),
+        ]);
+
+        let declarations = plugin_native_extension_declarations_from_metadata(&metadata);
+
+        assert!(declarations.metadata_issues.iter().any(|issue| {
+            issue.contains(
+                "native extension host action spec `open_workspace` requires a matching declaration",
             )
         }));
     }

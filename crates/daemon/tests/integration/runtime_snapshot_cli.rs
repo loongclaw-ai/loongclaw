@@ -279,6 +279,8 @@ fn install_trusted_host_runtime_plugin_package(root: &Path, config_path: &Path) 
     "loong_extension_family": "trusted_host_extension",
     "loong_extension_trust_lane": "trusted_host",
     "loong_extension_methods_json": "[\"extension/event\"]",
+    "loong_extension_host_actions_json": "[\"open_settings\"]",
+    "loong_extension_host_action_specs_json": "{\"open_settings\":{\"label\":\"Open Settings\",\"summary\":\"Advertise the trusted host action `open_settings`.\",\"sample_payload\":{},\"operator_hint\":\"This action is contract-first today. Keep its semantics aligned in docs and operator surfaces until a concrete execution lane exists.\"}}",
     "loong_extension_host_hooks_json": "[\"turn_start\",\"turn_end\"]",
     "loong_extension_host_hook_specs_json": "{\"turn_start\":{\"label\":\"Turn Start\",\"summary\":\"Observe the start of a trusted host turn.\",\"sample_payload\":{\"turn_id\":\"demo-turn\"}},\"turn_end\":{\"label\":\"Turn End\",\"summary\":\"Observe the completion of a trusted host turn.\",\"sample_payload\":{\"turn_id\":\"demo-turn\",\"status\":\"ok\"}}}",
     "loong_extension_tui_surfaces_json": "[\"command_palette\"]",
@@ -580,6 +582,14 @@ fn runtime_snapshot_json_payload_projects_trusted_host_extension_declarations() 
     assert_eq!(
         plugin["native_extension"]["host_hook_specs"][0]["hook"],
         serde_json::json!("turn_start")
+    );
+    assert_eq!(
+        plugin["native_extension"]["host_actions"],
+        serde_json::json!(["open_settings"])
+    );
+    assert_eq!(
+        plugin["native_extension"]["host_action_specs"][0]["action"],
+        serde_json::json!("open_settings")
     );
     assert_eq!(
         plugin["native_extension"]["tui_surfaces"],
@@ -968,6 +978,7 @@ fn runtime_snapshot_text_projects_trusted_host_extension_declarations() {
     assert!(rendered.contains("family=trusted_host_extension"));
     assert!(rendered.contains("trust_lane=trusted_host"));
     assert!(rendered.contains("methods=extension/event"));
+    assert!(rendered.contains("host_actions=open_settings"));
     assert!(rendered.contains("host_hooks=turn_start,turn_end"));
     assert!(rendered.contains("host_hook_specs=turn_start,turn_end"));
     assert!(rendered.contains("tui_surfaces=command_palette"));
