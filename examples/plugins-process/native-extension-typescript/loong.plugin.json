@@ -4,7 +4,9 @@
   "plugin_id": "native-extension-typescript-example",
   "provider_id": "native-extension-typescript-example",
   "connector_name": "native-extension-typescript-example",
-  "capabilities": ["InvokeConnector"],
+  "capabilities": [
+    "InvokeConnector"
+  ],
   "metadata": {
     "bridge_kind": "process_stdio",
     "adapter_family": "typescript-stdio-adapter",
@@ -18,13 +20,19 @@
     "loong_extension_trust_lane": "governed_sidecar",
     "loong_extension_facets_json": "[\"events\",\"commands\",\"resources\"]",
     "loong_extension_methods_json": "[\"extension/event\",\"extension/command\",\"extension/resource\"]",
+    "loong_extension_method_specs_json": "{\"extension/command\":{\"label\":\"Extension Command\",\"operator_hint\":\"Probe this method with `loong plugins invoke-extension --root \\\"<package-root>\\\" --plugin-id \\\"<plugin-id>\\\" --method extension/command --payload '{\\\"command_name\\\":\\\"extension\\\"}' --allow-command <allow-command>`.\",\"sample_payload\":{\"command_name\":\"extension\"},\"summary\":\"Handle command-style extension requests that return text or structured results.\"},\"extension/event\":{\"label\":\"Extension Event\",\"operator_hint\":\"Probe this method with `loong plugins invoke-extension --root \\\"<package-root>\\\" --plugin-id \\\"<plugin-id>\\\" --method extension/event --payload '{\\\"event\\\":\\\"session_start\\\"}' --allow-command <allow-command>`.\",\"sample_payload\":{\"event\":\"session_start\"},\"summary\":\"Handle structured runtime events such as session_start.\"},\"extension/resource\":{\"label\":\"Extension Resource\",\"operator_hint\":\"Probe this method with `loong plugins invoke-extension --root \\\"<package-root>\\\" --plugin-id \\\"<plugin-id>\\\" --method extension/resource --payload '{}' --allow-command <allow-command>`.\",\"sample_payload\":{},\"summary\":\"Advertise extension resources such as commands and tools.\"}}",
     "loong_extension_events_json": "[\"session_start\"]",
     "loong_extension_host_hooks_json": "[]",
     "loong_extension_host_actions_json": "[]",
     "loong_extension_tui_surfaces_json": "[]"
   },
   "summary": "Minimal manifest-first TypeScript native extension example",
-  "tags": ["example", "native-extension", "process-stdio", "typescript"],
+  "tags": [
+    "example",
+    "native-extension",
+    "process-stdio",
+    "typescript"
+  ],
   "compatibility": {
     "host_api": "loong-plugin/v1",
     "host_version_req": ">=0.1.2-alpha.1"

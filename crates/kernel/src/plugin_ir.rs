@@ -111,11 +111,22 @@ pub struct PluginNativeExtensionDeclarations {
     pub family: Option<String>,
     pub trust_lane: Option<String>,
     pub methods: Vec<String>,
+    pub method_specs: Vec<PluginNativeExtensionMethodSpec>,
     pub host_hooks: Vec<String>,
     pub host_hook_specs: Vec<PluginTrustedHostHookSpec>,
     pub tui_surfaces: Vec<String>,
     pub tui_surface_specs: Vec<PluginTrustedTuiSurfaceSpec>,
     pub metadata_issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PluginNativeExtensionMethodSpec {
+    pub method: String,
+    pub label: Option<String>,
+    pub summary: Option<String>,
+    pub sample_payload_json: Option<String>,
+    pub operator_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1479,6 +1490,11 @@ pub fn plugin_native_extension_declarations_from_metadata(
         "loong_extension_methods_json",
         &mut declarations.metadata_issues,
     );
+    declarations.method_specs = normalized_method_specs_with_issue(
+        metadata,
+        "loong_extension_method_specs_json",
+        &mut declarations.metadata_issues,
+    );
     declarations.host_hooks = normalized_metadata_string_list_with_issue(
         metadata,
         "loong_extension_host_hooks_json",
@@ -1506,7 +1522,10 @@ pub fn plugin_native_extension_declarations_from_metadata(
 fn validate_plugin_native_extension_declarations(
     declarations: &mut PluginNativeExtensionDeclarations,
 ) {
-    if declarations.host_hooks.is_empty() && declarations.tui_surfaces.is_empty() {
+    if declarations.methods.is_empty()
+        && declarations.host_hooks.is_empty()
+        && declarations.tui_surfaces.is_empty()
+    {
         return;
     }
 
@@ -1516,6 +1535,19 @@ fn validate_plugin_native_extension_declarations(
         declarations.metadata_issues.push(format!(
             "trusted host declarations require loong_extension_family=`{TRUSTED_HOST_EXTENSION_FAMILY}` and loong_extension_trust_lane=`{TRUSTED_HOST_EXTENSION_TRUST_LANE}`"
         ));
+    }
+
+    for spec in &declarations.method_specs {
+        if !declarations
+            .methods
+            .iter()
+            .any(|method| method == &spec.method)
+        {
+            declarations.metadata_issues.push(format!(
+                "native extension method spec `{}` requires a matching declaration in loong_extension_methods_json",
+                spec.method
+            ));
+        }
     }
 
     for hook in &declarations.host_hooks {
@@ -1581,6 +1613,13 @@ fn validate_plugin_native_extension_declarations(
             .host_hooks
             .iter()
             .position(|hook| hook == &spec.hook)
+            .unwrap_or(usize::MAX)
+    });
+    declarations.method_specs.sort_by_key(|spec| {
+        declarations
+            .methods
+            .iter()
+            .position(|method| method == &spec.method)
             .unwrap_or(usize::MAX)
     });
     declarations.tui_surface_specs.sort_by_key(|spec| {
@@ -1733,6 +1772,64 @@ fn normalized_host_hook_specs_with_issue(
 
         specs.push(PluginTrustedHostHookSpec {
             hook,
+            label,
+            summary,
+            sample_payload_json,
+            operator_hint,
+        });
+    }
+
+    specs
+}
+
+fn normalized_method_specs_with_issue(
+    metadata: &BTreeMap<String, String>,
+    key: &str,
+    metadata_issues: &mut Vec<String>,
+) -> Vec<PluginNativeExtensionMethodSpec> {
+    let Some(raw_value) = metadata.get(key) else {
+        return Vec::new();
+    };
+    if raw_value.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let parsed_specs = match serde_json::from_str::<BTreeMap<String, serde_json::Value>>(raw_value)
+    {
+        Ok(parsed_specs) => parsed_specs,
+        Err(error) => {
+            metadata_issues.push(format!(
+                "metadata `{key}` must be a JSON object keyed by native extension method id: {error}"
+            ));
+            return Vec::new();
+        }
+    };
+
+    let mut specs = Vec::new();
+    for (method, spec_value) in parsed_specs {
+        let Some(spec_object) = spec_value.as_object() else {
+            metadata_issues.push(format!(
+                "native extension method spec `{method}` in `{key}` must be a JSON object"
+            ));
+            continue;
+        };
+
+        let label = normalized_optional_json_string(spec_object.get("label"));
+        let summary = normalized_optional_json_string(spec_object.get("summary"));
+        let operator_hint = normalized_optional_json_string(spec_object.get("operator_hint"));
+        let sample_payload_json = spec_object
+            .get("sample_payload")
+            .map(serde_json::to_string)
+            .transpose()
+            .unwrap_or_else(|error| {
+                metadata_issues.push(format!(
+                    "native extension method spec `{method}` in `{key}` has a non-serializable sample_payload: {error}"
+                ));
+                None
+            });
+
+        specs.push(PluginNativeExtensionMethodSpec {
+            method,
             label,
             summary,
             sample_payload_json,
@@ -3625,6 +3722,10 @@ mod tests {
                 "[\"extension/event\"]".to_owned(),
             ),
             (
+                "loong_extension_method_specs_json".to_owned(),
+                r#"{"extension/event":{"label":"Extension Event","summary":"Handle extension events","sample_payload":{"event":"session_start"},"operator_hint":"Probe with loong plugins invoke-extension."}}"#.to_owned(),
+            ),
+            (
                 "loong_extension_host_hooks_json".to_owned(),
                 "[\"turn_start\"]".to_owned(),
             ),
@@ -3656,6 +3757,8 @@ mod tests {
             declarations.tui_surfaces,
             vec!["command_palette".to_owned()]
         );
+        assert_eq!(declarations.method_specs.len(), 1);
+        assert_eq!(declarations.method_specs[0].method, "extension/event");
         assert_eq!(declarations.host_hook_specs.len(), 1);
         assert_eq!(declarations.host_hook_specs[0].hook, "turn_start");
         assert_eq!(
@@ -3702,6 +3805,28 @@ mod tests {
 
         assert!(declarations.metadata_issues.iter().any(|issue| {
             issue.contains("trusted host hook spec `turn_end` requires a matching declaration")
+        }));
+    }
+
+    #[test]
+    fn plugin_native_extension_declarations_flag_undeclared_method_spec() {
+        let metadata = BTreeMap::from([
+            (
+                "loong_extension_methods_json".to_owned(),
+                "[\"extension/event\"]".to_owned(),
+            ),
+            (
+                "loong_extension_method_specs_json".to_owned(),
+                r#"{"extension/command":{"label":"Extension Command"}}"#.to_owned(),
+            ),
+        ]);
+
+        let declarations = plugin_native_extension_declarations_from_metadata(&metadata);
+
+        assert!(declarations.metadata_issues.iter().any(|issue| {
+            issue.contains(
+                "native extension method spec `extension/command` requires a matching declaration",
+            )
         }));
     }
 

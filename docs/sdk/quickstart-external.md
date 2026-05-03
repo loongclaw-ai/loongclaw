@@ -207,6 +207,11 @@ For the current public lane, the scaffold also declares:
 - `loong_extension_family=governed_native_runtime_extension`
 - `loong_extension_trust_lane=governed_sidecar`
 
+For governed native packages, keep `loong_extension_method_specs_json` aligned
+with each declared method so Loong can explain `extension/event`,
+`extension/command`, and `extension/resource` with shared labels, summaries,
+sample payloads, and operator hints.
+
 The scaffold also reserves:
 
 - `loong_extension_host_hooks_json=[]`

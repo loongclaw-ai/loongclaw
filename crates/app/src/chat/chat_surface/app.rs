@@ -6013,6 +6013,14 @@ fn render_extension_detail_lines_with_width(
         .as_ref()
         .map(|declarations| declarations.tui_surfaces.clone())
         .unwrap_or_default();
+    let declared_methods = extension_declarations
+        .as_ref()
+        .map(|declarations| declarations.methods.clone())
+        .unwrap_or_default();
+    let trusted_method_specs = extension_declarations
+        .as_ref()
+        .map(|declarations| declarations.method_specs.clone())
+        .unwrap_or_default();
     let declared_host_hooks = extension_declarations
         .as_ref()
         .map(|declarations| declarations.host_hooks.clone())
@@ -6080,10 +6088,23 @@ fn render_extension_detail_lines_with_width(
             })
     }));
     if declared_host_hooks.is_empty() && declared_tui_surfaces.is_empty() {
+        let fallback_method = trusted_method_specs
+            .iter()
+            .find(|spec| spec.method == "extension/event")
+            .or_else(|| trusted_method_specs.first())
+            .map(|spec| spec.method.as_str())
+            .or_else(|| declared_methods.first().map(String::as_str))
+            .unwrap_or("extension/event");
+        let fallback_payload =
+            trusted_method_spec(trusted_method_specs.as_slice(), fallback_method)
+                .and_then(|spec| spec.sample_payload_json.as_deref())
+                .unwrap_or("{}");
         footer_lines.push(format!(
-            "No trusted host probes declared. Use `loong plugins invoke-extension --root \"{}\" --plugin-id \"{}\" --method extension/event --payload '{{}}' --allow-command {}` to smoke-test the runtime bridge directly.",
+            "No trusted host probes declared. Use `loong plugins invoke-extension --root \"{}\" --plugin-id \"{}\" --method {} --payload '{}' --allow-command {}` to smoke-test the runtime bridge directly.",
             entry.package_root,
             entry.plugin_id,
+            fallback_method,
+            fallback_payload,
             allow_command_hint,
         ));
     }
@@ -6130,12 +6151,32 @@ fn render_extension_detail_lines_with_width(
                             values: declared_host_hooks,
                         },
                         TuiKeyValueSpec::Csv {
+                            key: "methods".to_owned(),
+                            values: declared_methods,
+                        },
+                        TuiKeyValueSpec::Csv {
                             key: "tui surfaces".to_owned(),
                             values: declared_tui_surfaces.clone(),
                         },
                     ],
                 },
             ];
+            if !trusted_method_specs.is_empty() {
+                sections.push(TuiSectionSpec::KeyValues {
+                    title: Some("native extension method specs".to_owned()),
+                    items: trusted_method_specs
+                        .iter()
+                        .map(|spec| {
+                            let label = spec.label.as_deref().unwrap_or(spec.method.as_str());
+                            let summary = spec.summary.as_deref().unwrap_or("declared");
+                            TuiKeyValueSpec::Plain {
+                                key: spec.method.clone(),
+                                value: format!("{label} · {summary}"),
+                            }
+                        })
+                        .collect(),
+                });
+            }
             if !trusted_tui_surface_specs.is_empty() {
                 sections.push(TuiSectionSpec::KeyValues {
                     title: Some("trusted TUI surface specs".to_owned()),
@@ -6240,6 +6281,14 @@ fn trusted_host_hook_spec<'a>(
     hook: &str,
 ) -> Option<&'a loong_kernel::PluginTrustedHostHookSpec> {
     specs.iter().find(|spec| spec.hook == hook)
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn trusted_method_spec<'a>(
+    specs: &'a [loong_kernel::PluginNativeExtensionMethodSpec],
+    method: &str,
+) -> Option<&'a loong_kernel::PluginNativeExtensionMethodSpec> {
+    specs.iter().find(|spec| spec.method == method)
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -8072,6 +8121,14 @@ mod tests {
                     "{\"turn_start\":{\"label\":\"Turn Start\",\"summary\":\"Observe the start of a trusted host turn.\",\"sample_payload\":{\"turn_id\":\"demo-turn\"},\"operator_hint\":\"Probe this hook with `loong plugins invoke-host-hook --root \\\"<package-root>\\\" --plugin-id \\\"<plugin-id>\\\" --hook turn_start --payload '{}' --allow-command <allow-command>` before relying on automatic runtime dispatch.\"}}".to_owned(),
                 ),
                 (
+                    "loong_extension_methods_json".to_owned(),
+                    "[\"extension/event\"]".to_owned(),
+                ),
+                (
+                    "loong_extension_method_specs_json".to_owned(),
+                    "{\"extension/event\":{\"label\":\"Extension Event\",\"summary\":\"Handle structured runtime events such as session_start.\",\"sample_payload\":{\"event\":\"session_start\"},\"operator_hint\":\"Probe this method with `loong plugins invoke-extension --root \\\"<package-root>\\\" --plugin-id \\\"<plugin-id>\\\" --method extension/event --payload '{\\\"event\\\":\\\"session_start\\\"}' --allow-command <allow-command>`.\"}}".to_owned(),
+                ),
+                (
                     "loong_extension_tui_surfaces_json".to_owned(),
                     "[\"command_palette\"]".to_owned(),
                 ),
@@ -9012,7 +9069,10 @@ printf '{"plugin_id":"weather-extension","tui_surface":"%s","response_payload":{
 
         assert!(rendered.contains("No trusted host probes declared"));
         assert!(rendered.contains("invoke-extension"));
+        assert!(rendered.contains("native extension method specs"));
+        assert!(rendered.contains("Extension Event"));
         assert!(rendered.contains("--method extension/event"));
+        assert!(rendered.contains("{\"event\":\"session_start\"}"));
 
         let _ = fs::remove_dir_all(root);
     }

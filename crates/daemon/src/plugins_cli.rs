@@ -1629,7 +1629,7 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         operator_actions_command.as_str(),
         smoke_test_command.as_deref(),
         runtime_execute_command.as_deref(),
-        !declared_host_hooks.is_empty() || !declared_tui_surfaces.is_empty(),
+        process_stdio_profile.is_some(),
         native_extension_authoring_profile
             .as_ref()
             .map(|profile| profile.reference_example_path.as_str()),
@@ -2483,6 +2483,12 @@ fn build_plugin_scaffold_manifest(
                 "loong_extension_host_actions_json".to_owned(),
                 "[]".to_owned(),
             );
+            if let Some(method_specs_json) = render_scaffold_method_specs_json() {
+                metadata.insert(
+                    "loong_extension_method_specs_json".to_owned(),
+                    method_specs_json,
+                );
+            }
         }
         metadata.insert(
             "loong_extension_host_hooks_json".to_owned(),
@@ -2628,6 +2634,40 @@ fn render_scaffold_host_hook_specs_json(host_hooks: &[String]) -> Option<String>
     serde_json::to_string(&specs).ok()
 }
 
+fn render_scaffold_method_specs_json() -> Option<String> {
+    let specs = BTreeMap::from([
+        (
+            "extension/event".to_owned(),
+            serde_json::json!({
+                "label": "Extension Event",
+                "summary": "Handle structured runtime events such as session_start.",
+                "sample_payload": {"event":"session_start"},
+                "operator_hint": "Probe this method with `loong plugins invoke-extension --root \"<package-root>\" --plugin-id \"<plugin-id>\" --method extension/event --payload '{\"event\":\"session_start\"}' --allow-command <allow-command>`."
+            }),
+        ),
+        (
+            "extension/command".to_owned(),
+            serde_json::json!({
+                "label": "Extension Command",
+                "summary": "Handle command-style extension requests that return text or structured results.",
+                "sample_payload": {"command_name":"extension"},
+                "operator_hint": "Probe this method with `loong plugins invoke-extension --root \"<package-root>\" --plugin-id \"<plugin-id>\" --method extension/command --payload '{\"command_name\":\"extension\"}' --allow-command <allow-command>`."
+            }),
+        ),
+        (
+            "extension/resource".to_owned(),
+            serde_json::json!({
+                "label": "Extension Resource",
+                "summary": "Advertise extension resources such as commands and tools.",
+                "sample_payload": {},
+                "operator_hint": "Probe this method with `loong plugins invoke-extension --root \"<package-root>\" --plugin-id \"<plugin-id>\" --method extension/resource --payload '{}' --allow-command <allow-command>`."
+            }),
+        ),
+    ]);
+
+    serde_json::to_string(&specs).ok()
+}
+
 fn humanize_tui_surface_identifier(surface: &str) -> String {
     let mut label = String::new();
     let mut capitalize_next = true;
@@ -2685,7 +2725,7 @@ fn render_plugin_scaffold_readme(
     operator_actions_command: &str,
     smoke_test_command: Option<&str>,
     runtime_execute_command: Option<&str>,
-    has_trusted_surface_projection: bool,
+    has_native_extension_projection: bool,
     reference_example_path: Option<&str>,
 ) -> String {
     let runtime_files_summary = match runtime_files {
@@ -2740,10 +2780,10 @@ fn render_plugin_scaffold_readme(
         operator_actions_command.to_owned(),
         "```".to_owned(),
     ];
-    if has_trusted_surface_projection {
+    if has_native_extension_projection {
         lines.extend([
             String::new(),
-            "Keep `loong_extension_host_hook_specs_json` and `loong_extension_tui_surface_specs_json` aligned with each declared trusted host hook or TUI surface so Loong can surface labels, summaries, sample payloads, and operator hints."
+            "Keep `loong_extension_method_specs_json`, `loong_extension_host_hook_specs_json`, and `loong_extension_tui_surface_specs_json` aligned with each declared native extension method, trusted host hook, or trusted TUI surface so Loong can surface labels, summaries, sample payloads, and operator hints."
                 .to_owned(),
         ]);
     }
@@ -3076,6 +3116,7 @@ fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> Strin
             || native_extension.family.is_some()
             || native_extension.trust_lane.is_some()
             || !native_extension.methods.is_empty()
+            || !native_extension.method_specs.is_empty()
             || !native_extension.host_hooks.is_empty()
             || !native_extension.host_hook_specs.is_empty()
             || !native_extension.tui_surfaces.is_empty()
@@ -3083,11 +3124,12 @@ fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> Strin
             || !native_extension.metadata_issues.is_empty();
         if has_native_extension_projection {
             lines.push(format!(
-                "  native_extension contract={} family={} trust_lane={} methods={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
+                "  native_extension contract={} family={} trust_lane={} methods={} method_specs={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
                 display_text_or_dash(native_extension.contract.as_deref()),
                 display_text_or_dash(native_extension.family.as_deref()),
                 display_text_or_dash(native_extension.trust_lane.as_deref()),
                 format_csv_or_dash(&native_extension.methods),
+                format_method_specs_or_dash(&native_extension.method_specs),
                 format_csv_or_dash(&native_extension.host_hooks),
                 format_host_hook_specs_or_dash(&native_extension.host_hook_specs),
                 format_csv_or_dash(&native_extension.tui_surfaces),
@@ -3430,6 +3472,7 @@ fn render_plugin_doctor_result_lines(result: &PluginPreflightResult) -> Vec<Stri
         || native_extension.family.is_some()
         || native_extension.trust_lane.is_some()
         || !native_extension.methods.is_empty()
+        || !native_extension.method_specs.is_empty()
         || !native_extension.host_hooks.is_empty()
         || !native_extension.host_hook_specs.is_empty()
         || !native_extension.tui_surfaces.is_empty()
@@ -3437,11 +3480,12 @@ fn render_plugin_doctor_result_lines(result: &PluginPreflightResult) -> Vec<Stri
         || !native_extension.metadata_issues.is_empty();
     if has_native_extension_projection {
         lines.push(format!(
-            "  native_extension contract={} family={} trust_lane={} methods={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
+            "  native_extension contract={} family={} trust_lane={} methods={} method_specs={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
             display_text_or_dash(native_extension.contract.as_deref()),
             display_text_or_dash(native_extension.family.as_deref()),
             display_text_or_dash(native_extension.trust_lane.as_deref()),
             format_csv_or_dash(&native_extension.methods),
+            format_method_specs_or_dash(&native_extension.method_specs),
             format_csv_or_dash(&native_extension.host_hooks),
             format_host_hook_specs_or_dash(&native_extension.host_hook_specs),
             format_csv_or_dash(&native_extension.tui_surfaces),
@@ -4557,6 +4601,21 @@ fn format_host_hook_specs_or_dash(specs: &[crate::kernel::PluginTrustedHostHookS
         .map(|spec| match spec.label.as_deref() {
             Some(label) => format!("{}:{}", spec.hook, label),
             None => spec.hook.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn format_method_specs_or_dash(specs: &[crate::kernel::PluginNativeExtensionMethodSpec]) -> String {
+    if specs.is_empty() {
+        return "-".to_owned();
+    }
+
+    specs
+        .iter()
+        .map(|spec| match spec.label.as_deref() {
+            Some(label) => format!("{}:{}", spec.method, label),
+            None => spec.method.clone(),
         })
         .collect::<Vec<_>>()
         .join(",")
@@ -6466,6 +6525,12 @@ mod tests {
                 .map(String::as_str),
             Some("process_stdio_json_line_v1")
         );
+        assert!(
+            manifest
+                .metadata
+                .contains_key("loong_extension_method_specs_json"),
+            "governed process stdio scaffold should emit method specs"
+        );
         assert_eq!(
             manifest
                 .metadata
@@ -6492,6 +6557,10 @@ mod tests {
         assert!(
             rendered_readme.contains("index.py"),
             "README should mention the scaffolded runtime file: {rendered_readme}"
+        );
+        assert!(
+            rendered_readme.contains("loong_extension_method_specs_json"),
+            "README should mention the governed method spec contract: {rendered_readme}"
         );
 
         let scanner = crate::kernel::PluginScanner::new();
@@ -7603,6 +7672,10 @@ mod tests {
             assert!(
                 doc.contains("loong_extension_host_hook_specs_json"),
                 "doc should mention the trusted host hook spec metadata field"
+            );
+            assert!(
+                doc.contains("loong_extension_method_specs_json"),
+                "doc should mention the governed method spec metadata field"
             );
         }
     }
