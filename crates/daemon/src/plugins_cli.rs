@@ -1298,10 +1298,25 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         declared_tui_surfaces.as_slice(),
     );
     let rendered_readme = render_plugin_scaffold_readme(
-        package_root.as_str(),
         plugin_id.as_str(),
         bridge_kind.as_str(),
+        process_stdio_profile
+            .map(|profile| {
+                profile
+                    .scaffold_files
+                    .iter()
+                    .map(|file| file.relative_path)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+            .as_slice(),
+        doctor_command.as_str(),
+        inventory_command.as_str(),
+        operator_actions_command.as_str(),
         smoke_test_command.as_deref(),
+        native_extension_authoring_profile
+            .as_ref()
+            .map(|profile| profile.reference_example_path.as_str()),
     );
 
     let runtime_files_written = write_plugin_scaffold_files(
@@ -2172,15 +2187,31 @@ fn plugin_scaffold_manifest_document(
 }
 
 fn render_plugin_scaffold_readme(
-    package_root: &str,
     plugin_id: &str,
     bridge_kind: &str,
+    runtime_files: &[&str],
+    doctor_command: &str,
+    inventory_command: &str,
+    operator_actions_command: &str,
     smoke_test_command: Option<&str>,
+    reference_example_path: Option<&str>,
 ) -> String {
-    let doctor_command =
-        format!("loong plugins doctor --root \"{package_root}\" --profile sdk-release");
-    let actions_command =
-        format!("loong plugins actions --root \"{package_root}\" --profile sdk-release");
+    let runtime_files_summary = match runtime_files {
+        [] => format!(
+            "1. Replace the scaffolded bridge entrypoint in `{PACKAGE_MANIFEST_FILE_NAME}` with the real runtime entry for your package."
+        ),
+        [single] => format!(
+            "1. Replace the scaffolded runtime file `{single}` with your implementation. If you rename it, keep `command` and `args_json` in `{PACKAGE_MANIFEST_FILE_NAME}` aligned."
+        ),
+        multiple => format!(
+            "1. Replace the scaffolded runtime files {} with your implementation. If you rename them, keep `command` and `args_json` in `{PACKAGE_MANIFEST_FILE_NAME}` aligned.",
+            multiple
+                .iter()
+                .map(|value| format!("`{value}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
 
     let mut lines = vec![
         format!("# {plugin_id}"),
@@ -2193,9 +2224,7 @@ fn render_plugin_scaffold_readme(
         String::new(),
         "## Next Steps".to_owned(),
         String::new(),
-        format!(
-            "1. Replace the scaffolded bridge entrypoint in `{PACKAGE_MANIFEST_FILE_NAME}` with the real runtime entry for your package."
-        ),
+        runtime_files_summary,
         format!(
             "2. Fill in `summary`, `setup`, `slot_claims`, `tags`, and examples in `{PACKAGE_MANIFEST_FILE_NAME}` as your package contract becomes concrete."
         ),
@@ -2203,20 +2232,34 @@ fn render_plugin_scaffold_readme(
             .to_owned(),
         String::new(),
         "```bash".to_owned(),
-        doctor_command,
+        doctor_command.to_owned(),
         "```".to_owned(),
         String::new(),
-        "4. Review the deduplicated operator action plan before release or marketplace handoff:"
+        "4. Inspect the package truth that Loong sees before execution:".to_owned(),
+        String::new(),
+        "```bash".to_owned(),
+        inventory_command.to_owned(),
+        "```".to_owned(),
+        String::new(),
+        "5. Review the deduplicated operator action plan before release or marketplace handoff:"
             .to_owned(),
         String::new(),
         "```bash".to_owned(),
-        actions_command,
+        operator_actions_command.to_owned(),
         "```".to_owned(),
     ];
+    if let Some(reference_example_path) = reference_example_path {
+        lines.extend([
+            String::new(),
+            format!(
+                "Compare your package against the checked-in reference package at `{reference_example_path}/`."
+            ),
+        ]);
+    }
     if let Some(smoke_test_command) = smoke_test_command {
         lines.extend([
             String::new(),
-            "5. Run the bounded runtime smoke probe before iterating on the package implementation:"
+            "6. Run the bounded runtime smoke probe before iterating on the package implementation:"
                 .to_owned(),
             String::new(),
             "```bash".to_owned(),
@@ -5706,6 +5749,8 @@ mod tests {
             fs::read_to_string(&execution.manifest_path).expect("manifest should exist");
         let manifest: crate::kernel::PluginManifest =
             serde_json::from_str(&rendered_manifest).expect("manifest should decode");
+        let rendered_readme =
+            fs::read_to_string(&execution.readme_path).expect("scaffold readme should exist");
 
         assert_eq!(
             manifest.metadata.get("source_language").map(String::as_str),
@@ -5732,6 +5777,26 @@ mod tests {
                 .get("loong_extension_host_hooks_json")
                 .map(String::as_str),
             Some("[]")
+        );
+        assert!(
+            rendered_readme.contains("loong plugins doctor --root"),
+            "README should point authors to doctor: {rendered_readme}"
+        );
+        assert!(
+            rendered_readme.contains("loong plugins inventory --root"),
+            "README should point authors to inventory: {rendered_readme}"
+        );
+        assert!(
+            rendered_readme.contains("loong plugins actions --root"),
+            "README should point authors to actions: {rendered_readme}"
+        );
+        assert!(
+            rendered_readme.contains("examples/plugins-process/native-extension-python/"),
+            "README should point authors to the checked-in governed example: {rendered_readme}"
+        );
+        assert!(
+            rendered_readme.contains("index.py"),
+            "README should mention the scaffolded runtime file: {rendered_readme}"
         );
 
         let scanner = crate::kernel::PluginScanner::new();
