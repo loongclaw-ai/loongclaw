@@ -21,7 +21,7 @@
     "account_scope": "multi_account",
     "channel_runtime_contract": "loong_channel_bridge_v1",
     "channel_runtime_operations_json": "[\"send_message\",\"receive_batch\",\"ack_inbound\",\"complete_batch\"]",
-    "channel_runtime_operation_specs_json": "{\"ack_inbound\":{\"label\":\"Ack Inbound\",\"operator_hint\":\"Loong calls this after one inbound message is processed.\",\"sample_payload\":{\"message_id\":\"demo-message\"},\"summary\":\"Acknowledge one inbound message after processing.\"},\"complete_batch\":{\"label\":\"Complete Batch\",\"operator_hint\":\"Loong calls this after the current receive_batch cycle is fully drained.\",\"sample_payload\":{\"batch_cursor\":\"cursor-1\"},\"summary\":\"Mark the current receive batch as fully processed.\"},\"receive_batch\":{\"label\":\"Receive Batch\",\"operator_hint\":\"Loong polls this operation before dispatching inbound bridge messages.\",\"sample_payload\":{\"limit\":10},\"summary\":\"Poll one inbound bridge batch for channel delivery.\"},\"send_message\":{\"label\":\"Send Message\",\"operator_hint\":\"Loong uses this operation for outbound sends on the selected channel surface.\",\"sample_payload\":{\"target\":\"weixin:contact:demo\",\"text\":\"hello\"},\"summary\":\"Send one outbound bridge message for the selected channel target.\"}}"
+    "channel_runtime_operation_specs_json": "{\"ack_inbound\":{\"label\":\"Ack Inbound\",\"summary\":\"Acknowledge one inbound message after processing.\",\"sample_payload\":{\"message_id\":\"demo-message\"},\"operator_hint\":\"Probe this operation with `loong plugins invoke-channel-bridge-operation --root \\\"<package-root>\\\" --plugin-id \\\"<plugin-id>\\\" --operation ack_inbound --payload '{\\\"message_id\\\":\\\"demo-message\\\"}' --allow-command <allow-command>`.\"},\"complete_batch\":{\"label\":\"Complete Batch\",\"summary\":\"Mark the current receive batch as fully processed.\",\"sample_payload\":{\"batch_cursor\":\"cursor-1\"},\"operator_hint\":\"Probe this operation with `loong plugins invoke-channel-bridge-operation --root \\\"<package-root>\\\" --plugin-id \\\"<plugin-id>\\\" --operation complete_batch --payload '{\\\"batch_cursor\\\":\\\"cursor-1\\\"}' --allow-command <allow-command>`.\"},\"receive_batch\":{\"label\":\"Receive Batch\",\"summary\":\"Poll one inbound bridge batch for channel delivery.\",\"sample_payload\":{\"limit\":10},\"operator_hint\":\"Probe this operation with `loong plugins invoke-channel-bridge-operation --root \\\"<package-root>\\\" --plugin-id \\\"<plugin-id>\\\" --operation receive_batch --payload '{\\\"limit\\\":10}' --allow-command <allow-command>`.\"},\"send_message\":{\"label\":\"Send Message\",\"summary\":\"Send one outbound bridge message for the selected channel target.\",\"sample_payload\":{\"target\":\"weixin:contact:demo\",\"text\":\"hello\"},\"operator_hint\":\"Probe this operation with `loong plugins invoke-channel-bridge-operation --root \\\"<package-root>\\\" --plugin-id \\\"<plugin-id>\\\" --operation send_message --payload '{\\\"target\\\":\\\"weixin:contact:demo\\\",\\\"text\\\":\\\"hello\\\"}' --allow-command <allow-command>`.\"}}"
   },
   "summary": "Managed bridge JavaScript contract example",
   "tags": [
@@ -34,9 +34,6 @@
     "surface": "channel",
     "required_env_vars": [
       "WEIXIN_BRIDGE_URL"
-    ],
-    "docs_urls": [
-      "https://example.test/bridge-docs"
     ]
   },
   "compatibility": {

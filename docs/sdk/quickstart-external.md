@@ -119,6 +119,29 @@ Managed bridge reference package (reference-first today):
 
 - `examples/plugins-process/channel-bridge-javascript/`
 
+Managed bridge scaffold lane:
+
+```bash
+loong plugins init ./weixin-bridge \
+  --plugin-id weixin-bridge \
+  --bridge-kind process_stdio \
+  --source-language js \
+  --channel-id weixin \
+  --transport-family wechat_clawbot_ilink_bridge \
+  --target-contract 'weixin:<account>:contact:<id> | weixin:<account>:room:<id>'
+```
+
+Managed bridge smoke probe:
+
+```bash
+loong plugins invoke-channel-bridge-operation \
+  --root ./weixin-bridge \
+  --plugin-id weixin-bridge \
+  --operation send_message \
+  --payload '{"target":"weixin:contact:demo","text":"hello"}' \
+  --allow-command node
+```
+
 When runtime plugins are enabled but `runtime_plugins.roots` is left empty,
 Loong now auto-discovers the standard local roots first:
 

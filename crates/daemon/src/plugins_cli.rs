@@ -34,6 +34,8 @@ pub const PLUGINS_PREFLIGHT_SCHEMA_PURPOSE: &str = "ecosystem_preflight_evaluati
 pub const PLUGINS_ACTIONS_SCHEMA_PURPOSE: &str = "operator_action_plan";
 pub const PLUGINS_INIT_SCHEMA_PURPOSE: &str = "package_scaffold";
 pub const PLUGINS_INVOKE_EXTENSION_SCHEMA_PURPOSE: &str = "native_extension_smoke_probe";
+pub const PLUGINS_INVOKE_CHANNEL_BRIDGE_OPERATION_SCHEMA_PURPOSE: &str =
+    "managed_bridge_runtime_probe";
 pub const PLUGINS_INVOKE_HOST_HOOK_SCHEMA_PURPOSE: &str = "trusted_host_hook_probe";
 pub const PLUGINS_INVOKE_TUI_SURFACE_SCHEMA_PURPOSE: &str = "trusted_host_tui_surface_probe";
 pub const PLUGINS_RUN_TUI_SURFACE_SCHEMA_PURPOSE: &str =
@@ -52,6 +54,8 @@ pub enum PluginsCommands {
     Init(PluginInitCommand),
     /// Smoke-test a native process_stdio extension entrypoint through the governed bridge
     InvokeExtension(PluginInvokeExtensionCommand),
+    /// Probe a declared managed channel-bridge runtime operation through the bounded bridge
+    InvokeChannelBridgeOperation(PluginInvokeChannelBridgeOperationCommand),
     /// Probe a declared trusted-host hook through the bounded process bridge
     InvokeHostHook(PluginInvokeHostHookCommand),
     /// Probe a declared trusted-host TUI surface through the bounded process bridge
@@ -296,7 +300,7 @@ impl PluginInitBridgeKindArg {
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 #[command(
     about = "Scaffold a manifest-first plugin package root for external authors",
-    long_about = "Scaffold a manifest-first plugin package root for external authors.\n\nThe generated package contains a canonical `loong.plugin.json` plus a README that points authors to `loong plugins doctor` and `loong plugins actions` for shared governance validation. Use `--host-hook`, `--host-action`, and `--tui-surface` to scaffold the bounded trusted host lane on top of the same process_stdio runtime path. This command scaffolds package metadata and local runtime stubs only; it does not widen trust policy by itself."
+    long_about = "Scaffold a manifest-first plugin package root for external authors.\n\nThe generated package contains a canonical `loong.plugin.json` plus a README that points authors to `loong plugins doctor` and `loong plugins actions` for shared governance validation. Use `--host-hook`, `--host-action`, and `--tui-surface` to scaffold the bounded trusted host lane on top of the same process_stdio runtime path. Use `--channel-id`, `--transport-family`, and `--target-contract` to scaffold the managed channel-bridge authoring lane. This command scaffolds package metadata and local runtime stubs only; it does not widen trust policy by itself."
 )]
 pub struct PluginInitCommand {
     /// Target package root to create or reuse when the directory is empty
@@ -317,6 +321,18 @@ pub struct PluginInitCommand {
     /// Source language for language-specific bridges such as process_stdio or native_ffi
     #[arg(long)]
     pub source_language: Option<String>,
+    /// Optional channel id for scaffolding a managed channel-bridge package lane
+    #[arg(long)]
+    pub channel_id: Option<String>,
+    /// Transport family for scaffolding a managed channel-bridge package lane
+    #[arg(long)]
+    pub transport_family: Option<String>,
+    /// Target contract for scaffolding a managed channel-bridge package lane
+    #[arg(long)]
+    pub target_contract: Option<String>,
+    /// Optional account scope for scaffolding a managed channel-bridge package lane
+    #[arg(long)]
+    pub account_scope: Option<String>,
     /// Additional declared capability names beyond the default connector baseline
     #[arg(long = "capability")]
     pub capabilities: Vec<String>,
@@ -349,6 +365,24 @@ pub struct PluginInvokeExtensionCommand {
     pub plugin_id: String,
     #[arg(long)]
     pub method: String,
+    #[arg(long, default_value = "{}")]
+    pub payload: String,
+    #[arg(long = "allow-command")]
+    pub allow_commands: Vec<String>,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[command(
+    about = "Probe a declared managed channel-bridge runtime operation through the bounded bridge",
+    long_about = "Probe a declared managed channel-bridge runtime operation through the bounded bridge.\n\nThis command scans a package root, selects the named plugin package, verifies that it declares the channel-bridge contract and the named runtime operation, and invokes that operation through the same bounded bridge path used by managed runtime execution. It is intended for external authoring and local validation, not for widening trust policy."
+)]
+pub struct PluginInvokeChannelBridgeOperationCommand {
+    #[arg(long = "root", value_name = "ROOT")]
+    pub root: String,
+    #[arg(long)]
+    pub plugin_id: String,
+    #[arg(long)]
+    pub operation: String,
     #[arg(long, default_value = "{}")]
     pub payload: String,
     #[arg(long = "allow-command")]
@@ -866,6 +900,8 @@ pub struct PluginsInitExecution {
     pub connector_name: String,
     pub version: String,
     pub bridge_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
     pub source_language: Option<String>,
     pub adapter_family: String,
     pub entrypoint: String,
@@ -878,6 +914,8 @@ pub struct PluginsInitExecution {
     pub runtime_execute_command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_extension_authoring_profile: Option<NativeExtensionAuthoringProfileExecution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_bridge_authoring_profile: Option<ManagedBridgeAuthoringProfileExecution>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_files_written: Vec<String>,
     pub files_written: Vec<String>,
@@ -905,6 +943,26 @@ pub struct NativeExtensionAuthoringProfileExecution {
     pub example_package_root: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ManagedBridgeAuthoringProfileExecution {
+    pub runtime_contract: String,
+    pub source_language_arg: String,
+    pub reference_example_path: String,
+    pub channel_id: String,
+    pub transport_family: String,
+    pub target_contract: String,
+    pub account_scope: String,
+    pub runtime_operations: Vec<String>,
+    pub runtime_files: Vec<String>,
+    pub command: String,
+    pub args: Vec<String>,
+    pub process_timeout_ms: u64,
+    pub inventory_command: String,
+    pub smoke_allow_command: String,
+    pub smoke_test_command: String,
+    pub example_package_root: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PluginsInvokeExtensionExecution {
     pub schema_version: u32,
@@ -914,6 +972,21 @@ pub struct PluginsInvokeExtensionExecution {
     pub bridge_kind: String,
     pub source_language: Option<String>,
     pub method: String,
+    pub payload: Value,
+    pub response_payload: Value,
+    pub runtime_evidence: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginsInvokeChannelBridgeOperationExecution {
+    pub schema_version: u32,
+    pub schema: JsonSchemaDescriptor,
+    pub package_root: String,
+    pub plugin_id: String,
+    pub bridge_kind: String,
+    pub source_language: Option<String>,
+    pub channel_id: Option<String>,
+    pub operation: String,
     pub payload: Value,
     pub response_payload: Value,
     pub runtime_evidence: Value,
@@ -976,6 +1049,7 @@ pub struct PluginsRunTuiSurfaceExecution {
 pub enum PluginsCommandExecution {
     Init(Box<PluginsInitExecution>),
     InvokeExtension(Box<PluginsInvokeExtensionExecution>),
+    InvokeChannelBridgeOperation(Box<PluginsInvokeChannelBridgeOperationExecution>),
     InvokeHostHook(Box<PluginsInvokeHostHookExecution>),
     InvokeTuiSurface(Box<PluginsInvokeTuiSurfaceExecution>),
     RunTuiSurface(Box<PluginsRunTuiSurfaceExecution>),
@@ -1021,6 +1095,12 @@ pub async fn execute_plugins_command(
                 execution,
             )))
         }
+        PluginsCommands::InvokeChannelBridgeOperation(command) => {
+            let execution = execute_plugins_invoke_channel_bridge_operation(command).await?;
+            Ok(PluginsCommandExecution::InvokeChannelBridgeOperation(
+                Box::new(execution),
+            ))
+        }
         PluginsCommands::InvokeHostHook(command) => {
             let execution = execute_plugins_invoke_host_hook(command).await?;
             Ok(PluginsCommandExecution::InvokeHostHook(Box::new(execution)))
@@ -1050,7 +1130,7 @@ pub async fn execute_plugins_command(
             let bridge_support_provenance = context.bridge_support_provenance();
             let mut results = decode_plugin_inventory_results(&report)?;
             for result in &mut results {
-                populate_native_extension_authoring_guidance(result);
+                populate_plugin_authoring_guidance(result);
             }
             let summary = summarize_plugin_inventory_results(&results);
 
@@ -1089,7 +1169,7 @@ pub async fn execute_plugins_command(
                 decode_preflight_summary(&report, bridge_support_provenance.clone())?;
             let mut results = decode_preflight_results(&report)?;
             for result in &mut results {
-                populate_native_extension_authoring_guidance(&mut result.plugin);
+                populate_plugin_authoring_guidance(&mut result.plugin);
             }
             let summary = summarize_plugin_doctor_results(&results, &preflight_summary);
 
@@ -1478,7 +1558,7 @@ fn summarize_runtime_plugin_inventory_authoring_guidance(
             plugins_with_metadata_issues = plugins_with_metadata_issues.saturating_add(1);
         }
 
-        let Some(guidance) = plugin_native_extension_authoring_guidance(result) else {
+        let Some(guidance) = plugin_authoring_guidance(result) else {
             continue;
         };
 
@@ -1502,6 +1582,11 @@ fn summarize_runtime_plugin_inventory_authoring_guidance(
             .contains("plugins invoke-extension")
         {
             "extension_probe"
+        } else if guidance
+            .smoke_test_command
+            .contains("plugins invoke-channel-bridge-operation")
+        {
+            "channel_bridge_probe"
         } else {
             "other"
         };
@@ -1531,11 +1616,25 @@ struct PluginPackageScaffoldManifestDocument {
     plugin_id: String,
     provider_id: String,
     connector_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel_id: Option<String>,
     capabilities: BTreeSet<Capability>,
     metadata: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    setup: Option<crate::kernel::PluginSetup>,
     compatibility: PluginCompatibility,
+}
+
+#[derive(Debug, Clone)]
+struct ManagedBridgeScaffoldPlan {
+    channel_id: String,
+    transport_family: String,
+    target_contract: String,
+    account_scope: String,
+    setup: crate::kernel::PluginSetup,
+    profile: crate::managed_bridge_authoring::ProcessStdioManagedBridgeLanguageProfile,
 }
 
 fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExecution> {
@@ -1559,10 +1658,15 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
     let scaffold_defaults =
         plugin_runtime_scaffold_defaults(bridge_kind, command.source_language.as_deref())
             .map_err(|error| format!("plugins init failed: {error}; use --source-language when required by the selected bridge"))?;
-    let process_stdio_profile =
+    let managed_bridge_plan =
+        resolve_managed_bridge_scaffold_plan(&command, bridge_kind, &scaffold_defaults)?;
+    let process_stdio_profile = if managed_bridge_plan.is_some() {
+        None
+    } else {
         crate::native_extension_authoring::process_stdio_native_extension_language_profile(
             &scaffold_defaults,
-        )?;
+        )?
+    };
     if (!declared_host_hooks.is_empty()
         || !declared_host_actions.is_empty()
         || !declared_tui_surfaces.is_empty())
@@ -1573,6 +1677,13 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
                 .to_owned(),
         );
     }
+    let effective_channel_id = managed_bridge_plan
+        .as_ref()
+        .map(|plan| plan.channel_id.clone());
+    let effective_adapter_family = managed_bridge_plan
+        .as_ref()
+        .map(|_| "channel-bridge".to_owned())
+        .unwrap_or_else(|| scaffold_defaults.adapter_family.clone());
 
     let manifest = build_plugin_scaffold_manifest(
         &plugin_id,
@@ -1581,11 +1692,14 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         &version,
         summary,
         &scaffold_defaults,
+        effective_channel_id.as_deref(),
+        effective_adapter_family.as_str(),
         declared_capabilities,
         declared_host_hooks.clone(),
         declared_host_actions.clone(),
         declared_tui_surfaces.clone(),
         process_stdio_profile,
+        managed_bridge_plan.as_ref(),
     );
 
     let package_root_path = Path::new(package_root.as_str());
@@ -1601,6 +1715,7 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         package_root.as_str(),
         plugin_id.as_str(),
         process_stdio_profile,
+        managed_bridge_plan.as_ref(),
         declared_host_hooks.as_slice(),
         declared_tui_surfaces.as_slice(),
     );
@@ -1613,37 +1728,44 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
     let doctor_command = render_authoring_doctor_command(package_root.as_str());
     let inventory_command = render_authoring_inventory_command(package_root.as_str());
     let operator_actions_command = render_authoring_actions_command(package_root.as_str());
-    let native_extension_authoring_profile = build_native_extension_authoring_profile(
+    let native_extension_authoring_profile = if managed_bridge_plan.is_some() {
+        None
+    } else {
+        build_native_extension_authoring_profile(
+            package_root.as_str(),
+            plugin_id.as_str(),
+            command.source_language.as_deref(),
+            &scaffold_defaults,
+            declared_host_hooks.as_slice(),
+            declared_host_actions.as_slice(),
+            declared_tui_surfaces.as_slice(),
+        )
+    };
+    let managed_bridge_authoring_profile = build_managed_bridge_authoring_profile(
         package_root.as_str(),
         plugin_id.as_str(),
         command.source_language.as_deref(),
-        &scaffold_defaults,
-        declared_host_hooks.as_slice(),
-        declared_host_actions.as_slice(),
-        declared_tui_surfaces.as_slice(),
+        managed_bridge_plan.as_ref(),
     );
     let rendered_readme = render_plugin_scaffold_readme(
         plugin_id.as_str(),
         bridge_kind.as_str(),
-        process_stdio_profile
-            .map(|profile| {
-                profile
-                    .scaffold_files
-                    .iter()
-                    .map(|file| file.relative_path)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-            .as_slice(),
+        scaffold_runtime_file_paths(process_stdio_profile, managed_bridge_plan.as_ref()).as_slice(),
         doctor_command.as_str(),
         inventory_command.as_str(),
         operator_actions_command.as_str(),
         smoke_test_command.as_deref(),
         runtime_execute_command.as_deref(),
         process_stdio_profile.is_some(),
+        managed_bridge_plan.is_some(),
         native_extension_authoring_profile
             .as_ref()
-            .map(|profile| profile.reference_example_path.as_str()),
+            .map(|profile| profile.reference_example_path.as_str())
+            .or_else(|| {
+                managed_bridge_authoring_profile
+                    .as_ref()
+                    .map(|profile| profile.reference_example_path.as_str())
+            }),
     );
 
     let runtime_files_written = write_plugin_scaffold_files(
@@ -1654,6 +1776,7 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         &readme_path,
         rendered_readme.as_str(),
         process_stdio_profile,
+        managed_bridge_plan.as_ref(),
     )?;
 
     let manifest_path_string = manifest_path.display().to_string();
@@ -1672,8 +1795,9 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         connector_name,
         version,
         bridge_kind: bridge_kind.as_str().to_owned(),
+        channel_id: effective_channel_id,
         source_language: scaffold_defaults.source_language,
-        adapter_family: scaffold_defaults.adapter_family,
+        adapter_family: effective_adapter_family,
         entrypoint: scaffold_defaults.entrypoint_hint,
         doctor_command,
         inventory_command,
@@ -1681,6 +1805,7 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         smoke_test_command,
         runtime_execute_command,
         native_extension_authoring_profile,
+        managed_bridge_authoring_profile,
         runtime_files_written,
         files_written,
     })
@@ -1728,6 +1853,91 @@ async fn execute_plugins_invoke_extension(
         bridge_kind: plugin.runtime.bridge_kind.as_str().to_owned(),
         source_language: Some(plugin.runtime.source_language.clone()),
         method,
+        payload,
+        response_payload: outcome.response_payload,
+        runtime_evidence: outcome.runtime_evidence,
+    })
+}
+
+async fn execute_plugins_invoke_channel_bridge_operation(
+    command: PluginInvokeChannelBridgeOperationCommand,
+) -> CliResult<PluginsInvokeChannelBridgeOperationExecution> {
+    let package_root = normalize_required_cli_value("--root", &command.root)?;
+    let plugin_id = normalize_required_cli_value("--plugin-id", &command.plugin_id)?;
+    let operation = normalize_required_cli_value("--operation", &command.operation)?;
+    let payload = serde_json::from_str::<Value>(command.payload.as_str()).map_err(|error| {
+        format!(
+            "plugins invoke-channel-bridge-operation requires --payload to be valid JSON: {error}"
+        )
+    })?;
+    let plugin = scan_single_plugin_from_root(
+        package_root.as_str(),
+        plugin_id.as_str(),
+        "plugins invoke-channel-bridge-operation",
+    )?;
+    let channel_bridge_contract = plugin.channel_bridge.as_ref().ok_or_else(|| {
+        format!(
+            "plugins invoke-channel-bridge-operation requires plugin `{plugin_id}` to declare the managed channel-bridge contract"
+        )
+    })?;
+    if !channel_bridge_contract
+        .runtime_operations
+        .iter()
+        .any(|declared| declared == &operation)
+    {
+        return Err(format!(
+            "plugins invoke-channel-bridge-operation requires plugin `{plugin_id}` to declare runtime operation `{operation}` in channel_runtime_operations_json"
+        ));
+    }
+
+    let bridge_policy = match plugin.runtime.bridge_kind {
+        PluginBridgeKind::ProcessStdio => Some(
+            crate::trusted_host_runtime::build_process_stdio_bridge_policy_from_allow_commands(
+                command.allow_commands,
+                "plugins invoke-channel-bridge-operation requires at least one --allow-command for process_stdio managed bridge probes",
+            )?,
+        ),
+        PluginBridgeKind::HttpJson => None,
+        other @ (PluginBridgeKind::NativeFfi
+        | PluginBridgeKind::WasmComponent
+        | PluginBridgeKind::McpServer
+        | PluginBridgeKind::AcpBridge
+        | PluginBridgeKind::AcpRuntime
+        | PluginBridgeKind::Unknown) => {
+            return Err(format!(
+                "plugins invoke-channel-bridge-operation currently supports only http_json or process_stdio managed bridges; plugin `{plugin_id}` declares bridge_kind `{}`",
+                other.as_str()
+            ));
+        }
+    };
+
+    let provider = authoring_probe_provider_config(
+        &plugin,
+        channel_bridge_contract.runtime_contract.as_deref(),
+    );
+    let channel = authoring_probe_channel_config(&plugin, channel_bridge_contract);
+    let outcome =
+        crate::managed_plugin_bridge_runtime::invoke_channel_bridge_operation_with_configs(
+            &provider,
+            &channel,
+            plugin.runtime.bridge_kind,
+            plugin_id.as_str(),
+            operation.as_str(),
+            payload.clone(),
+            bridge_policy.as_ref(),
+        )
+        .await
+        .map_err(|error| format!("plugins invoke-channel-bridge-operation failed: {error}"))?;
+
+    Ok(PluginsInvokeChannelBridgeOperationExecution {
+        schema_version: PLUGINS_COMMAND_SCHEMA_VERSION,
+        schema: plugins_command_schema(PLUGINS_INVOKE_CHANNEL_BRIDGE_OPERATION_SCHEMA_PURPOSE),
+        package_root,
+        plugin_id,
+        bridge_kind: plugin.runtime.bridge_kind.as_str().to_owned(),
+        source_language: Some(plugin.runtime.source_language.clone()),
+        channel_id: channel_bridge_contract.channel_id.clone(),
+        operation,
         payload,
         response_payload: outcome.response_payload,
         runtime_evidence: outcome.runtime_evidence,
@@ -2017,6 +2227,78 @@ fn ensure_process_stdio_invocable_plugin(
     Ok(())
 }
 
+fn authoring_probe_provider_config(
+    plugin: &crate::kernel::PluginIR,
+    runtime_contract: Option<&str>,
+) -> crate::kernel::ProviderConfig {
+    let mut metadata = plugin.metadata.clone();
+    metadata.insert(
+        "bridge_kind".to_owned(),
+        plugin.runtime.bridge_kind.as_str().to_owned(),
+    );
+    metadata.insert(
+        "adapter_family".to_owned(),
+        plugin.runtime.adapter_family.clone(),
+    );
+    metadata.insert(
+        "entrypoint".to_owned(),
+        plugin.runtime.entrypoint_hint.clone(),
+    );
+    metadata.insert(
+        "plugin_package_root".to_owned(),
+        plugin.package_root.clone(),
+    );
+    let command = plugin.metadata.get("command").cloned();
+    let command = command.unwrap_or_else(|| plugin.runtime.entrypoint_hint.clone());
+    metadata.insert("command".to_owned(), command);
+    if let Some(runtime_contract) = runtime_contract {
+        metadata.insert(
+            "channel_runtime_contract".to_owned(),
+            runtime_contract.to_owned(),
+        );
+    }
+
+    crate::kernel::ProviderConfig {
+        provider_id: plugin.provider_id.clone(),
+        connector_name: plugin.connector_name.clone(),
+        version: plugin
+            .plugin_version
+            .clone()
+            .unwrap_or_else(|| "0.1.0".to_owned()),
+        metadata,
+    }
+}
+
+fn authoring_probe_channel_config(
+    plugin: &crate::kernel::PluginIR,
+    channel_bridge_contract: &crate::kernel::PluginChannelBridgeContract,
+) -> crate::kernel::ChannelConfig {
+    let mut metadata = BTreeMap::from([("source_plugin".to_owned(), plugin.plugin_id.clone())]);
+    if let Some(setup_surface) = channel_bridge_contract.setup_surface.as_ref() {
+        metadata.insert("setup_surface".to_owned(), setup_surface.clone());
+    }
+    if let Some(transport_family) = channel_bridge_contract.transport_family.as_ref() {
+        metadata.insert("transport_family".to_owned(), transport_family.clone());
+    }
+    if let Some(target_contract) = channel_bridge_contract.target_contract.as_ref() {
+        metadata.insert("target_contract".to_owned(), target_contract.clone());
+    }
+    if let Some(account_scope) = channel_bridge_contract.account_scope.as_ref() {
+        metadata.insert("account_scope".to_owned(), account_scope.clone());
+    }
+
+    crate::kernel::ChannelConfig {
+        channel_id: channel_bridge_contract
+            .channel_id
+            .clone()
+            .unwrap_or_else(|| "channel".to_owned()),
+        provider_id: plugin.provider_id.clone(),
+        endpoint: plugin.runtime.entrypoint_hint.clone(),
+        enabled: true,
+        metadata,
+    }
+}
+
 fn write_plugin_scaffold_files(
     package_root: &Path,
     plugin_id: &str,
@@ -2027,6 +2309,7 @@ fn write_plugin_scaffold_files(
     process_stdio_profile: Option<
         crate::native_extension_authoring::ProcessStdioNativeExtensionLanguageProfile,
     >,
+    managed_bridge_plan: Option<&ManagedBridgeScaffoldPlan>,
 ) -> CliResult<Vec<String>> {
     let manifest_write_result = fs::write(manifest_path, rendered_manifest);
     if let Err(error) = manifest_write_result {
@@ -2054,8 +2337,14 @@ fn write_plugin_scaffold_files(
     }
 
     let mut runtime_files_written = Vec::new();
-    if let Some(profile) = process_stdio_profile {
-        for scaffold_file in profile.scaffold_files {
+    let scaffold_files = if let Some(managed_bridge_plan) = managed_bridge_plan {
+        Some(managed_bridge_plan.profile.scaffold_files)
+    } else {
+        process_stdio_profile.map(|profile| profile.scaffold_files)
+    };
+
+    if let Some(scaffold_files) = scaffold_files {
+        for scaffold_file in scaffold_files {
             let file_path = package_root.join(scaffold_file.relative_path);
             if let Some(parent) = file_path.parent() {
                 fs::create_dir_all(parent).map_err(|error| {
@@ -2212,9 +2501,21 @@ fn render_plugin_scaffold_smoke_test_command(
     process_stdio_profile: Option<
         crate::native_extension_authoring::ProcessStdioNativeExtensionLanguageProfile,
     >,
+    managed_bridge_plan: Option<&ManagedBridgeScaffoldPlan>,
     declared_host_hooks: &[String],
     declared_tui_surfaces: &[String],
 ) -> Option<String> {
+    if let Some(managed_bridge_plan) = managed_bridge_plan {
+        return Some(
+            crate::managed_bridge_authoring::render_authoring_channel_bridge_probe_command(
+                package_root,
+                plugin_id,
+                crate::mvp::channel::CHANNEL_PLUGIN_BRIDGE_RUNTIME_SEND_MESSAGE_OPERATION,
+                managed_bridge_plan.profile.smoke_allow_command,
+            ),
+        );
+    }
+
     let profile = process_stdio_profile?;
     if let Some(hook) = declared_host_hooks.first() {
         return Some(
@@ -2298,6 +2599,7 @@ fn build_native_extension_authoring_profile(
         package_root,
         plugin_id,
         Some(profile),
+        None,
         declared_host_hooks,
         declared_tui_surfaces,
     )?;
@@ -2360,6 +2662,134 @@ fn build_native_extension_authoring_profile(
     })
 }
 
+fn build_managed_bridge_authoring_profile(
+    package_root: &str,
+    plugin_id: &str,
+    source_language_arg: Option<&str>,
+    managed_bridge_plan: Option<&ManagedBridgeScaffoldPlan>,
+) -> Option<ManagedBridgeAuthoringProfileExecution> {
+    let managed_bridge_plan = managed_bridge_plan?;
+    let source_language = managed_bridge_plan.profile.source_language;
+    let source_language_arg = normalize_optional_cli_value(source_language_arg)
+        .unwrap_or_else(|| source_language.to_owned());
+    let example_package_root =
+        crate::managed_bridge_authoring::channel_bridge_reference_example_package_root(
+            source_language,
+        )?;
+    let smoke_test_command =
+        crate::managed_bridge_authoring::render_authoring_channel_bridge_probe_command(
+            package_root,
+            plugin_id,
+            crate::mvp::channel::CHANNEL_PLUGIN_BRIDGE_RUNTIME_SEND_MESSAGE_OPERATION,
+            managed_bridge_plan.profile.smoke_allow_command,
+        );
+
+    Some(ManagedBridgeAuthoringProfileExecution {
+        runtime_contract: crate::mvp::channel::CHANNEL_PLUGIN_BRIDGE_RUNTIME_CONTRACT_V1.to_owned(),
+        source_language_arg,
+        reference_example_path: example_package_root.to_owned(),
+        channel_id: managed_bridge_plan.channel_id.clone(),
+        transport_family: managed_bridge_plan.transport_family.clone(),
+        target_contract: managed_bridge_plan.target_contract.clone(),
+        account_scope: managed_bridge_plan.account_scope.clone(),
+        runtime_operations: crate::managed_bridge_authoring::default_channel_bridge_operations(),
+        runtime_files: managed_bridge_plan
+            .profile
+            .scaffold_files
+            .iter()
+            .map(|file| file.relative_path.to_owned())
+            .collect(),
+        command: managed_bridge_plan.profile.command.to_owned(),
+        args: crate::managed_bridge_authoring::process_stdio_managed_bridge_scaffold_args(
+            managed_bridge_plan.profile,
+        ),
+        process_timeout_ms: managed_bridge_plan.profile.process_timeout_ms,
+        inventory_command: render_authoring_inventory_command(package_root),
+        smoke_allow_command: managed_bridge_plan.profile.smoke_allow_command.to_owned(),
+        smoke_test_command,
+        example_package_root: example_package_root.to_owned(),
+    })
+}
+
+fn scaffold_runtime_file_paths(
+    process_stdio_profile: Option<
+        crate::native_extension_authoring::ProcessStdioNativeExtensionLanguageProfile,
+    >,
+    managed_bridge_plan: Option<&ManagedBridgeScaffoldPlan>,
+) -> Vec<&'static str> {
+    if let Some(managed_bridge_plan) = managed_bridge_plan {
+        return managed_bridge_plan
+            .profile
+            .scaffold_files
+            .iter()
+            .map(|file| file.relative_path)
+            .collect();
+    }
+
+    process_stdio_profile
+        .map(|profile| {
+            profile
+                .scaffold_files
+                .iter()
+                .map(|file| file.relative_path)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn resolve_managed_bridge_scaffold_plan(
+    command: &PluginInitCommand,
+    bridge_kind: PluginBridgeKind,
+    scaffold_defaults: &crate::kernel::PluginRuntimeScaffoldDefaults,
+) -> CliResult<Option<ManagedBridgeScaffoldPlan>> {
+    let channel_id = normalize_optional_cli_value(command.channel_id.as_deref());
+    let transport_family = normalize_optional_cli_value(command.transport_family.as_deref());
+    let target_contract = normalize_optional_cli_value(command.target_contract.as_deref());
+    let account_scope = normalize_optional_cli_value(command.account_scope.as_deref());
+
+    let managed_bridge_requested = channel_id.is_some()
+        || transport_family.is_some()
+        || target_contract.is_some()
+        || account_scope.is_some();
+    if !managed_bridge_requested {
+        return Ok(None);
+    }
+    if bridge_kind != PluginBridgeKind::ProcessStdio {
+        return Err(
+            "plugins init currently scaffolds managed bridge packages only on process_stdio bridge kinds"
+                .to_owned(),
+        );
+    }
+
+    let channel_id = channel_id
+        .ok_or_else(|| "plugins init managed bridge scaffolds require --channel-id".to_owned())?;
+    let transport_family = transport_family.ok_or_else(|| {
+        "plugins init managed bridge scaffolds require --transport-family".to_owned()
+    })?;
+    let target_contract = target_contract.ok_or_else(|| {
+        "plugins init managed bridge scaffolds require --target-contract".to_owned()
+    })?;
+    let account_scope = account_scope.unwrap_or_else(|| {
+        crate::managed_bridge_authoring::DEFAULT_CHANNEL_BRIDGE_ACCOUNT_SCOPE.to_owned()
+    });
+    let profile = crate::managed_bridge_authoring::process_stdio_managed_bridge_language_profile(
+        scaffold_defaults,
+    )?
+    .ok_or_else(|| {
+        "plugins init managed bridge scaffolds require a runnable process_stdio source language"
+            .to_owned()
+    })?;
+
+    Ok(Some(ManagedBridgeScaffoldPlan {
+        channel_id: channel_id.clone(),
+        transport_family,
+        target_contract,
+        account_scope,
+        setup: crate::managed_bridge_authoring::default_channel_bridge_setup(channel_id.as_str()),
+        profile,
+    }))
+}
+
 fn validate_plugin_scaffold_version(version: &str) -> CliResult<()> {
     Version::parse(version)
         .map(|_| ())
@@ -2413,6 +2843,8 @@ fn build_plugin_scaffold_manifest(
     version: &str,
     summary: Option<String>,
     scaffold_defaults: &crate::kernel::PluginRuntimeScaffoldDefaults,
+    channel_id: Option<&str>,
+    adapter_family: &str,
     capabilities: BTreeSet<Capability>,
     host_hooks: Vec<String>,
     host_actions: Vec<String>,
@@ -2420,16 +2852,14 @@ fn build_plugin_scaffold_manifest(
     process_stdio_profile: Option<
         crate::native_extension_authoring::ProcessStdioNativeExtensionLanguageProfile,
     >,
+    managed_bridge_plan: Option<&ManagedBridgeScaffoldPlan>,
 ) -> PluginManifest {
     let mut metadata = BTreeMap::new();
     metadata.insert(
         "bridge_kind".to_owned(),
         scaffold_defaults.bridge_kind.as_str().to_owned(),
     );
-    metadata.insert(
-        "adapter_family".to_owned(),
-        scaffold_defaults.adapter_family.clone(),
-    );
+    metadata.insert("adapter_family".to_owned(), adapter_family.to_owned());
     metadata.insert(
         "entrypoint".to_owned(),
         scaffold_defaults.entrypoint_hint.clone(),
@@ -2437,7 +2867,56 @@ fn build_plugin_scaffold_manifest(
     if let Some(source_language) = scaffold_defaults.source_language.as_ref() {
         metadata.insert("source_language".to_owned(), source_language.clone());
     }
-    if let Some(profile) = process_stdio_profile {
+    if let Some(managed_bridge_plan) = managed_bridge_plan {
+        let profile = managed_bridge_plan.profile;
+        metadata.insert("command".to_owned(), profile.command.to_owned());
+        metadata.insert(
+            "args_json".to_owned(),
+            serde_json::to_string(
+                &crate::managed_bridge_authoring::process_stdio_managed_bridge_scaffold_args(
+                    profile,
+                ),
+            )
+            .unwrap_or_else(|_| "[]".to_owned()),
+        );
+        metadata.insert(
+            "process_timeout_ms".to_owned(),
+            profile.process_timeout_ms.to_string(),
+        );
+        metadata.insert(
+            "transport_family".to_owned(),
+            managed_bridge_plan.transport_family.clone(),
+        );
+        metadata.insert(
+            "target_contract".to_owned(),
+            managed_bridge_plan.target_contract.clone(),
+        );
+        metadata.insert(
+            "account_scope".to_owned(),
+            managed_bridge_plan.account_scope.clone(),
+        );
+        metadata.insert(
+            "channel_runtime_contract".to_owned(),
+            crate::mvp::channel::CHANNEL_PLUGIN_BRIDGE_RUNTIME_CONTRACT_V1.to_owned(),
+        );
+        metadata.insert(
+            "channel_runtime_operations_json".to_owned(),
+            serde_json::to_string(
+                &crate::managed_bridge_authoring::default_channel_bridge_operations(),
+            )
+            .unwrap_or_else(|_| "[]".to_owned()),
+        );
+        if let Some(runtime_operation_specs_json) =
+            crate::managed_bridge_authoring::render_channel_bridge_operation_specs_json(
+                crate::managed_bridge_authoring::default_channel_bridge_operations().as_slice(),
+            )
+        {
+            metadata.insert(
+                "channel_runtime_operation_specs_json".to_owned(),
+                runtime_operation_specs_json,
+            );
+        }
+    } else if let Some(profile) = process_stdio_profile {
         metadata.insert("command".to_owned(), profile.command.to_owned());
         metadata.insert(
             "args_json".to_owned(),
@@ -2589,7 +3068,7 @@ fn build_plugin_scaffold_manifest(
         plugin_id: plugin_id.to_owned(),
         provider_id: provider_id.to_owned(),
         connector_name: connector_name.to_owned(),
-        channel_id: None,
+        channel_id: channel_id.map(str::to_owned),
         endpoint: None,
         capabilities,
         trust_tier: Default::default(),
@@ -2599,7 +3078,7 @@ fn build_plugin_scaffold_manifest(
         input_examples: Vec::new(),
         output_examples: Vec::new(),
         defer_loading: false,
-        setup: None,
+        setup: managed_bridge_plan.map(|plan| plan.setup.clone()),
         slot_claims: Vec::new(),
         compatibility: Some(compatibility),
     }
@@ -2832,9 +3311,11 @@ fn plugin_scaffold_manifest_document(
         plugin_id: manifest.plugin_id.clone(),
         provider_id: manifest.provider_id.clone(),
         connector_name: manifest.connector_name.clone(),
+        channel_id: manifest.channel_id.clone(),
         capabilities: manifest.capabilities.clone(),
         metadata: manifest.metadata.clone(),
         summary: manifest.summary.clone(),
+        setup: manifest.setup.clone(),
         compatibility,
     })
 }
@@ -2849,6 +3330,7 @@ fn render_plugin_scaffold_readme(
     smoke_test_command: Option<&str>,
     runtime_execute_command: Option<&str>,
     has_native_extension_projection: bool,
+    has_managed_bridge_projection: bool,
     reference_example_path: Option<&str>,
 ) -> String {
     let runtime_files_summary = match runtime_files {
@@ -2910,6 +3392,13 @@ fn render_plugin_scaffold_readme(
                 .to_owned(),
         ]);
     }
+    if has_managed_bridge_projection {
+        lines.extend([
+            String::new(),
+            "Keep `channel_runtime_operations_json` and `channel_runtime_operation_specs_json` aligned with each declared managed bridge runtime operation so Loong can surface labels, summaries, sample payloads, and operator hints."
+                .to_owned(),
+        ]);
+    }
     if let Some(reference_example_path) = reference_example_path {
         lines.extend([
             String::new(),
@@ -2950,6 +3439,10 @@ fn render_plugins_cli_text(execution: &PluginsCommandExecution) -> String {
         PluginsCommandExecution::InvokeExtension(execution) => (
             "plugins invoke-extension",
             render_plugins_invoke_extension_text(execution),
+        ),
+        PluginsCommandExecution::InvokeChannelBridgeOperation(execution) => (
+            "plugins invoke-channel-bridge-operation",
+            render_plugins_invoke_channel_bridge_operation_text(execution),
         ),
         PluginsCommandExecution::InvokeHostHook(execution) => (
             "plugins invoke-host-hook",
@@ -3008,6 +3501,35 @@ fn render_plugins_invoke_extension_text(execution: &PluginsInvokeExtensionExecut
             execution.bridge_kind,
             source_language,
             execution.method
+        ),
+        "payload:".to_owned(),
+        execution.payload.to_string(),
+        "response_payload:".to_owned(),
+        response_payload,
+        "runtime_evidence:".to_owned(),
+        runtime_evidence,
+    ]
+    .join("\n")
+}
+
+fn render_plugins_invoke_channel_bridge_operation_text(
+    execution: &PluginsInvokeChannelBridgeOperationExecution,
+) -> String {
+    let source_language = execution.source_language.as_deref().unwrap_or("-");
+    let response_payload = serde_json::to_string_pretty(&execution.response_payload)
+        .unwrap_or_else(|_| execution.response_payload.to_string());
+    let runtime_evidence = serde_json::to_string_pretty(&execution.runtime_evidence)
+        .unwrap_or_else(|_| execution.runtime_evidence.to_string());
+
+    [
+        format!(
+            "plugins invoke-channel-bridge-operation package_root={} plugin_id={} bridge_kind={} source_language={} channel_id={} operation={}",
+            execution.package_root,
+            execution.plugin_id,
+            execution.bridge_kind,
+            source_language,
+            display_text_or_dash(execution.channel_id.as_deref()),
+            execution.operation
         ),
         "payload:".to_owned(),
         execution.payload.to_string(),
@@ -3090,6 +3612,9 @@ fn render_plugins_init_text(execution: &PluginsInitExecution) -> String {
         "- bridge_kind={} source_language={} adapter_family={} entrypoint={}",
         execution.bridge_kind, source_language, execution.adapter_family, execution.entrypoint
     ));
+    if let Some(channel_id) = execution.channel_id.as_deref() {
+        lines.push(format!("- channel_id={channel_id}"));
+    }
     if !execution.runtime_files_written.is_empty() {
         lines.push(format!(
             "- runtime_files_written={}",
@@ -3118,34 +3643,79 @@ fn render_plugins_init_text(execution: &PluginsInitExecution) -> String {
     lines.join("\n")
 }
 
-fn populate_native_extension_authoring_guidance(result: &mut PluginInventoryResult) {
+fn populate_plugin_authoring_guidance(result: &mut PluginInventoryResult) {
     if result.authoring_guidance.is_none()
-        && result.bridge_kind == PluginBridgeKind::ProcessStdio.as_str()
+        && (result.bridge_kind == PluginBridgeKind::ProcessStdio.as_str()
+            || result.bridge_kind == PluginBridgeKind::HttpJson.as_str())
     {
-        result.authoring_guidance =
-            crate::native_extension_authoring::process_stdio_native_extension_authoring_guidance(
-                result.package_root.as_str(),
-                result.plugin_id.as_str(),
-                result.source_language.as_deref(),
-                &result.native_extension,
-            );
+        result.authoring_guidance = plugin_authoring_guidance(result);
     }
 }
 
-fn plugin_native_extension_authoring_guidance(
+fn plugin_authoring_guidance(
     result: &PluginInventoryResult,
 ) -> Option<crate::PluginNativeExtensionAuthoringGuidance> {
     result.authoring_guidance.clone().or_else(|| {
-        if result.bridge_kind != PluginBridgeKind::ProcessStdio.as_str() {
-            return None;
+        if result.bridge_kind == PluginBridgeKind::ProcessStdio.as_str()
+            && let Some(guidance) =
+                crate::native_extension_authoring::process_stdio_native_extension_authoring_guidance(
+                    result.package_root.as_str(),
+                    result.plugin_id.as_str(),
+                    result.source_language.as_deref(),
+                    &result.native_extension,
+                )
+        {
+            return Some(guidance);
         }
 
-        crate::native_extension_authoring::process_stdio_native_extension_authoring_guidance(
+        channel_bridge_authoring_guidance(
             result.package_root.as_str(),
             result.plugin_id.as_str(),
             result.source_language.as_deref(),
-            &result.native_extension,
+            result.bridge_kind.as_str(),
+            result.channel_bridge_runtime_contract.as_deref(),
+            result.channel_bridge_runtime_operations.as_slice(),
         )
+    })
+}
+
+pub(crate) fn channel_bridge_authoring_guidance(
+    package_root: &str,
+    plugin_id: &str,
+    source_language: Option<&str>,
+    bridge_kind: &str,
+    runtime_contract: Option<&str>,
+    runtime_operations: &[String],
+) -> Option<crate::PluginNativeExtensionAuthoringGuidance> {
+    if runtime_contract != Some(crate::mvp::channel::CHANNEL_PLUGIN_BRIDGE_RUNTIME_CONTRACT_V1)
+        || runtime_operations.is_empty()
+    {
+        return None;
+    }
+
+    let source_language = source_language?;
+    let profile = crate::managed_bridge_authoring::process_stdio_managed_bridge_language_profile_for_source_language(source_language)?;
+    if bridge_kind != PluginBridgeKind::ProcessStdio.as_str() {
+        return None;
+    }
+
+    Some(crate::PluginNativeExtensionAuthoringGuidance {
+        validate_command: format!(
+            "loong plugins doctor --root \"{package_root}\" --profile sdk-release"
+        ),
+        operator_actions_command: format!(
+            "loong plugins actions --root \"{package_root}\" --profile sdk-release"
+        ),
+        smoke_test_command:
+            crate::managed_bridge_authoring::render_authoring_channel_bridge_probe_command(
+                package_root,
+                plugin_id,
+                runtime_operations.first().map(String::as_str).unwrap_or(
+                    crate::mvp::channel::CHANNEL_PLUGIN_BRIDGE_RUNTIME_SEND_MESSAGE_OPERATION,
+                ),
+                profile.smoke_allow_command,
+            ),
+        runtime_execute_command: None,
     })
 }
 
@@ -3287,7 +3857,7 @@ fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> Strin
                 format_csv_or_dash(&native_extension.metadata_issues),
             ));
         }
-        if let Some(guidance) = plugin_native_extension_authoring_guidance(result) {
+        if let Some(guidance) = plugin_authoring_guidance(result) {
             lines.push(format!(
                 "  authoring validate={} operator_actions={}",
                 guidance.validate_command, guidance.operator_actions_command
@@ -3670,7 +4240,7 @@ fn render_plugin_doctor_result_lines(result: &PluginPreflightResult) -> Vec<Stri
             format_csv_or_dash(&native_extension.metadata_issues),
         ));
     }
-    if let Some(guidance) = plugin_native_extension_authoring_guidance(plugin) {
+    if let Some(guidance) = plugin_authoring_guidance(plugin) {
         lines.push(format!(
             "  authoring validate={} operator_actions={}",
             guidance.validate_command, guidance.operator_actions_command
@@ -5873,6 +6443,16 @@ mod tests {
             result.channel_bridge_runtime_operation_specs[0].operation,
             "send_message"
         );
+        assert_eq!(
+            result
+                .authoring_guidance
+                .as_ref()
+                .map(|guidance| guidance.smoke_test_command.clone()),
+            Some(format!(
+                "loong plugins invoke-channel-bridge-operation --root \"{}\" --plugin-id \"{}\" --operation send_message --payload '{{\"target\":\"weixin:contact:demo\",\"text\":\"hello\"}}' --allow-command node",
+                result.package_root, result.plugin_id
+            ))
+        );
 
         let rendered = render_plugins_inventory_text(&execution);
         assert!(rendered.contains("channel_bridge transport_family=wechat_clawbot_ilink_bridge"));
@@ -5880,6 +6460,9 @@ mod tests {
         assert!(rendered.contains(
             "runtime_operation_specs=send_message:Send Message,receive_batch:Receive Batch"
         ));
+        assert!(
+            rendered.contains("authoring_smoke_test=loong plugins invoke-channel-bridge-operation")
+        );
     }
 
     #[tokio::test]
@@ -5921,6 +6504,16 @@ mod tests {
             result.channel_bridge_runtime_operation_specs[0].operation,
             "send_message"
         );
+        assert_eq!(
+            result
+                .authoring_guidance
+                .as_ref()
+                .map(|guidance| guidance.smoke_test_command.clone()),
+            Some(format!(
+                "loong plugins invoke-channel-bridge-operation --root \"{}\" --plugin-id \"{}\" --operation send_message --payload '{{\"target\":\"weixin:contact:demo\",\"text\":\"hello\"}}' --allow-command node",
+                result.package_root, result.plugin_id
+            ))
+        );
 
         let rendered = render_plugins_doctor_text(&execution);
         assert!(rendered.contains("channel_bridge transport_family=wechat_clawbot_ilink_bridge"));
@@ -5928,6 +6521,9 @@ mod tests {
         assert!(rendered.contains(
             "runtime_operation_specs=send_message:Send Message,receive_batch:Receive Batch"
         ));
+        assert!(
+            rendered.contains("authoring_smoke_test=loong plugins invoke-channel-bridge-operation")
+        );
     }
 
     #[tokio::test]
@@ -6619,6 +7215,10 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::HttpJson,
                 source_language: None,
+                channel_id: None,
+                transport_family: None,
+                target_contract: None,
+                account_scope: None,
                 capabilities: Vec::new(),
                 host_hooks: Vec::new(),
                 host_actions: Vec::new(),
@@ -6744,6 +7344,10 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: None,
+                channel_id: None,
+                transport_family: None,
+                target_contract: None,
+                account_scope: None,
                 capabilities: Vec::new(),
                 host_hooks: Vec::new(),
                 host_actions: Vec::new(),
@@ -6774,6 +7378,10 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::HttpJson,
                 source_language: None,
+                channel_id: None,
+                transport_family: None,
+                target_contract: None,
+                account_scope: None,
                 capabilities: Vec::new(),
                 host_hooks: Vec::new(),
                 host_actions: Vec::new(),
@@ -6804,6 +7412,10 @@ mod tests {
                 connector_name: Some("weather-stdio".to_owned()),
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("py".to_owned()),
+                channel_id: None,
+                transport_family: None,
+                target_contract: None,
+                account_scope: None,
                 capabilities: Vec::new(),
                 host_hooks: Vec::new(),
                 host_actions: Vec::new(),
@@ -6981,6 +7593,273 @@ mod tests {
         assert_eq!(ir.runtime.entrypoint_hint, "stdin/stdout::invoke");
     }
 
+    #[tokio::test]
+    async fn execute_plugins_init_scaffolds_managed_bridge_process_stdio_package() {
+        let temp_root = unique_temp_dir("loong-plugins-cli-init-managed-bridge");
+        let package_root = format!("{temp_root}/weixin-bridge");
+
+        let execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            config: None,
+            command: PluginsCommands::Init(PluginInitCommand {
+                package_root,
+                plugin_id: "weixin-bridge".to_owned(),
+                provider_id: None,
+                connector_name: None,
+                bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
+                source_language: Some("js".to_owned()),
+                channel_id: Some("weixin".to_owned()),
+                transport_family: Some("wechat_clawbot_ilink_bridge".to_owned()),
+                target_contract: Some(
+                    "weixin:<account>:contact:<id> | weixin:<account>:room:<id>".to_owned(),
+                ),
+                account_scope: None,
+                capabilities: Vec::new(),
+                host_hooks: Vec::new(),
+                host_actions: Vec::new(),
+                tui_surfaces: Vec::new(),
+                version: "0.1.0".to_owned(),
+                summary: Some("Managed bridge JavaScript contract example".to_owned()),
+            }),
+        })
+        .await
+        .expect("managed bridge scaffold should succeed");
+
+        let PluginsCommandExecution::Init(execution) = execution else {
+            panic!("expected init execution");
+        };
+
+        assert_eq!(execution.bridge_kind, "process_stdio");
+        assert_eq!(execution.channel_id.as_deref(), Some("weixin"));
+        assert_eq!(execution.source_language.as_deref(), Some("javascript"));
+        assert_eq!(execution.adapter_family, "channel-bridge");
+        assert_eq!(execution.entrypoint, "stdin/stdout::invoke");
+        assert!(
+            execution
+                .smoke_test_command
+                .as_deref()
+                .is_some_and(|command| command.contains("plugins invoke-channel-bridge-operation"))
+        );
+        assert_eq!(execution.runtime_execute_command, None);
+        assert!(execution.native_extension_authoring_profile.is_none());
+        assert_eq!(
+            execution.runtime_files_written,
+            vec![format!("{}/bridge.js", execution.package_root)]
+        );
+        let authoring_profile = execution
+            .managed_bridge_authoring_profile
+            .as_ref()
+            .expect("managed bridge scaffold should expose authoring profile");
+        assert_eq!(
+            authoring_profile.runtime_contract,
+            crate::mvp::channel::CHANNEL_PLUGIN_BRIDGE_RUNTIME_CONTRACT_V1
+        );
+        assert_eq!(authoring_profile.source_language_arg, "js");
+        assert_eq!(authoring_profile.channel_id, "weixin");
+        assert_eq!(
+            authoring_profile.transport_family,
+            "wechat_clawbot_ilink_bridge"
+        );
+        assert_eq!(
+            authoring_profile.target_contract,
+            "weixin:<account>:contact:<id> | weixin:<account>:room:<id>"
+        );
+        assert_eq!(authoring_profile.account_scope, "multi_account");
+        assert_eq!(
+            authoring_profile.runtime_operations,
+            crate::managed_bridge_authoring::default_channel_bridge_operations()
+        );
+        assert_eq!(
+            authoring_profile.runtime_files,
+            vec!["bridge.js".to_owned()]
+        );
+        assert_eq!(authoring_profile.command, "node");
+        assert_eq!(authoring_profile.args, vec!["bridge.js".to_owned()]);
+        assert_eq!(authoring_profile.process_timeout_ms, 15_000);
+        assert_eq!(authoring_profile.smoke_allow_command, "node");
+        assert_eq!(
+            authoring_profile.reference_example_path,
+            "examples/plugins-process/channel-bridge-javascript".to_owned()
+        );
+
+        let rendered_manifest =
+            fs::read_to_string(&execution.manifest_path).expect("manifest should exist");
+        let manifest: crate::kernel::PluginManifest =
+            serde_json::from_str(&rendered_manifest).expect("manifest should decode");
+        let rendered_readme =
+            fs::read_to_string(&execution.readme_path).expect("scaffold readme should exist");
+
+        assert_eq!(manifest.channel_id.as_deref(), Some("weixin"));
+        assert_eq!(
+            manifest
+                .setup
+                .as_ref()
+                .and_then(|setup| setup.surface.as_deref()),
+            Some("channel")
+        );
+        assert_eq!(
+            manifest
+                .setup
+                .as_ref()
+                .map(|setup| setup.required_env_vars.clone())
+                .unwrap_or_default(),
+            vec!["WEIXIN_BRIDGE_URL".to_owned()]
+        );
+        assert_eq!(
+            manifest.metadata.get("adapter_family").map(String::as_str),
+            Some("channel-bridge")
+        );
+        assert_eq!(
+            manifest.metadata.get("command").map(String::as_str),
+            Some("node")
+        );
+        assert_eq!(
+            manifest.metadata.get("args_json").map(String::as_str),
+            Some("[\"bridge.js\"]")
+        );
+        assert_eq!(
+            manifest
+                .metadata
+                .get("transport_family")
+                .map(String::as_str),
+            Some("wechat_clawbot_ilink_bridge")
+        );
+        assert_eq!(
+            manifest.metadata.get("target_contract").map(String::as_str),
+            Some("weixin:<account>:contact:<id> | weixin:<account>:room:<id>")
+        );
+        assert_eq!(
+            manifest.metadata.get("account_scope").map(String::as_str),
+            Some("multi_account")
+        );
+        assert_eq!(
+            manifest
+                .metadata
+                .get("channel_runtime_contract")
+                .map(String::as_str),
+            Some(crate::mvp::channel::CHANNEL_PLUGIN_BRIDGE_RUNTIME_CONTRACT_V1)
+        );
+        assert!(
+            manifest
+                .metadata
+                .contains_key("channel_runtime_operation_specs_json"),
+            "managed bridge scaffold should emit operation specs"
+        );
+        assert!(
+            rendered_readme.contains("plugins invoke-channel-bridge-operation"),
+            "README should point authors to the managed bridge probe: {rendered_readme}"
+        );
+        assert!(
+            rendered_readme.contains("channel_runtime_operation_specs_json"),
+            "README should mention managed bridge operation specs: {rendered_readme}"
+        );
+        assert!(
+            rendered_readme.contains("examples/plugins-process/channel-bridge-javascript/"),
+            "README should point authors to the checked-in managed bridge reference: {rendered_readme}"
+        );
+
+        let scanner = crate::kernel::PluginScanner::new();
+        let scan_report = scanner
+            .scan_path(&execution.package_root)
+            .expect("scaffold package should scan cleanly");
+        let translator = crate::kernel::PluginTranslator::new();
+        let translation_report = translator.translate_scan_report(&scan_report);
+        let ir = &translation_report.entries[0];
+
+        assert_eq!(
+            ir.channel_bridge
+                .as_ref()
+                .and_then(|contract| contract.channel_id.as_deref()),
+            Some("weixin")
+        );
+        assert_eq!(ir.runtime.source_language, "javascript");
+        assert_eq!(
+            ir.runtime.bridge_kind,
+            crate::kernel::PluginBridgeKind::ProcessStdio
+        );
+        assert_eq!(ir.runtime.adapter_family, "channel-bridge");
+    }
+
+    #[tokio::test]
+    async fn execute_plugins_init_managed_bridge_scaffold_smoke_probe_succeeds() {
+        let temp_root = unique_temp_dir("loong-plugins-cli-init-managed-bridge-smoke");
+        let package_root = format!("{temp_root}/weixin-bridge");
+
+        let execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            config: None,
+            command: PluginsCommands::Init(PluginInitCommand {
+                package_root: package_root.clone(),
+                plugin_id: "weixin-bridge".to_owned(),
+                provider_id: None,
+                connector_name: None,
+                bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
+                source_language: Some("js".to_owned()),
+                channel_id: Some("weixin".to_owned()),
+                transport_family: Some("wechat_clawbot_ilink_bridge".to_owned()),
+                target_contract: Some(
+                    "weixin:<account>:contact:<id> | weixin:<account>:room:<id>".to_owned(),
+                ),
+                account_scope: None,
+                capabilities: Vec::new(),
+                host_hooks: Vec::new(),
+                host_actions: Vec::new(),
+                tui_surfaces: Vec::new(),
+                version: "0.1.0".to_owned(),
+                summary: Some("Managed bridge JavaScript contract example".to_owned()),
+            }),
+        })
+        .await
+        .expect("managed bridge scaffold should succeed");
+
+        let PluginsCommandExecution::Init(execution) = execution else {
+            panic!("expected init execution");
+        };
+
+        let smoke_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            config: None,
+            command: PluginsCommands::InvokeChannelBridgeOperation(
+                PluginInvokeChannelBridgeOperationCommand {
+                    root: package_root,
+                    plugin_id: "weixin-bridge".to_owned(),
+                    operation: "send_message".to_owned(),
+                    payload: "{\"target\":\"weixin:contact:demo\",\"text\":\"hello\"}".to_owned(),
+                    allow_commands: vec!["node".to_owned()],
+                },
+            ),
+        })
+        .await
+        .expect("managed bridge smoke probe should execute");
+
+        let PluginsCommandExecution::InvokeChannelBridgeOperation(smoke_execution) =
+            smoke_execution
+        else {
+            panic!("expected managed bridge probe execution");
+        };
+
+        assert_eq!(smoke_execution.plugin_id, "weixin-bridge");
+        assert_eq!(smoke_execution.channel_id.as_deref(), Some("weixin"));
+        assert_eq!(smoke_execution.operation, "send_message");
+        assert_eq!(
+            smoke_execution.response_payload["accepted"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            smoke_execution.response_payload["target"],
+            serde_json::json!("weixin:contact:demo")
+        );
+        let rendered = render_plugins_invoke_channel_bridge_operation_text(&smoke_execution);
+        assert!(rendered.contains("plugins invoke-channel-bridge-operation"));
+        assert!(rendered.contains("channel_id=weixin"));
+        assert!(
+            execution
+                .smoke_test_command
+                .as_deref()
+                .is_some_and(|command| command.contains("plugins invoke-channel-bridge-operation"))
+        );
+    }
+
     struct CheckedInNativeExtensionExampleSpec {
         package_root_relative: &'static str,
         plugin_id: &'static str,
@@ -7077,6 +7956,10 @@ mod tests {
                     connector_name: Some(spec.plugin_id.to_owned()),
                     bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                     source_language: Some(spec.source_language_arg.to_owned()),
+                    channel_id: None,
+                    transport_family: None,
+                    target_contract: None,
+                    account_scope: None,
                     capabilities: Vec::new(),
                     host_hooks: Vec::new(),
                     host_actions: Vec::new(),
@@ -7214,6 +8097,156 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn checked_in_channel_bridge_example_matches_scaffold_authoring_contract() {
+        let repo_root = repo_root();
+        let temp_root = unique_temp_dir("loong-plugins-cli-channel-bridge-conformance");
+        let package_root = format!("{temp_root}/channel-bridge-javascript-example");
+        let checked_in_root = repo_root.join("examples/plugins-process/channel-bridge-javascript");
+
+        let execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            config: None,
+            command: PluginsCommands::Init(PluginInitCommand {
+                package_root: package_root.clone(),
+                plugin_id: "channel-bridge-javascript-example".to_owned(),
+                provider_id: Some("channel-bridge-javascript-example".to_owned()),
+                connector_name: Some("channel-bridge-javascript-example".to_owned()),
+                bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
+                source_language: Some("js".to_owned()),
+                channel_id: Some("weixin".to_owned()),
+                transport_family: Some("wechat_clawbot_ilink_bridge".to_owned()),
+                target_contract: Some(
+                    "weixin:<account>:contact:<id> | weixin:<account>:room:<id>".to_owned(),
+                ),
+                account_scope: Some("multi_account".to_owned()),
+                capabilities: Vec::new(),
+                host_hooks: Vec::new(),
+                host_actions: Vec::new(),
+                tui_surfaces: Vec::new(),
+                version: "0.1.0".to_owned(),
+                summary: Some("Managed bridge JavaScript contract example".to_owned()),
+            }),
+        })
+        .await
+        .expect("managed bridge conformance scaffold should succeed");
+
+        let PluginsCommandExecution::Init(execution) = execution else {
+            panic!("expected init execution");
+        };
+
+        let authoring_profile = execution
+            .managed_bridge_authoring_profile
+            .as_ref()
+            .expect("managed bridge scaffold should expose authoring profile");
+        let scaffold_manifest =
+            read_plugin_manifest(std::path::Path::new(&execution.manifest_path));
+        let checked_in_manifest =
+            read_plugin_manifest(&checked_in_root.join(PACKAGE_MANIFEST_FILE_NAME));
+
+        assert_eq!(
+            checked_in_manifest.plugin_id,
+            "channel-bridge-javascript-example"
+        );
+        assert_eq!(
+            checked_in_manifest.provider_id,
+            "channel-bridge-javascript-example"
+        );
+        assert_eq!(
+            checked_in_manifest.connector_name,
+            "channel-bridge-javascript-example"
+        );
+        assert_eq!(
+            checked_in_manifest.summary.as_deref(),
+            Some("Managed bridge JavaScript contract example")
+        );
+        assert_eq!(
+            checked_in_manifest.channel_id.as_deref(),
+            scaffold_manifest.channel_id.as_deref()
+        );
+        assert_eq!(
+            checked_in_manifest
+                .setup
+                .as_ref()
+                .and_then(|setup| setup.surface.as_deref()),
+            scaffold_manifest
+                .setup
+                .as_ref()
+                .and_then(|setup| setup.surface.as_deref())
+        );
+        assert_eq!(
+            checked_in_manifest
+                .setup
+                .as_ref()
+                .map(|setup| setup.required_env_vars.clone())
+                .unwrap_or_default(),
+            scaffold_manifest
+                .setup
+                .as_ref()
+                .map(|setup| setup.required_env_vars.clone())
+                .unwrap_or_default()
+        );
+        for key in [
+            "bridge_kind",
+            "adapter_family",
+            "entrypoint",
+            "source_language",
+            "command",
+            "args_json",
+            "process_timeout_ms",
+            "transport_family",
+            "target_contract",
+            "account_scope",
+            "channel_runtime_contract",
+            "channel_runtime_operations_json",
+        ] {
+            assert_eq!(
+                checked_in_manifest.metadata.get(key),
+                scaffold_manifest.metadata.get(key),
+                "checked-in managed bridge metadata key `{key}` drifted from scaffold output"
+            );
+        }
+        let checked_in_operation_specs: serde_json::Value = serde_json::from_str(
+            checked_in_manifest
+                .metadata
+                .get("channel_runtime_operation_specs_json")
+                .expect("checked-in example should declare managed bridge operation specs"),
+        )
+        .expect("checked-in operation specs should decode");
+        let scaffold_operation_specs: serde_json::Value = serde_json::from_str(
+            scaffold_manifest
+                .metadata
+                .get("channel_runtime_operation_specs_json")
+                .expect("scaffold should declare managed bridge operation specs"),
+        )
+        .expect("scaffold operation specs should decode");
+        assert_eq!(
+            checked_in_operation_specs, scaffold_operation_specs,
+            "checked-in managed bridge operation specs drifted from scaffold output"
+        );
+        assert_eq!(
+            checked_in_manifest.compatibility,
+            scaffold_manifest.compatibility
+        );
+        assert_eq!(
+            authoring_profile.example_package_root,
+            "examples/plugins-process/channel-bridge-javascript".to_owned()
+        );
+
+        for relative_path in authoring_profile.runtime_files.iter() {
+            let scaffold_runtime = fs::read_to_string(
+                std::path::Path::new(&execution.package_root).join(relative_path),
+            )
+            .expect("scaffold runtime file should exist");
+            let checked_in_runtime = fs::read_to_string(checked_in_root.join(relative_path))
+                .expect("checked-in runtime file should exist");
+            assert_eq!(
+                checked_in_runtime, scaffold_runtime,
+                "checked-in runtime file `{relative_path}` drifted from scaffold output"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn execute_plugins_init_persists_additive_declared_capabilities() {
         let temp_root = unique_temp_dir("loong-plugins-cli-init-capabilities");
         let package_root = format!("{temp_root}/weather-python");
@@ -7228,6 +8261,10 @@ mod tests {
                 connector_name: Some("weather-stdio".to_owned()),
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("py".to_owned()),
+                channel_id: None,
+                transport_family: None,
+                target_contract: None,
+                account_scope: None,
                 capabilities: vec!["observe_telemetry".to_owned()],
                 host_hooks: Vec::new(),
                 host_actions: Vec::new(),
@@ -7315,6 +8352,7 @@ mod tests {
             &readme_path,
             "# scaffold",
             None,
+            None,
         )
         .expect_err("readme directory should force scaffold rollback");
 
@@ -7344,6 +8382,10 @@ mod tests {
                 connector_name: Some("weather-stdio".to_owned()),
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("js".to_owned()),
+                channel_id: None,
+                transport_family: None,
+                target_contract: None,
+                account_scope: None,
                 capabilities: Vec::new(),
                 host_hooks: vec!["turn_start".to_owned()],
                 host_actions: vec!["open_settings".to_owned()],
@@ -7447,6 +8489,10 @@ mod tests {
                 connector_name: Some("weather-stdio".to_owned()),
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("js".to_owned()),
+                channel_id: None,
+                transport_family: None,
+                target_contract: None,
+                account_scope: None,
                 capabilities: Vec::new(),
                 host_hooks: vec!["turn_start".to_owned()],
                 host_actions: Vec::new(),
@@ -7500,6 +8546,10 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("js".to_owned()),
+                channel_id: None,
+                transport_family: None,
+                target_contract: None,
+                account_scope: None,
                 capabilities: Vec::new(),
                 host_hooks: vec!["provider_request".to_owned()],
                 host_actions: Vec::new(),
@@ -7529,6 +8579,10 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("js".to_owned()),
+                channel_id: None,
+                transport_family: None,
+                target_contract: None,
+                account_scope: None,
                 capabilities: Vec::new(),
                 host_hooks: Vec::new(),
                 host_actions: Vec::new(),
@@ -7561,6 +8615,10 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::HttpJson,
                 source_language: None,
+                channel_id: None,
+                transport_family: None,
+                target_contract: None,
+                account_scope: None,
                 capabilities: Vec::new(),
                 host_hooks: Vec::new(),
                 host_actions: Vec::new(),
@@ -8095,6 +9153,14 @@ mod tests {
             inventory_result.channel_bridge_runtime_operation_specs[0].operation,
             "send_message"
         );
+        assert!(
+            inventory_result
+                .authoring_guidance
+                .as_ref()
+                .is_some_and(|guidance| guidance
+                    .smoke_test_command
+                    .contains("plugins invoke-channel-bridge-operation"))
+        );
 
         let doctor_execution = execute_plugins_command(PluginsCommandOptions {
             json: false,
@@ -8126,6 +9192,60 @@ mod tests {
                 "ack_inbound".to_owned(),
                 "complete_batch".to_owned()
             ]
+        );
+        assert!(
+            doctor_result
+                .authoring_guidance
+                .as_ref()
+                .is_some_and(|guidance| guidance
+                    .smoke_test_command
+                    .contains("plugins invoke-channel-bridge-operation"))
+        );
+    }
+
+    #[tokio::test]
+    async fn checked_in_channel_bridge_example_probe_successfully() {
+        let repo_root = repo_root();
+        let package_root = repo_root
+            .join("examples/plugins-process/channel-bridge-javascript")
+            .display()
+            .to_string();
+
+        let probe_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            config: None,
+            command: PluginsCommands::InvokeChannelBridgeOperation(
+                PluginInvokeChannelBridgeOperationCommand {
+                    root: package_root,
+                    plugin_id: "channel-bridge-javascript-example".to_owned(),
+                    operation: "send_message".to_owned(),
+                    payload: "{\"target\":\"weixin:contact:demo\",\"text\":\"hello\"}".to_owned(),
+                    allow_commands: vec!["node".to_owned()],
+                },
+            ),
+        })
+        .await
+        .expect("checked-in channel bridge example probe should execute");
+
+        let PluginsCommandExecution::InvokeChannelBridgeOperation(probe_execution) =
+            probe_execution
+        else {
+            panic!("expected managed bridge probe execution");
+        };
+
+        assert_eq!(
+            probe_execution.plugin_id,
+            "channel-bridge-javascript-example"
+        );
+        assert_eq!(probe_execution.channel_id.as_deref(), Some("weixin"));
+        assert_eq!(probe_execution.operation, "send_message");
+        assert_eq!(
+            probe_execution.response_payload["accepted"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            probe_execution.response_payload["target"],
+            serde_json::json!("weixin:contact:demo")
         );
     }
 
@@ -8168,6 +9288,14 @@ mod tests {
             assert!(
                 doc.contains("channel-bridge-javascript"),
                 "doc should mention the managed bridge reference example lane"
+            );
+            assert!(
+                doc.contains("plugins invoke-channel-bridge-operation"),
+                "doc should mention the managed bridge probe command"
+            );
+            assert!(
+                doc.contains("--transport-family"),
+                "doc should mention the managed bridge scaffold command shape"
             );
             assert!(
                 doc.contains("loong plugins run-tui-surface"),

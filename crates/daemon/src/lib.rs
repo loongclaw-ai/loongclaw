@@ -153,6 +153,7 @@ pub mod feishu_support;
 mod first_run_action_presentation;
 pub mod gateway;
 pub mod import_cli;
+mod managed_bridge_authoring;
 mod managed_plugin_bridge_runtime;
 mod mcp_cli;
 #[cfg(any(feature = "memory-sqlite", feature = "mvp"))]
@@ -2474,7 +2475,18 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
                     entry.plugin_id.as_str(),
                     Some(entry.runtime.source_language.as_str()),
                     &native_extension,
-                );
+                )
+                .or_else(|| {
+                    let contract = entry.channel_bridge.as_ref()?;
+                    crate::plugins_cli::channel_bridge_authoring_guidance(
+                        entry.package_root.as_str(),
+                        entry.plugin_id.as_str(),
+                        Some(entry.runtime.source_language.as_str()),
+                        entry.runtime.bridge_kind.as_str(),
+                        contract.runtime_contract.as_deref(),
+                        contract.runtime_operations.as_slice(),
+                    )
+                });
 
             RuntimeSnapshotRuntimePluginState {
                 plugin_id: entry.plugin_id.clone(),

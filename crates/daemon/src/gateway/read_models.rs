@@ -1791,6 +1791,8 @@ fn runtime_plugin_authoring_summary(
             "tui_surface_probe"
         } else if smoke_test_command.contains("plugins invoke-extension") {
             "extension_probe"
+        } else if smoke_test_command.contains("plugins invoke-channel-bridge-operation") {
+            "channel_bridge_probe"
         } else {
             "other"
         };

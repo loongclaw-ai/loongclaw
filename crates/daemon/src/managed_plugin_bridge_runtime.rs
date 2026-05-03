@@ -16,9 +16,9 @@ use crate::mvp;
 use crate::mvp::channel::ChannelAdapter;
 use crate::{ChannelCliCommandFuture, ChannelSendCliArgs, ChannelServeCliArgs};
 
-struct ManagedBridgeInvocationSuccess {
-    response_payload: Value,
-    runtime_evidence: Value,
+pub(crate) struct ManagedBridgeInvocationSuccess {
+    pub(crate) response_payload: Value,
+    pub(crate) runtime_evidence: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -601,6 +601,27 @@ async fn invoke_managed_bridge_operation(
 ) -> CliResult<ManagedBridgeInvocationSuccess> {
     let provider = provider_config_from_binding(binding);
     let channel = channel_config_from_binding(binding);
+    invoke_channel_bridge_operation_with_configs(
+        &provider,
+        &channel,
+        binding.plugin.runtime.bridge_kind,
+        binding.plugin.plugin_id.as_str(),
+        operation,
+        payload,
+        Some(bridge_policy),
+    )
+    .await
+}
+
+pub(crate) async fn invoke_channel_bridge_operation_with_configs(
+    provider: &kernel::ProviderConfig,
+    channel: &kernel::ChannelConfig,
+    bridge_kind: kernel::PluginBridgeKind,
+    plugin_id: &str,
+    operation: &str,
+    payload: Value,
+    bridge_policy: Option<&BridgeExecutionPolicy>,
+) -> CliResult<ManagedBridgeInvocationSuccess> {
     let required_capabilities = BTreeSet::from([Capability::InvokeConnector]);
     let command = loong_contracts::ConnectorCommand {
         connector_name: provider.connector_name.clone(),
@@ -608,12 +629,10 @@ async fn invoke_managed_bridge_operation(
         required_capabilities,
         payload,
     };
-    let bridge_kind = binding.plugin.runtime.bridge_kind;
 
     match bridge_kind {
         kernel::PluginBridgeKind::HttpJson => {
-            let execution_result =
-                execute_http_json_bridge_call(&provider, &channel, &command).await;
+            let execution_result = execute_http_json_bridge_call(provider, channel, &command).await;
             let execution_result = execution_result.map_err(|failure| failure.reason)?;
             Ok(ManagedBridgeInvocationSuccess {
                 response_payload: execution_result.response_payload,
@@ -621,9 +640,13 @@ async fn invoke_managed_bridge_operation(
             })
         }
         kernel::PluginBridgeKind::ProcessStdio => {
+            let bridge_policy = bridge_policy.ok_or_else(|| {
+                format!(
+                    "managed bridge runtime requires an allowlisted process_stdio bridge policy for plugin {plugin_id}"
+                )
+            })?;
             let execution_result =
-                execute_process_stdio_bridge_call(&provider, &channel, &command, bridge_policy)
-                    .await;
+                execute_process_stdio_bridge_call(provider, channel, &command, bridge_policy).await;
             let execution_result = execution_result.map_err(|failure| failure.reason)?;
             Ok(ManagedBridgeInvocationSuccess {
                 response_payload: execution_result.response_payload,
@@ -638,7 +661,7 @@ async fn invoke_managed_bridge_operation(
         | kernel::PluginBridgeKind::Unknown => Err(format!(
             "managed bridge runtime does not support bridge kind `{}` for plugin {}",
             bridge_kind.as_str(),
-            binding.plugin.plugin_id
+            plugin_id
         )),
     }
 }
