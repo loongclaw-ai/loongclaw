@@ -356,33 +356,69 @@ async fn plugin_bootstrap_trust_policy_fixture_blocks_unverified_process_plugin(
         report.plugin_trust_summary.scanned_plugins,
         report.plugin_trust_summary.review_required_plugins.len()
     );
+    assert!(
+        report
+            .plugin_trust_summary
+            .review_required_plugins
+            .iter()
+            .any(|entry| {
+                entry.bootstrap_status
+                    == Some(loong_daemon::kernel::BootstrapTaskStatus::DeferredUnsupportedAutoApply)
+            }),
+        "blocked trust fixture should still surface bootstrap policy deferrals"
+    );
+    let channel_bridge_entry = report
+        .plugin_trust_summary
+        .review_required_plugins
+        .iter()
+        .find(|entry| entry.plugin_id == "channel-bridge-javascript-example")
+        .expect("managed bridge example should surface in trust review");
     assert_eq!(
-        report.plugin_trust_summary.review_required_plugins[0]
+        channel_bridge_entry
             .bootstrap_status
             .expect("bootstrap status should exist"),
-        loong_daemon::kernel::BootstrapTaskStatus::DeferredUnsupportedAutoApply
+        loong_daemon::kernel::BootstrapTaskStatus::SkippedNotReady
     );
+    let stdio_echo_entry = report
+        .plugin_trust_summary
+        .review_required_plugins
+        .iter()
+        .find(|entry| entry.plugin_id == "stdio-echo-py")
+        .expect("stdio-echo-py should require bootstrap trust review");
+    assert!(
+        stdio_echo_entry.bootstrap_status.is_some(),
+        "stdio-echo-py should keep a bootstrap status"
+    );
+    let mut expected_review_required_ids: Vec<String> = report
+        .plugin_trust_summary
+        .review_required_plugins
+        .iter()
+        .map(|entry| entry.plugin_id.clone())
+        .collect();
+    expected_review_required_ids.sort();
     let audit = report.audit_events.expect("audit events should exist");
     assert!(audit.iter().any(|event| {
-        matches!(
-            &event.kind,
-            AuditEventKind::PluginTrustEvaluated {
-                scanned_plugins,
-                high_risk_unverified_plugins,
-                blocked_auto_apply_plugins,
-                review_required_plugin_ids,
-                review_required_bridges,
-                ..
-            } if *scanned_plugins == report.plugin_trust_summary.scanned_plugins
-                && *high_risk_unverified_plugins == report.plugin_trust_summary.high_risk_unverified_plugins
-                && *blocked_auto_apply_plugins == report.plugin_trust_summary.blocked_auto_apply_plugins
-                && review_required_plugin_ids.len() == report.plugin_trust_summary.review_required_plugins.len()
-                && review_required_plugin_ids.contains(&"stdio-echo-py".to_owned())
-                && review_required_plugin_ids.contains(&"trusted-host-extension-javascript-example".to_owned())
-                && review_required_plugin_ids.contains(&"trusted-host-extension-go-example".to_owned())
-                && review_required_plugin_ids.contains(&"trusted-host-extension-rust-example".to_owned())
+        if let AuditEventKind::PluginTrustEvaluated {
+            scanned_plugins,
+            high_risk_unverified_plugins,
+            blocked_auto_apply_plugins,
+            review_required_plugin_ids,
+            review_required_bridges,
+            ..
+        } = &event.kind
+        {
+            let mut actual_review_required_ids = review_required_plugin_ids.clone();
+            actual_review_required_ids.sort();
+            *scanned_plugins == report.plugin_trust_summary.scanned_plugins
+                && *high_risk_unverified_plugins
+                    == report.plugin_trust_summary.high_risk_unverified_plugins
+                && *blocked_auto_apply_plugins
+                    == report.plugin_trust_summary.blocked_auto_apply_plugins
+                && actual_review_required_ids == expected_review_required_ids
                 && review_required_bridges == &vec!["process_stdio".to_owned()]
-        )
+        } else {
+            false
+        }
     }));
 }
 

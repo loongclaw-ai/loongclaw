@@ -1,0 +1,46 @@
+{
+  "api_version": "v1alpha1",
+  "version": "0.1.0",
+  "plugin_id": "channel-bridge-javascript-example",
+  "provider_id": "channel-bridge-javascript-example",
+  "connector_name": "channel-bridge-javascript-example",
+  "channel_id": "weixin",
+  "capabilities": [
+    "InvokeConnector"
+  ],
+  "metadata": {
+    "bridge_kind": "process_stdio",
+    "adapter_family": "channel-bridge",
+    "entrypoint": "stdin/stdout::invoke",
+    "source_language": "javascript",
+    "command": "node",
+    "args_json": "[\"bridge.js\"]",
+    "process_timeout_ms": "15000",
+    "transport_family": "wechat_clawbot_ilink_bridge",
+    "target_contract": "weixin:<account>:contact:<id> | weixin:<account>:room:<id>",
+    "account_scope": "multi_account",
+    "channel_runtime_contract": "loong_channel_bridge_v1",
+    "channel_runtime_operations_json": "[\"send_message\",\"receive_batch\",\"ack_inbound\",\"complete_batch\"]",
+    "channel_runtime_operation_specs_json": "{\"ack_inbound\":{\"label\":\"Ack Inbound\",\"operator_hint\":\"Loong calls this after one inbound message is processed.\",\"sample_payload\":{\"message_id\":\"demo-message\"},\"summary\":\"Acknowledge one inbound message after processing.\"},\"complete_batch\":{\"label\":\"Complete Batch\",\"operator_hint\":\"Loong calls this after the current receive_batch cycle is fully drained.\",\"sample_payload\":{\"batch_cursor\":\"cursor-1\"},\"summary\":\"Mark the current receive batch as fully processed.\"},\"receive_batch\":{\"label\":\"Receive Batch\",\"operator_hint\":\"Loong polls this operation before dispatching inbound bridge messages.\",\"sample_payload\":{\"limit\":10},\"summary\":\"Poll one inbound bridge batch for channel delivery.\"},\"send_message\":{\"label\":\"Send Message\",\"operator_hint\":\"Loong uses this operation for outbound sends on the selected channel surface.\",\"sample_payload\":{\"target\":\"weixin:contact:demo\",\"text\":\"hello\"},\"summary\":\"Send one outbound bridge message for the selected channel target.\"}}"
+  },
+  "summary": "Managed bridge JavaScript contract example",
+  "tags": [
+    "example",
+    "channel-bridge",
+    "process-stdio",
+    "javascript"
+  ],
+  "setup": {
+    "surface": "channel",
+    "required_env_vars": [
+      "WEIXIN_BRIDGE_URL"
+    ],
+    "docs_urls": [
+      "https://example.test/bridge-docs"
+    ]
+  },
+  "compatibility": {
+    "host_api": "loong-plugin/v1",
+    "host_version_req": ">=0.1.2-alpha.1"
+  }
+}

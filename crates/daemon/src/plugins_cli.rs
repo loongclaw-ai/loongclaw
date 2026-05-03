@@ -8052,6 +8052,83 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn checked_in_channel_bridge_example_surfaces_contract_truth() {
+        let repo_root = repo_root();
+        let package_root = repo_root
+            .join("examples/plugins-process/channel-bridge-javascript")
+            .display()
+            .to_string();
+
+        let inventory_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            config: None,
+            command: PluginsCommands::Inventory(PluginInventoryCommand {
+                source: PluginScanSourceArgs {
+                    roots: vec![package_root.clone()],
+                    query: "channel-bridge-javascript-example".to_owned(),
+                    limit: None,
+                    bridge_support: None,
+                    bridge_profile: None,
+                    bridge_support_delta: None,
+                    bridge_support_sha256: None,
+                    bridge_support_delta_sha256: None,
+                },
+                include_ready: true,
+                include_blocked: true,
+                include_deferred: true,
+                include_examples: false,
+            }),
+        })
+        .await
+        .expect("channel bridge example inventory should execute");
+
+        let PluginsCommandExecution::Inventory(inventory_execution) = inventory_execution else {
+            panic!("expected inventory execution");
+        };
+        let inventory_result = &inventory_execution.results[0];
+        assert_eq!(
+            inventory_result.channel_bridge_transport_family.as_deref(),
+            Some("wechat_clawbot_ilink_bridge")
+        );
+        assert_eq!(
+            inventory_result.channel_bridge_runtime_operation_specs[0].operation,
+            "send_message"
+        );
+
+        let doctor_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            config: None,
+            command: PluginsCommands::Doctor(PluginDoctorCommand {
+                source: plugin_doctor_source(&package_root, "channel-bridge-javascript-example"),
+                include_passed: true,
+                include_warned: true,
+                include_blocked: true,
+                include_deferred: true,
+            }),
+        })
+        .await
+        .expect("channel bridge example doctor should execute");
+
+        let PluginsCommandExecution::Doctor(doctor_execution) = doctor_execution else {
+            panic!("expected doctor execution");
+        };
+        let doctor_result = &doctor_execution.results[0].plugin;
+        assert_eq!(
+            doctor_result.channel_bridge_runtime_contract.as_deref(),
+            Some("loong_channel_bridge_v1")
+        );
+        assert_eq!(
+            doctor_result.channel_bridge_runtime_operations,
+            vec![
+                "send_message".to_owned(),
+                "receive_batch".to_owned(),
+                "ack_inbound".to_owned(),
+                "complete_batch".to_owned()
+            ]
+        );
+    }
+
     #[test]
     fn public_extension_docs_describe_conflict_review_loop() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -8087,6 +8164,10 @@ mod tests {
             assert!(
                 doc.contains("native-extension-trusted-host-javascript"),
                 "doc should mention the trusted-host example lane"
+            );
+            assert!(
+                doc.contains("channel-bridge-javascript"),
+                "doc should mention the managed bridge reference example lane"
             );
             assert!(
                 doc.contains("loong plugins run-tui-surface"),

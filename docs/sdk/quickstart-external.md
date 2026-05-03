@@ -115,6 +115,10 @@ Trusted-host extensions:
 - `examples/plugins-process/native-extension-trusted-host-go/`
 - `examples/plugins-process/native-extension-trusted-host-rust/`
 
+Managed bridge reference package (reference-first today):
+
+- `examples/plugins-process/channel-bridge-javascript/`
+
 When runtime plugins are enabled but `runtime_plugins.roots` is left empty,
 Loong now auto-discovers the standard local roots first:
 
