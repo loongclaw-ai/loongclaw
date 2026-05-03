@@ -96,9 +96,19 @@ Right now, trusted host scaffolds are intentionally limited to:
 - generated local runtime stub files
 - bounded smoke probes plus runtime-managed trusted TUI execution, not implicit in-process execution
 
+For generic endpoint-backed connector packages, the current public loop is:
+
+1. scaffold the package:
+   - `loong plugins init ... --bridge-kind http_json --endpoint <url>`
+2. inspect the generated probe command from `plugins init`
+3. run `loong plugins inventory`
+4. run `loong plugins doctor`
+5. probe one real connector operation with:
+   - `loong plugins invoke-connector-operation`
+
 ## Reference Examples
 
-The repository now keeps two checked-in example lanes you can diff against
+The repository now keeps several checked-in example lanes you can diff against
 directly.
 
 Governed native runtime extensions:

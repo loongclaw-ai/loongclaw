@@ -140,6 +140,25 @@ loong plugins inventory --root ./weather-host
 loong plugins doctor --root ./weather-host --profile sdk-release
 ```
 
+## Generic Endpoint-Backed Connector Loop
+
+```bash
+loong plugins init ./search-http \
+  --plugin-id search-http \
+  --bridge-kind http_json \
+  --endpoint http://127.0.0.1:8080/invoke
+```
+
+Then choose one concrete connector operation and probe it:
+
+```bash
+loong plugins invoke-connector-operation \
+  --root ./search-http \
+  --plugin-id search-http \
+  --operation search \
+  --payload '{"query":"ping"}'
+```
+
 ## Probe The Runtime Surface
 
 ### Host hook

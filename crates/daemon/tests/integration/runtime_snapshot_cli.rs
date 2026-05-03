@@ -468,6 +468,26 @@ fn runtime_snapshot_json_payload_includes_provider_tool_and_external_skill_inven
         "plugin_id",
         "demo-search-plugin"
     ));
+    let plugin = array_object_with_string_field(
+        &payload["runtime_plugins"]["plugins"],
+        "plugin_id",
+        "demo-search-plugin",
+    )
+    .expect("runtime snapshot plugin should be present");
+    assert_eq!(
+        plugin["authoring_guidance"]["validate_command"],
+        serde_json::json!(format!(
+            "loong plugins doctor --root \"{}\" --profile sdk-release",
+            root.join("runtime-plugins/search").display()
+        ))
+    );
+    assert!(
+        plugin["authoring_guidance"]["smoke_test_command"]
+            .as_str()
+            .is_some_and(|command| command.contains("plugins invoke-connector-operation")),
+        "unexpected connector authoring command: {}",
+        plugin["authoring_guidance"]["smoke_test_command"]
+    );
 
     fs::remove_dir_all(&root).ok();
 }

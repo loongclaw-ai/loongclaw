@@ -108,10 +108,12 @@ Trusted host extensions add one more rule:
 
 Today, an external author can rely on these operator-visible surfaces:
 
+- `loong plugins init --bridge-kind http_json --endpoint ...`
 - `loong plugins init --host-hook ...`
 - `loong plugins init --tui-surface ...`
 - `loong plugins inventory`
 - `loong plugins doctor`
+- `loong plugins invoke-connector-operation`
 - `loong plugins invoke-host-hook`
 - `loong plugins invoke-tui-surface`
 - `loong plugins run-tui-surface`
@@ -141,6 +143,13 @@ Today, the scaffolded trusted host lane is intentionally narrow:
 
 That keeps the public authoring contract honest while the broader executor
 story is still evolving.
+
+For generic endpoint-backed connector packages, the current public probe loop is
+lighter:
+
+- scaffold with `loong plugins init --bridge-kind http_json --endpoint ...`
+- choose one real connector operation name
+- probe it with `loong plugins invoke-connector-operation`
 
 ## What Is Not Promised
 

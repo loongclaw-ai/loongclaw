@@ -3,6 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use clap::{Args, Subcommand, ValueEnum};
+use loong_bridge_runtime::execute_http_json_bridge_call;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,6 +35,7 @@ pub const PLUGINS_PREFLIGHT_SCHEMA_PURPOSE: &str = "ecosystem_preflight_evaluati
 pub const PLUGINS_ACTIONS_SCHEMA_PURPOSE: &str = "operator_action_plan";
 pub const PLUGINS_INIT_SCHEMA_PURPOSE: &str = "package_scaffold";
 pub const PLUGINS_INVOKE_EXTENSION_SCHEMA_PURPOSE: &str = "native_extension_smoke_probe";
+pub const PLUGINS_INVOKE_CONNECTOR_OPERATION_SCHEMA_PURPOSE: &str = "connector_runtime_probe";
 pub const PLUGINS_INVOKE_CHANNEL_BRIDGE_OPERATION_SCHEMA_PURPOSE: &str =
     "managed_bridge_runtime_probe";
 pub const PLUGINS_INVOKE_HOST_HOOK_SCHEMA_PURPOSE: &str = "trusted_host_hook_probe";
@@ -52,6 +54,8 @@ fn plugins_command_schema(purpose: &str) -> JsonSchemaDescriptor {
 pub enum PluginsCommands {
     /// Scaffold a new manifest-first plugin package root for external authors
     Init(PluginInitCommand),
+    /// Probe a generic connector operation through the declared bridge
+    InvokeConnectorOperation(PluginInvokeConnectorOperationCommand),
     /// Smoke-test a native process_stdio extension entrypoint through the governed bridge
     InvokeExtension(PluginInvokeExtensionCommand),
     /// Probe a declared managed channel-bridge runtime operation through the bounded bridge
@@ -321,6 +325,9 @@ pub struct PluginInitCommand {
     /// Source language for language-specific bridges such as process_stdio or native_ffi
     #[arg(long)]
     pub source_language: Option<String>,
+    /// Optional endpoint override for http_json scaffolds
+    #[arg(long)]
+    pub endpoint: Option<String>,
     /// Optional channel id for scaffolding a managed channel-bridge package lane
     #[arg(long)]
     pub channel_id: Option<String>,
@@ -369,6 +376,22 @@ pub struct PluginInvokeExtensionCommand {
     pub payload: String,
     #[arg(long = "allow-command")]
     pub allow_commands: Vec<String>,
+}
+
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[command(
+    about = "Probe a generic connector operation through the declared bridge",
+    long_about = "Probe a generic connector operation through the declared bridge.\n\nThis command scans a package root, selects the named plugin package, and invokes one connector operation through the declared bridge. Today the public authoring lane covers http_json packages, so the command is intended for endpoint-backed connector packages after the author chooses a concrete operation name and payload."
+)]
+pub struct PluginInvokeConnectorOperationCommand {
+    #[arg(long = "root", value_name = "ROOT")]
+    pub root: String,
+    #[arg(long)]
+    pub plugin_id: String,
+    #[arg(long)]
+    pub operation: String,
+    #[arg(long, default_value = "{}")]
+    pub payload: String,
 }
 
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
@@ -901,6 +924,8 @@ pub struct PluginsInitExecution {
     pub version: String,
     pub bridge_kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_id: Option<String>,
     pub source_language: Option<String>,
     pub adapter_family: String,
@@ -961,6 +986,20 @@ pub struct ManagedBridgeAuthoringProfileExecution {
     pub smoke_allow_command: String,
     pub smoke_test_command: String,
     pub example_package_root: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginsInvokeConnectorOperationExecution {
+    pub schema_version: u32,
+    pub schema: JsonSchemaDescriptor,
+    pub package_root: String,
+    pub plugin_id: String,
+    pub bridge_kind: String,
+    pub endpoint: Option<String>,
+    pub operation: String,
+    pub payload: Value,
+    pub response_payload: Value,
+    pub runtime_evidence: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1048,6 +1087,7 @@ pub struct PluginsRunTuiSurfaceExecution {
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum PluginsCommandExecution {
     Init(Box<PluginsInitExecution>),
+    InvokeConnectorOperation(Box<PluginsInvokeConnectorOperationExecution>),
     InvokeExtension(Box<PluginsInvokeExtensionExecution>),
     InvokeChannelBridgeOperation(Box<PluginsInvokeChannelBridgeOperationExecution>),
     InvokeHostHook(Box<PluginsInvokeHostHookExecution>),
@@ -1088,6 +1128,12 @@ pub async fn execute_plugins_command(
         PluginsCommands::Init(command) => {
             let execution = execute_plugins_init(command)?;
             Ok(PluginsCommandExecution::Init(Box::new(execution)))
+        }
+        PluginsCommands::InvokeConnectorOperation(command) => {
+            let execution = execute_plugins_invoke_connector_operation(command).await?;
+            Ok(PluginsCommandExecution::InvokeConnectorOperation(Box::new(
+                execution,
+            )))
         }
         PluginsCommands::InvokeExtension(command) => {
             let execution = execute_plugins_invoke_extension(command).await?;
@@ -1587,6 +1633,11 @@ fn summarize_runtime_plugin_inventory_authoring_guidance(
             .contains("plugins invoke-channel-bridge-operation")
         {
             "channel_bridge_probe"
+        } else if guidance
+            .smoke_test_command
+            .contains("plugins invoke-connector-operation")
+        {
+            "connector_probe"
         } else {
             "other"
         };
@@ -1617,6 +1668,8 @@ struct PluginPackageScaffoldManifestDocument {
     provider_id: String,
     connector_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     channel_id: Option<String>,
     capabilities: BTreeSet<Capability>,
     metadata: BTreeMap<String, String>,
@@ -1646,6 +1699,7 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         .unwrap_or_else(|| plugin_id.clone());
     let version = normalize_required_cli_value("--version", &command.version)?;
     let summary = normalize_optional_cli_value(command.summary.as_deref());
+    let endpoint = normalize_optional_cli_value(command.endpoint.as_deref());
     let bridge_kind = command.bridge_kind.as_bridge_kind();
     let declared_capabilities =
         resolve_scaffold_declared_capabilities(command.capabilities.as_slice())?;
@@ -1680,10 +1734,14 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
     let effective_channel_id = managed_bridge_plan
         .as_ref()
         .map(|plan| plan.channel_id.clone());
+    let effective_endpoint = resolve_scaffold_endpoint(bridge_kind, endpoint)?;
     let effective_adapter_family = managed_bridge_plan
         .as_ref()
         .map(|_| "channel-bridge".to_owned())
         .unwrap_or_else(|| scaffold_defaults.adapter_family.clone());
+    let effective_entrypoint = effective_endpoint
+        .clone()
+        .unwrap_or_else(|| scaffold_defaults.entrypoint_hint.clone());
 
     let manifest = build_plugin_scaffold_manifest(
         &plugin_id,
@@ -1692,7 +1750,9 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         &version,
         summary,
         &scaffold_defaults,
+        effective_entrypoint.as_str(),
         effective_channel_id.as_deref(),
+        effective_endpoint.as_deref(),
         effective_adapter_family.as_str(),
         declared_capabilities,
         declared_host_hooks.clone(),
@@ -1714,6 +1774,7 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
     let smoke_test_command = render_plugin_scaffold_smoke_test_command(
         package_root.as_str(),
         plugin_id.as_str(),
+        bridge_kind,
         process_stdio_profile,
         managed_bridge_plan.as_ref(),
         declared_host_hooks.as_slice(),
@@ -1795,10 +1856,11 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         connector_name,
         version,
         bridge_kind: bridge_kind.as_str().to_owned(),
+        endpoint: effective_endpoint,
         channel_id: effective_channel_id,
         source_language: scaffold_defaults.source_language,
         adapter_family: effective_adapter_family,
-        entrypoint: scaffold_defaults.entrypoint_hint,
+        entrypoint: effective_entrypoint,
         doctor_command,
         inventory_command,
         operator_actions_command,
@@ -1853,6 +1915,64 @@ async fn execute_plugins_invoke_extension(
         bridge_kind: plugin.runtime.bridge_kind.as_str().to_owned(),
         source_language: Some(plugin.runtime.source_language.clone()),
         method,
+        payload,
+        response_payload: outcome.response_payload,
+        runtime_evidence: outcome.runtime_evidence,
+    })
+}
+
+async fn execute_plugins_invoke_connector_operation(
+    command: PluginInvokeConnectorOperationCommand,
+) -> CliResult<PluginsInvokeConnectorOperationExecution> {
+    let package_root = normalize_required_cli_value("--root", &command.root)?;
+    let plugin_id = normalize_required_cli_value("--plugin-id", &command.plugin_id)?;
+    let operation = normalize_required_cli_value("--operation", &command.operation)?;
+    let payload = serde_json::from_str::<Value>(command.payload.as_str()).map_err(|error| {
+        format!("plugins invoke-connector-operation requires --payload to be valid JSON: {error}")
+    })?;
+    let plugin = scan_single_plugin_from_root(
+        package_root.as_str(),
+        plugin_id.as_str(),
+        "plugins invoke-connector-operation",
+    )?;
+
+    if plugin.runtime.bridge_kind != PluginBridgeKind::HttpJson {
+        return Err(format!(
+            "plugins invoke-connector-operation currently supports only http_json packages; plugin `{plugin_id}` declares bridge_kind `{}`",
+            plugin.runtime.bridge_kind.as_str()
+        ));
+    }
+
+    let endpoint = plugin
+        .endpoint
+        .clone()
+        .or_else(|| Some(plugin.runtime.entrypoint_hint.clone()));
+    let provider = authoring_probe_provider_config(&plugin, None);
+    let channel = authoring_probe_generic_channel_config(&plugin);
+    let required_capabilities = BTreeSet::from([Capability::InvokeConnector]);
+    let command = loong_contracts::ConnectorCommand {
+        connector_name: provider.connector_name.clone(),
+        operation: operation.clone(),
+        required_capabilities,
+        payload: payload.clone(),
+    };
+    let outcome = execute_http_json_bridge_call(&provider, &channel, &command)
+        .await
+        .map_err(|failure| {
+            format!(
+                "plugins invoke-connector-operation failed: {}",
+                failure.reason
+            )
+        })?;
+
+    Ok(PluginsInvokeConnectorOperationExecution {
+        schema_version: PLUGINS_COMMAND_SCHEMA_VERSION,
+        schema: plugins_command_schema(PLUGINS_INVOKE_CONNECTOR_OPERATION_SCHEMA_PURPOSE),
+        package_root,
+        plugin_id,
+        bridge_kind: plugin.runtime.bridge_kind.as_str().to_owned(),
+        endpoint,
+        operation,
         payload,
         response_payload: outcome.response_payload,
         runtime_evidence: outcome.runtime_evidence,
@@ -2299,6 +2419,27 @@ fn authoring_probe_channel_config(
     }
 }
 
+fn authoring_probe_generic_channel_config(
+    plugin: &crate::kernel::PluginIR,
+) -> crate::kernel::ChannelConfig {
+    let metadata = BTreeMap::from([("source_plugin".to_owned(), plugin.plugin_id.clone())]);
+    let endpoint = plugin
+        .endpoint
+        .clone()
+        .unwrap_or_else(|| plugin.runtime.entrypoint_hint.clone());
+
+    crate::kernel::ChannelConfig {
+        channel_id: plugin
+            .channel_id
+            .clone()
+            .unwrap_or_else(|| "authoring".to_owned()),
+        provider_id: plugin.provider_id.clone(),
+        endpoint,
+        enabled: true,
+        metadata,
+    }
+}
+
 fn write_plugin_scaffold_files(
     package_root: &Path,
     plugin_id: &str,
@@ -2498,6 +2639,7 @@ fn resolve_scaffold_tui_surfaces(raw: &[String]) -> CliResult<Vec<String>> {
 fn render_plugin_scaffold_smoke_test_command(
     package_root: &str,
     plugin_id: &str,
+    bridge_kind: PluginBridgeKind,
     process_stdio_profile: Option<
         crate::native_extension_authoring::ProcessStdioNativeExtensionLanguageProfile,
     >,
@@ -2514,6 +2656,15 @@ fn render_plugin_scaffold_smoke_test_command(
                 managed_bridge_plan.profile.smoke_allow_command,
             ),
         );
+    }
+
+    if bridge_kind == PluginBridgeKind::HttpJson {
+        return Some(render_authoring_connector_probe_command(
+            package_root,
+            plugin_id,
+            "<operation>",
+            None,
+        ));
     }
 
     let profile = process_stdio_profile?;
@@ -2558,6 +2709,34 @@ fn render_authoring_actions_command(package_root: &str) -> String {
     format!("loong plugins actions --root \"{package_root}\" --profile sdk-release")
 }
 
+fn render_authoring_connector_probe_command(
+    package_root: &str,
+    plugin_id: &str,
+    operation: &str,
+    allow_command: Option<&str>,
+) -> String {
+    let mut command = format!(
+        "loong plugins invoke-connector-operation --root \"{package_root}\" --plugin-id \"{plugin_id}\" --operation {operation} --payload '{{}}'"
+    );
+    if let Some(allow_command) = allow_command {
+        command.push_str(format!(" --allow-command {allow_command}").as_str());
+    }
+    command
+}
+
+fn resolve_scaffold_endpoint(
+    bridge_kind: PluginBridgeKind,
+    endpoint: Option<String>,
+) -> CliResult<Option<String>> {
+    if endpoint.is_some() && bridge_kind != PluginBridgeKind::HttpJson {
+        return Err(
+            "plugins init currently accepts --endpoint only for http_json bridge kinds".to_owned(),
+        );
+    }
+
+    Ok(endpoint)
+}
+
 fn governed_native_example_package_root(source_language: &str) -> Option<&'static str> {
     match source_language {
         "python" => Some("examples/plugins-process/native-extension-python"),
@@ -2598,6 +2777,7 @@ fn build_native_extension_authoring_profile(
     let smoke_test_command = render_plugin_scaffold_smoke_test_command(
         package_root,
         plugin_id,
+        scaffold_defaults.bridge_kind,
         Some(profile),
         None,
         declared_host_hooks,
@@ -2843,7 +3023,9 @@ fn build_plugin_scaffold_manifest(
     version: &str,
     summary: Option<String>,
     scaffold_defaults: &crate::kernel::PluginRuntimeScaffoldDefaults,
+    entrypoint: &str,
     channel_id: Option<&str>,
+    endpoint: Option<&str>,
     adapter_family: &str,
     capabilities: BTreeSet<Capability>,
     host_hooks: Vec<String>,
@@ -2860,10 +3042,7 @@ fn build_plugin_scaffold_manifest(
         scaffold_defaults.bridge_kind.as_str().to_owned(),
     );
     metadata.insert("adapter_family".to_owned(), adapter_family.to_owned());
-    metadata.insert(
-        "entrypoint".to_owned(),
-        scaffold_defaults.entrypoint_hint.clone(),
-    );
+    metadata.insert("entrypoint".to_owned(), entrypoint.to_owned());
     if let Some(source_language) = scaffold_defaults.source_language.as_ref() {
         metadata.insert("source_language".to_owned(), source_language.clone());
     }
@@ -3069,7 +3248,7 @@ fn build_plugin_scaffold_manifest(
         provider_id: provider_id.to_owned(),
         connector_name: connector_name.to_owned(),
         channel_id: channel_id.map(str::to_owned),
-        endpoint: None,
+        endpoint: endpoint.map(str::to_owned),
         capabilities,
         trust_tier: Default::default(),
         metadata,
@@ -3311,6 +3490,7 @@ fn plugin_scaffold_manifest_document(
         plugin_id: manifest.plugin_id.clone(),
         provider_id: manifest.provider_id.clone(),
         connector_name: manifest.connector_name.clone(),
+        endpoint: manifest.endpoint.clone(),
         channel_id: manifest.channel_id.clone(),
         capabilities: manifest.capabilities.clone(),
         metadata: manifest.metadata.clone(),
@@ -3417,6 +3597,13 @@ fn render_plugin_scaffold_readme(
             smoke_test_command.to_owned(),
             "```".to_owned(),
         ]);
+        if smoke_test_command.contains("<operation>") {
+            lines.extend([
+                String::new(),
+                "Replace `<operation>` with one concrete connector operation that your package exposes, then update the payload to match that operation."
+                    .to_owned(),
+            ]);
+        }
     }
     if let Some(runtime_execute_command) = runtime_execute_command {
         lines.extend([
@@ -3436,6 +3623,10 @@ fn render_plugins_cli_text(execution: &PluginsCommandExecution) -> String {
         PluginsCommandExecution::Init(execution) => {
             ("plugins init", render_plugins_init_text(execution))
         }
+        PluginsCommandExecution::InvokeConnectorOperation(execution) => (
+            "plugins invoke-connector-operation",
+            render_plugins_invoke_connector_operation_text(execution),
+        ),
         PluginsCommandExecution::InvokeExtension(execution) => (
             "plugins invoke-extension",
             render_plugins_invoke_extension_text(execution),
@@ -3501,6 +3692,33 @@ fn render_plugins_invoke_extension_text(execution: &PluginsInvokeExtensionExecut
             execution.bridge_kind,
             source_language,
             execution.method
+        ),
+        "payload:".to_owned(),
+        execution.payload.to_string(),
+        "response_payload:".to_owned(),
+        response_payload,
+        "runtime_evidence:".to_owned(),
+        runtime_evidence,
+    ]
+    .join("\n")
+}
+
+fn render_plugins_invoke_connector_operation_text(
+    execution: &PluginsInvokeConnectorOperationExecution,
+) -> String {
+    let response_payload = serde_json::to_string_pretty(&execution.response_payload)
+        .unwrap_or_else(|_| execution.response_payload.to_string());
+    let runtime_evidence = serde_json::to_string_pretty(&execution.runtime_evidence)
+        .unwrap_or_else(|_| execution.runtime_evidence.to_string());
+
+    [
+        format!(
+            "plugins invoke-connector-operation package_root={} plugin_id={} bridge_kind={} endpoint={} operation={}",
+            execution.package_root,
+            execution.plugin_id,
+            execution.bridge_kind,
+            display_text_or_dash(execution.endpoint.as_deref()),
+            execution.operation
         ),
         "payload:".to_owned(),
         execution.payload.to_string(),
@@ -3612,6 +3830,9 @@ fn render_plugins_init_text(execution: &PluginsInitExecution) -> String {
         "- bridge_kind={} source_language={} adapter_family={} entrypoint={}",
         execution.bridge_kind, source_language, execution.adapter_family, execution.entrypoint
     ));
+    if let Some(endpoint) = execution.endpoint.as_deref() {
+        lines.push(format!("- endpoint={endpoint}"));
+    }
     if let Some(channel_id) = execution.channel_id.as_deref() {
         lines.push(format!("- channel_id={channel_id}"));
     }
@@ -3676,6 +3897,13 @@ fn plugin_authoring_guidance(
             result.channel_bridge_runtime_contract.as_deref(),
             result.channel_bridge_runtime_operations.as_slice(),
         )
+        .or_else(|| {
+            connector_package_authoring_guidance(
+                result.package_root.as_str(),
+                result.plugin_id.as_str(),
+                result.bridge_kind.as_str(),
+            )
+        })
     })
 }
 
@@ -3715,6 +3943,32 @@ pub(crate) fn channel_bridge_authoring_guidance(
                 ),
                 profile.smoke_allow_command,
             ),
+        runtime_execute_command: None,
+    })
+}
+
+pub(crate) fn connector_package_authoring_guidance(
+    package_root: &str,
+    plugin_id: &str,
+    bridge_kind: &str,
+) -> Option<crate::PluginNativeExtensionAuthoringGuidance> {
+    if bridge_kind != PluginBridgeKind::HttpJson.as_str() {
+        return None;
+    }
+
+    Some(crate::PluginNativeExtensionAuthoringGuidance {
+        validate_command: format!(
+            "loong plugins doctor --root \"{package_root}\" --profile sdk-release"
+        ),
+        operator_actions_command: format!(
+            "loong plugins actions --root \"{package_root}\" --profile sdk-release"
+        ),
+        smoke_test_command: render_authoring_connector_probe_command(
+            package_root,
+            plugin_id,
+            "<operation>",
+            None,
+        ),
         runtime_execute_command: None,
     })
 }
@@ -7215,6 +7469,7 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::HttpJson,
                 source_language: None,
+                endpoint: None,
                 channel_id: None,
                 transport_family: None,
                 target_contract: None,
@@ -7243,11 +7498,20 @@ mod tests {
         assert_eq!(execution.provider_id, "tavily-search");
         assert_eq!(execution.connector_name, "tavily-search");
         assert_eq!(execution.bridge_kind, "http_json");
+        assert_eq!(execution.endpoint, None);
         assert_eq!(execution.source_language, None);
         assert_eq!(execution.adapter_family, "http-adapter");
         assert_eq!(execution.entrypoint, "https://localhost/invoke");
         assert_eq!(execution.version, "0.1.0");
         assert_eq!(execution.files_written.len(), 2);
+        let expected_smoke_test_command = format!(
+            "loong plugins invoke-connector-operation --root \"{}\" --plugin-id \"tavily-search\" --operation <operation> --payload '{{}}'",
+            execution.package_root
+        );
+        assert_eq!(
+            execution.smoke_test_command.as_deref(),
+            Some(expected_smoke_test_command.as_str())
+        );
 
         let manifest_path = execution.manifest_path.clone();
         let readme_path = execution.readme_path.clone();
@@ -7265,6 +7529,7 @@ mod tests {
         assert_eq!(manifest.plugin_id, "tavily-search");
         assert_eq!(manifest.provider_id, "tavily-search");
         assert_eq!(manifest.connector_name, "tavily-search");
+        assert_eq!(manifest.endpoint, None);
         assert_eq!(
             manifest.summary.as_deref(),
             Some("Tavily-backed search package")
@@ -7311,6 +7576,14 @@ mod tests {
             rendered_readme.contains("loong plugins actions --root"),
             "README should point authors to actions: {rendered_readme}"
         );
+        assert!(
+            rendered_readme.contains("plugins invoke-connector-operation"),
+            "README should point authors to the generic connector probe: {rendered_readme}"
+        );
+        assert!(
+            rendered_readme.contains("Replace `<operation>`"),
+            "README should explain how to specialize the connector probe: {rendered_readme}"
+        );
 
         let scanner = crate::kernel::PluginScanner::new();
         let scan_report = scanner
@@ -7327,6 +7600,138 @@ mod tests {
         );
         assert_eq!(ir.runtime.adapter_family, "http-adapter");
         assert_eq!(ir.runtime.entrypoint_hint, "https://localhost/invoke");
+
+        let inventory_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            config: None,
+            command: PluginsCommands::Inventory(PluginInventoryCommand {
+                source: PluginScanSourceArgs {
+                    roots: vec![execution.package_root.clone()],
+                    query: "tavily-search".to_owned(),
+                    limit: None,
+                    bridge_support: None,
+                    bridge_profile: None,
+                    bridge_support_delta: None,
+                    bridge_support_sha256: None,
+                    bridge_support_delta_sha256: None,
+                },
+                include_ready: true,
+                include_blocked: true,
+                include_deferred: true,
+                include_examples: false,
+            }),
+        })
+        .await
+        .expect("http json inventory should execute");
+
+        let PluginsCommandExecution::Inventory(inventory_execution) = inventory_execution else {
+            panic!("expected inventory execution");
+        };
+        assert!(
+            inventory_execution.results[0]
+                .authoring_guidance
+                .as_ref()
+                .is_some_and(|guidance| guidance
+                    .smoke_test_command
+                    .contains("plugins invoke-connector-operation"))
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_plugins_invoke_connector_operation_executes_http_json_package_manifest() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test listener");
+        let addr = listener.local_addr().expect("local addr");
+        let server = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request_buf = [0_u8; 4096];
+                let _ = stream.read(&mut request_buf);
+                let body =
+                    r#"{"method":"search","id":"req-1","payload":{"status":"ok","reply":"pong"}}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+
+        let temp_root = unique_temp_dir("loong-plugins-cli-http-probe");
+        let package_root = format!("{temp_root}/search-http");
+
+        let execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            config: None,
+            command: PluginsCommands::Init(PluginInitCommand {
+                package_root: package_root.clone(),
+                plugin_id: "search-http".to_owned(),
+                provider_id: None,
+                connector_name: None,
+                bridge_kind: PluginInitBridgeKindArg::HttpJson,
+                source_language: None,
+                endpoint: Some(format!("http://{addr}/invoke")),
+                channel_id: None,
+                transport_family: None,
+                target_contract: None,
+                account_scope: None,
+                capabilities: Vec::new(),
+                host_hooks: Vec::new(),
+                host_actions: Vec::new(),
+                tui_surfaces: Vec::new(),
+                version: "0.1.0".to_owned(),
+                summary: Some("HTTP JSON search package".to_owned()),
+            }),
+        })
+        .await
+        .expect("http json scaffold should succeed");
+
+        let PluginsCommandExecution::Init(execution) = execution else {
+            panic!("expected init execution");
+        };
+        assert_eq!(
+            execution.endpoint.as_deref(),
+            Some(format!("http://{addr}/invoke").as_str())
+        );
+
+        let probe_execution = execute_plugins_command(PluginsCommandOptions {
+            json: false,
+            config: None,
+            command: PluginsCommands::InvokeConnectorOperation(
+                PluginInvokeConnectorOperationCommand {
+                    root: package_root,
+                    plugin_id: "search-http".to_owned(),
+                    operation: "search".to_owned(),
+                    payload: "{\"query\":\"ping\"}".to_owned(),
+                },
+            ),
+        })
+        .await
+        .expect("http json connector probe should execute");
+
+        let PluginsCommandExecution::InvokeConnectorOperation(probe_execution) = probe_execution
+        else {
+            panic!("expected connector probe execution");
+        };
+
+        assert_eq!(probe_execution.plugin_id, "search-http");
+        assert_eq!(probe_execution.operation, "search");
+        assert_eq!(
+            probe_execution.endpoint.as_deref(),
+            Some(format!("http://{addr}/invoke").as_str())
+        );
+        assert_eq!(
+            probe_execution.response_payload["reply"],
+            serde_json::json!("pong")
+        );
+        assert!(
+            render_plugins_invoke_connector_operation_text(&probe_execution)
+                .contains("plugins invoke-connector-operation")
+        );
+
+        server.join().expect("http probe server should join");
     }
 
     #[tokio::test]
@@ -7344,6 +7749,7 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: None,
+                endpoint: None,
                 channel_id: None,
                 transport_family: None,
                 target_contract: None,
@@ -7378,6 +7784,7 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::HttpJson,
                 source_language: None,
+                endpoint: None,
                 channel_id: None,
                 transport_family: None,
                 target_contract: None,
@@ -7412,6 +7819,7 @@ mod tests {
                 connector_name: Some("weather-stdio".to_owned()),
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("py".to_owned()),
+                endpoint: None,
                 channel_id: None,
                 transport_family: None,
                 target_contract: None,
@@ -7608,6 +8016,7 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("js".to_owned()),
+                endpoint: None,
                 channel_id: Some("weixin".to_owned()),
                 transport_family: Some("wechat_clawbot_ilink_bridge".to_owned()),
                 target_contract: Some(
@@ -7795,6 +8204,7 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("js".to_owned()),
+                endpoint: None,
                 channel_id: Some("weixin".to_owned()),
                 transport_family: Some("wechat_clawbot_ilink_bridge".to_owned()),
                 target_contract: Some(
@@ -7956,6 +8366,7 @@ mod tests {
                     connector_name: Some(spec.plugin_id.to_owned()),
                     bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                     source_language: Some(spec.source_language_arg.to_owned()),
+                    endpoint: None,
                     channel_id: None,
                     transport_family: None,
                     target_contract: None,
@@ -8113,6 +8524,7 @@ mod tests {
                 connector_name: Some("channel-bridge-javascript-example".to_owned()),
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("js".to_owned()),
+                endpoint: None,
                 channel_id: Some("weixin".to_owned()),
                 transport_family: Some("wechat_clawbot_ilink_bridge".to_owned()),
                 target_contract: Some(
@@ -8261,6 +8673,7 @@ mod tests {
                 connector_name: Some("weather-stdio".to_owned()),
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("py".to_owned()),
+                endpoint: None,
                 channel_id: None,
                 transport_family: None,
                 target_contract: None,
@@ -8382,6 +8795,7 @@ mod tests {
                 connector_name: Some("weather-stdio".to_owned()),
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("js".to_owned()),
+                endpoint: None,
                 channel_id: None,
                 transport_family: None,
                 target_contract: None,
@@ -8489,6 +8903,7 @@ mod tests {
                 connector_name: Some("weather-stdio".to_owned()),
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("js".to_owned()),
+                endpoint: None,
                 channel_id: None,
                 transport_family: None,
                 target_contract: None,
@@ -8546,6 +8961,7 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("js".to_owned()),
+                endpoint: None,
                 channel_id: None,
                 transport_family: None,
                 target_contract: None,
@@ -8579,6 +8995,7 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::ProcessStdio,
                 source_language: Some("js".to_owned()),
+                endpoint: None,
                 channel_id: None,
                 transport_family: None,
                 target_contract: None,
@@ -8615,6 +9032,7 @@ mod tests {
                 connector_name: None,
                 bridge_kind: PluginInitBridgeKindArg::HttpJson,
                 source_language: None,
+                endpoint: None,
                 channel_id: None,
                 transport_family: None,
                 target_contract: None,
@@ -9292,6 +9710,14 @@ mod tests {
             assert!(
                 doc.contains("plugins invoke-channel-bridge-operation"),
                 "doc should mention the managed bridge probe command"
+            );
+            assert!(
+                doc.contains("plugins invoke-connector-operation"),
+                "doc should mention the generic connector probe command"
+            );
+            assert!(
+                doc.contains("--endpoint"),
+                "doc should mention the http_json scaffold endpoint flag"
             );
             assert!(
                 doc.contains("--transport-family"),

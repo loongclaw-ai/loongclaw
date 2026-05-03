@@ -2486,6 +2486,13 @@ pub(crate) fn collect_runtime_snapshot_runtime_plugins_state(
                         contract.runtime_contract.as_deref(),
                         contract.runtime_operations.as_slice(),
                     )
+                })
+                .or_else(|| {
+                    crate::plugins_cli::connector_package_authoring_guidance(
+                        entry.package_root.as_str(),
+                        entry.plugin_id.as_str(),
+                        entry.runtime.bridge_kind.as_str(),
+                    )
                 });
 
             RuntimeSnapshotRuntimePluginState {
