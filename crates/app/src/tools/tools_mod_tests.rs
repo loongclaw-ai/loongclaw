@@ -1036,8 +1036,11 @@ fn canonical_tool_name_maps_known_aliases() {
     assert_eq!(canonical_tool_name("file_write"), "file.write");
     assert_eq!(canonical_tool_name("provider_switch"), "provider.switch");
     assert_eq!(canonical_tool_name("browser_open"), "browser.open");
+    assert_eq!(canonical_tool_name("browse.open"), "browser.open");
     assert_eq!(canonical_tool_name("browser_extract"), "browser.extract");
+    assert_eq!(canonical_tool_name("browse.extract"), "browser.extract");
     assert_eq!(canonical_tool_name("browser_click"), "browser.click");
+    assert_eq!(canonical_tool_name("browse.click"), "browser.click");
     assert_eq!(canonical_tool_name("file_edit"), "file.edit");
     assert_eq!(canonical_tool_name("shell_exec"), "shell.exec");
     assert_eq!(canonical_tool_name("shell"), "shell.exec");

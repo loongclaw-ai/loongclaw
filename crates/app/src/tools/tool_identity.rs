@@ -9,6 +9,12 @@ use super::{
 };
 
 pub fn canonical_tool_name(raw: &str) -> &str {
+    match raw {
+        "browse.open" => return "browser.open",
+        "browse.extract" => return "browser.extract",
+        "browse.click" => return "browser.click",
+        _ => {}
+    }
     let catalog = tool_catalog();
     if let Some(descriptor) = catalog.resolve(raw) {
         return descriptor.name;

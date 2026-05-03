@@ -74,7 +74,7 @@ fn named_skill_activation_parser_accepts_explicit_skill_mentions_with_verbs() {
     let visible_skills = vec!["agent-browser".to_owned(), "release-guard".to_owned()];
 
     let parsed = parse_named_skill_activation_input(
-        "调用agent browser skill看一下 github.com/chumyin",
+        "调用agent browser skill看一下 https://example.com",
         visible_skills.as_slice(),
     )
     .expect("named skill activation");
@@ -82,7 +82,7 @@ fn named_skill_activation_parser_accepts_explicit_skill_mentions_with_verbs() {
     assert_eq!(parsed.skill_id, "agent-browser");
     assert_eq!(
         parsed.followup_request,
-        "调用agent browser skill看一下 github.com/chumyin"
+        "调用agent browser skill看一下 https://example.com"
     );
 }
 

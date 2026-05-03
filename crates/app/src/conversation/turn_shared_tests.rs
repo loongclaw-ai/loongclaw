@@ -1324,12 +1324,12 @@ fn tool_failure_followup_tail_renders_max_bytes_retry_guidance_for_web() {
         retryable: true,
     };
     let tool_request_summary =
-        r#"{"name":"web","arguments":{"url":"https://github.com/chumyin","max_bytes":120000}}"#;
+        r#"{"name":"web","arguments":{"url":"https://example.com","max_bytes":120000}}"#;
     let tail = build_tool_driven_followup_tail(
         "preface",
         &payload,
         Some(tool_request_summary),
-        "看一下 github.com/chumyin",
+        "看一下 https://example.com",
         None,
         |_, text| text.to_owned(),
     );

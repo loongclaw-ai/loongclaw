@@ -227,15 +227,29 @@ fn render_deferred_tool_text_workflow_section() -> String {
         "}",
     ];
     let direct_call_example = direct_call_example_lines.join("\n");
+    let browse_call_example_lines = [
+        "{",
+        "  \"name\": \"browse\",",
+        "  \"arguments\": {",
+        "    \"action\": \"open\",",
+        "    \"url\": \"https://example.com\"",
+        "  }",
+        "}",
+    ];
+    let browse_call_example = browse_call_example_lines.join("\n");
 
     let lines = [
         "## Tool Access".to_owned(),
         "Structured provider tool schemas are disabled for this profile.".to_owned(),
-        "Use the smallest direct tool that fits: `read`, `write`, `bash`, `web`, `browser`, or `memory`.".to_owned(),
+        "Use the smallest direct tool that fits: `read`, `write`, `bash`, `web`, `browse`, or `memory`.".to_owned(),
         "For `web`, distinguish search-provider mode from ordinary network mode: `web { query }` uses web-search providers, while `web { url }` or low-level request fields are still normal network access.".to_owned(),
-        "When you need a tool, emit the raw JSON call instead of only describing the missing capability.".to_owned(),
+        "For page inspection, use the direct `browse` surface. In raw JSON mode, do not emit hidden discoverable names such as `browser.open`, `browser.extract`, `browser.click`, or dotted variants like `browse.open`.".to_owned(),
+        "When you need a tool, emit one standalone JSON object with exactly `name` and `arguments` instead of only describing the missing capability.".to_owned(),
+        "Do not emit legacy `tool` / `request` wrappers in raw JSON mode.".to_owned(),
         "Direct tool example:".to_owned(),
         direct_call_example,
+        "Browse example:".to_owned(),
+        browse_call_example,
     ];
 
     lines.join("\n")

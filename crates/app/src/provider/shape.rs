@@ -1205,6 +1205,40 @@ fn parse_plain_json_tool_call_candidate(
     };
     let consumed_bytes = stream.byte_offset();
     if !is_standalone_block_end(text, consumed_bytes) {
+        if let Some((repaired_value, repaired_consumed_bytes)) =
+            repair_misordered_json_tool_call_candidate(text, &value, consumed_bytes)
+        {
+            let envelope = match json_tool_call_envelope(
+                &repaired_value,
+                JsonToolCallEnvelopeMode::PlainStandalone,
+            ) {
+                Ok(Some(envelope)) => envelope,
+                Ok(None) => {
+                    return JsonToolBlockCandidate::Unsupported {
+                        consumed_bytes: Some(repaired_consumed_bytes),
+                    };
+                }
+                Err(error) => return JsonToolBlockCandidate::Malformed(error),
+            };
+            let tool_intent = match build_json_tool_intent(
+                envelope,
+                session_id,
+                turn_id,
+                bridge_context,
+                tool_offset,
+            ) {
+                Some(tool_intent) => tool_intent,
+                None => {
+                    return JsonToolBlockCandidate::Unsupported {
+                        consumed_bytes: Some(repaired_consumed_bytes),
+                    };
+                }
+            };
+            return JsonToolBlockCandidate::Parsed {
+                consumed_bytes: repaired_consumed_bytes,
+                tool_intent,
+            };
+        }
         return JsonToolBlockCandidate::Unsupported {
             consumed_bytes: None,
         };
@@ -1232,6 +1266,59 @@ fn parse_plain_json_tool_call_candidate(
         consumed_bytes,
         tool_intent,
     }
+}
+
+fn repair_misordered_json_tool_call_candidate(
+    text: &str,
+    first_value: &Value,
+    consumed_bytes: usize,
+) -> Option<(Value, usize)> {
+    let Value::Object(_) = first_value else {
+        return None;
+    };
+
+    let suffix = &text[consumed_bytes..];
+    let trimmed_prefix_len = suffix.len().saturating_sub(suffix.trim_start().len());
+    let trimmed_suffix = &suffix[trimmed_prefix_len..];
+    if !trimmed_suffix.starts_with(',') {
+        return None;
+    }
+
+    let repaired_tail = format!("{{{}", &trimmed_suffix[1..]);
+    let mut tail_stream = serde_json::Deserializer::from_str(&repaired_tail).into_iter::<Value>();
+    let tail_value = match tail_stream.next() {
+        Some(Ok(value)) => value,
+        _ => return None,
+    };
+    let tail_consumed_bytes = tail_stream.byte_offset();
+    if !is_standalone_block_end(repaired_tail.as_str(), tail_consumed_bytes) {
+        return None;
+    }
+
+    let mut tail_object = tail_value.as_object()?.clone();
+    let has_tool_name = tail_object.contains_key("name")
+        || tail_object.contains_key("tool")
+        || tail_object.contains_key("tool_name")
+        || tail_object
+            .get("function")
+            .and_then(Value::as_object)
+            .is_some_and(|function| function.contains_key("name"));
+    if !has_tool_name {
+        return None;
+    }
+
+    if !tail_object.contains_key("arguments")
+        && !tail_object.contains_key("request")
+        && !tail_object.contains_key("input")
+        && !tail_object.contains_key("parameters")
+        && !tail_object.contains_key("args")
+        && !tail_object.contains_key("payload")
+    {
+        tail_object.insert("request".to_owned(), first_value.clone());
+    }
+
+    let repaired_consumed_bytes = consumed_bytes + trimmed_prefix_len + tail_consumed_bytes;
+    Some((Value::Object(tail_object), repaired_consumed_bytes))
 }
 
 fn json_tool_call_envelope(
@@ -1310,7 +1397,8 @@ fn json_tool_argument_value<'a>(
     function: Option<&'a serde_json::Map<String, Value>>,
 ) -> Option<&'a Value> {
     object
-        .get("arguments")
+        .get("request")
+        .or_else(|| object.get("arguments"))
         .or_else(|| object.get("input"))
         .or_else(|| object.get("parameters"))
         .or_else(|| object.get("args"))
@@ -1321,7 +1409,8 @@ fn json_tool_argument_value<'a>(
 }
 
 fn has_explicit_json_tool_call_marker(object: &serde_json::Map<String, Value>) -> bool {
-    object.contains_key("arguments")
+    object.contains_key("request")
+        || object.contains_key("arguments")
         || object.contains_key("input")
         || object.contains_key("parameters")
         || object.contains_key("args")
@@ -1350,6 +1439,7 @@ fn json_tool_arguments_from_top_level(object: &serde_json::Map<String, Value>) -
         "tool_call_id",
         "call_id",
         "type",
+        "request",
         "arguments",
         "input",
         "parameters",
@@ -3088,6 +3178,50 @@ mod tests {
         assert_eq!(turn.tool_intents.len(), 1);
         assert_eq!(turn.tool_intents[0].tool_name, "read");
         assert_eq!(turn.tool_intents[0].args_json, json!({"path": "note.md"}));
+    }
+
+    #[test]
+    fn extract_provider_turn_accepts_legacy_request_wrapper_for_browse_followups() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "now i'll open the page.\n{\n  \"tool\": \"browser.open\",\n  \"request\": {\n    \"url\": \"https://example.com\"\n  }\n}"
+                }
+            }]
+        });
+        let messages = discovery_followup_messages("browse", "browse-wrapper-followup");
+
+        let turn = extract_provider_turn_with_scope_and_messages(&body, None, None, &messages)
+            .expect("turn");
+        assert_eq!(turn.assistant_text, "now i'll open the page.");
+        assert_eq!(turn.tool_intents.len(), 1);
+        assert_eq!(turn.tool_intents[0].tool_name, "browse");
+        assert_eq!(
+            turn.tool_intents[0].args_json,
+            json!({"url": "https://example.com"})
+        );
+    }
+
+    #[test]
+    fn extract_provider_turn_repairs_misordered_browse_wrapper_after_search() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "open the page.\n{\"url\":\"https://example.com\"},\"tool\":\"browse.open\"}"
+                }
+            }]
+        });
+        let messages = discovery_followup_messages("browse", "browse-misordered-followup");
+
+        let turn = extract_provider_turn_with_scope_and_messages(&body, None, None, &messages)
+            .expect("turn");
+        assert_eq!(turn.assistant_text, "open the page.");
+        assert_eq!(turn.tool_intents.len(), 1);
+        assert_eq!(turn.tool_intents[0].tool_name, "browse");
+        assert_eq!(
+            turn.tool_intents[0].args_json,
+            json!({"url": "https://example.com"})
+        );
     }
 
     #[test]
