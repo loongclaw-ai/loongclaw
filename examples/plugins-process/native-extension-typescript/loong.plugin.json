@@ -24,7 +24,8 @@
     "loong_extension_events_json": "[\"session_start\"]",
     "loong_extension_host_hooks_json": "[]",
     "loong_extension_host_actions_json": "[]",
-    "loong_extension_tui_surfaces_json": "[]"
+    "loong_extension_tui_surfaces_json": "[]",
+    "loong_extension_event_specs_json": "{\"session_start\":{\"label\":\"Session Start\",\"operator_hint\":\"Probe this event through `loong plugins invoke-extension --root \\\"<package-root>\\\" --plugin-id \\\"<plugin-id>\\\" --method extension/event --payload '{\\\"event\\\":\\\"session_start\\\"}' --allow-command <allow-command>`.\",\"sample_payload\":{\"event\":\"session_start\"},\"summary\":\"Advertise that this extension handles session_start events.\"}}"
   },
   "summary": "Minimal manifest-first TypeScript native extension example",
   "tags": [

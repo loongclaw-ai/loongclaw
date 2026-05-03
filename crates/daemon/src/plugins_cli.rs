@@ -2479,6 +2479,14 @@ fn build_plugin_scaffold_manifest(
                 )
                 .unwrap_or_else(|_| "[]".to_owned()),
             );
+            if let Some(event_specs_json) = render_scaffold_event_specs_json(
+                crate::native_extension_authoring::PROCESS_STDIO_NATIVE_EXTENSION_EVENTS,
+            ) {
+                metadata.insert(
+                    "loong_extension_event_specs_json".to_owned(),
+                    event_specs_json,
+                );
+            }
             metadata.insert(
                 "loong_extension_host_actions_json".to_owned(),
                 "[]".to_owned(),
@@ -2664,6 +2672,41 @@ fn render_scaffold_method_specs_json() -> Option<String> {
             }),
         ),
     ]);
+
+    serde_json::to_string(&specs).ok()
+}
+
+fn render_scaffold_event_specs_json(events: &[&str]) -> Option<String> {
+    if events.is_empty() {
+        return None;
+    }
+
+    let specs = events
+        .iter()
+        .map(|event| {
+            let human_label = humanize_tui_surface_identifier(event);
+            let summary = match *event {
+                "session_start" => "Advertise that this extension handles session_start events."
+                    .to_owned(),
+                _ => format!("Advertise that this extension handles the `{event}` event."),
+            };
+            let sample_payload = match *event {
+                "session_start" => serde_json::json!({"event":"session_start"}),
+                _ => serde_json::json!({"event": event}),
+            };
+            (
+                (*event).to_owned(),
+                serde_json::json!({
+                    "label": human_label,
+                    "summary": summary,
+                    "sample_payload": sample_payload,
+                    "operator_hint": format!(
+                        "Probe this event through `loong plugins invoke-extension --root \"<package-root>\" --plugin-id \"<plugin-id>\" --method extension/event --payload '{{\"event\":\"{event}\"}}' --allow-command <allow-command>`."
+                    ),
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
 
     serde_json::to_string(&specs).ok()
 }
@@ -3117,6 +3160,8 @@ fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> Strin
             || native_extension.trust_lane.is_some()
             || !native_extension.methods.is_empty()
             || !native_extension.method_specs.is_empty()
+            || !native_extension.events.is_empty()
+            || !native_extension.event_specs.is_empty()
             || !native_extension.host_hooks.is_empty()
             || !native_extension.host_hook_specs.is_empty()
             || !native_extension.tui_surfaces.is_empty()
@@ -3124,12 +3169,14 @@ fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> Strin
             || !native_extension.metadata_issues.is_empty();
         if has_native_extension_projection {
             lines.push(format!(
-                "  native_extension contract={} family={} trust_lane={} methods={} method_specs={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
+                "  native_extension contract={} family={} trust_lane={} methods={} method_specs={} events={} event_specs={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
                 display_text_or_dash(native_extension.contract.as_deref()),
                 display_text_or_dash(native_extension.family.as_deref()),
                 display_text_or_dash(native_extension.trust_lane.as_deref()),
                 format_csv_or_dash(&native_extension.methods),
                 format_method_specs_or_dash(&native_extension.method_specs),
+                format_csv_or_dash(&native_extension.events),
+                format_event_specs_or_dash(&native_extension.event_specs),
                 format_csv_or_dash(&native_extension.host_hooks),
                 format_host_hook_specs_or_dash(&native_extension.host_hook_specs),
                 format_csv_or_dash(&native_extension.tui_surfaces),
@@ -3473,6 +3520,8 @@ fn render_plugin_doctor_result_lines(result: &PluginPreflightResult) -> Vec<Stri
         || native_extension.trust_lane.is_some()
         || !native_extension.methods.is_empty()
         || !native_extension.method_specs.is_empty()
+        || !native_extension.events.is_empty()
+        || !native_extension.event_specs.is_empty()
         || !native_extension.host_hooks.is_empty()
         || !native_extension.host_hook_specs.is_empty()
         || !native_extension.tui_surfaces.is_empty()
@@ -3480,12 +3529,14 @@ fn render_plugin_doctor_result_lines(result: &PluginPreflightResult) -> Vec<Stri
         || !native_extension.metadata_issues.is_empty();
     if has_native_extension_projection {
         lines.push(format!(
-            "  native_extension contract={} family={} trust_lane={} methods={} method_specs={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
+            "  native_extension contract={} family={} trust_lane={} methods={} method_specs={} events={} event_specs={} host_hooks={} host_hook_specs={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
             display_text_or_dash(native_extension.contract.as_deref()),
             display_text_or_dash(native_extension.family.as_deref()),
             display_text_or_dash(native_extension.trust_lane.as_deref()),
             format_csv_or_dash(&native_extension.methods),
             format_method_specs_or_dash(&native_extension.method_specs),
+            format_csv_or_dash(&native_extension.events),
+            format_event_specs_or_dash(&native_extension.event_specs),
             format_csv_or_dash(&native_extension.host_hooks),
             format_host_hook_specs_or_dash(&native_extension.host_hook_specs),
             format_csv_or_dash(&native_extension.tui_surfaces),
@@ -4616,6 +4667,21 @@ fn format_method_specs_or_dash(specs: &[crate::kernel::PluginNativeExtensionMeth
         .map(|spec| match spec.label.as_deref() {
             Some(label) => format!("{}:{}", spec.method, label),
             None => spec.method.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn format_event_specs_or_dash(specs: &[crate::kernel::PluginNativeExtensionEventSpec]) -> String {
+    if specs.is_empty() {
+        return "-".to_owned();
+    }
+
+    specs
+        .iter()
+        .map(|spec| match spec.label.as_deref() {
+            Some(label) => format!("{}:{}", spec.event, label),
+            None => spec.event.clone(),
         })
         .collect::<Vec<_>>()
         .join(",")
@@ -7676,6 +7742,10 @@ mod tests {
             assert!(
                 doc.contains("loong_extension_method_specs_json"),
                 "doc should mention the governed method spec metadata field"
+            );
+            assert!(
+                doc.contains("loong_extension_event_specs_json"),
+                "doc should mention the governed event spec metadata field"
             );
         }
     }

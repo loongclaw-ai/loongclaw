@@ -6021,6 +6021,14 @@ fn render_extension_detail_lines_with_width(
         .as_ref()
         .map(|declarations| declarations.method_specs.clone())
         .unwrap_or_default();
+    let declared_events = extension_declarations
+        .as_ref()
+        .map(|declarations| declarations.events.clone())
+        .unwrap_or_default();
+    let trusted_event_specs = extension_declarations
+        .as_ref()
+        .map(|declarations| declarations.event_specs.clone())
+        .unwrap_or_default();
     let declared_host_hooks = extension_declarations
         .as_ref()
         .map(|declarations| declarations.host_hooks.clone())
@@ -6095,10 +6103,15 @@ fn render_extension_detail_lines_with_width(
             .map(|spec| spec.method.as_str())
             .or_else(|| declared_methods.first().map(String::as_str))
             .unwrap_or("extension/event");
-        let fallback_payload =
-            trusted_method_spec(trusted_method_specs.as_slice(), fallback_method)
-                .and_then(|spec| spec.sample_payload_json.as_deref())
-                .unwrap_or("{}");
+        let fallback_payload = trusted_event_specs
+            .iter()
+            .find(|spec| spec.event == "session_start")
+            .and_then(|spec| spec.sample_payload_json.as_deref())
+            .or_else(|| {
+                trusted_method_spec(trusted_method_specs.as_slice(), fallback_method)
+                    .and_then(|spec| spec.sample_payload_json.as_deref())
+            })
+            .unwrap_or("{}");
         footer_lines.push(format!(
             "No trusted host probes declared. Use `loong plugins invoke-extension --root \"{}\" --plugin-id \"{}\" --method {} --payload '{}' --allow-command {}` to smoke-test the runtime bridge directly.",
             entry.package_root,
@@ -6155,12 +6168,32 @@ fn render_extension_detail_lines_with_width(
                             values: declared_methods,
                         },
                         TuiKeyValueSpec::Csv {
+                            key: "events".to_owned(),
+                            values: declared_events,
+                        },
+                        TuiKeyValueSpec::Csv {
                             key: "tui surfaces".to_owned(),
                             values: declared_tui_surfaces.clone(),
                         },
                     ],
                 },
             ];
+            if !trusted_event_specs.is_empty() {
+                sections.push(TuiSectionSpec::KeyValues {
+                    title: Some("native extension event specs".to_owned()),
+                    items: trusted_event_specs
+                        .iter()
+                        .map(|spec| {
+                            let label = spec.label.as_deref().unwrap_or(spec.event.as_str());
+                            let summary = spec.summary.as_deref().unwrap_or("declared");
+                            TuiKeyValueSpec::Plain {
+                                key: spec.event.clone(),
+                                value: format!("{label} · {summary}"),
+                            }
+                        })
+                        .collect(),
+                });
+            }
             if !trusted_method_specs.is_empty() {
                 sections.push(TuiSectionSpec::KeyValues {
                     title: Some("native extension method specs".to_owned()),
@@ -8129,6 +8162,14 @@ mod tests {
                     "{\"extension/event\":{\"label\":\"Extension Event\",\"summary\":\"Handle structured runtime events such as session_start.\",\"sample_payload\":{\"event\":\"session_start\"},\"operator_hint\":\"Probe this method with `loong plugins invoke-extension --root \\\"<package-root>\\\" --plugin-id \\\"<plugin-id>\\\" --method extension/event --payload '{\\\"event\\\":\\\"session_start\\\"}' --allow-command <allow-command>`.\"}}".to_owned(),
                 ),
                 (
+                    "loong_extension_events_json".to_owned(),
+                    "[\"session_start\"]".to_owned(),
+                ),
+                (
+                    "loong_extension_event_specs_json".to_owned(),
+                    "{\"session_start\":{\"label\":\"Session Start\",\"summary\":\"Advertise that this extension handles session_start events.\",\"sample_payload\":{\"event\":\"session_start\"},\"operator_hint\":\"Probe this event through `loong plugins invoke-extension --root \\\"<package-root>\\\" --plugin-id \\\"<plugin-id>\\\" --method extension/event --payload '{\\\"event\\\":\\\"session_start\\\"}' --allow-command <allow-command>`.\"}}".to_owned(),
+                ),
+                (
                     "loong_extension_tui_surfaces_json".to_owned(),
                     "[\"command_palette\"]".to_owned(),
                 ),
@@ -9072,6 +9113,8 @@ printf '{"plugin_id":"weather-extension","tui_surface":"%s","response_payload":{
         assert!(rendered.contains("native extension method specs"));
         assert!(rendered.contains("Extension Event"));
         assert!(rendered.contains("--method extension/event"));
+        assert!(rendered.contains("native extension event specs"));
+        assert!(rendered.contains("Session Start"));
         assert!(rendered.contains("{\"event\":\"session_start\"}"));
 
         let _ = fs::remove_dir_all(root);

@@ -212,6 +212,10 @@ with each declared method so Loong can explain `extension/event`,
 `extension/command`, and `extension/resource` with shared labels, summaries,
 sample payloads, and operator hints.
 
+When governed event identifiers are declared, keep
+`loong_extension_event_specs_json` aligned too so Loong can explain what
+`session_start` and future events actually mean.
+
 The scaffold also reserves:
 
 - `loong_extension_host_hooks_json=[]`

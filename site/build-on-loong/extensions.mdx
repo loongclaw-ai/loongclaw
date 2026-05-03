@@ -52,6 +52,10 @@ Governed native runtime packages can do the same for
 `extension/event`, `extension/command`, and `extension/resource` through
 `loong_extension_method_specs_json`.
 
+When they also declare event identifiers such as `session_start`, keep
+`loong_extension_event_specs_json` aligned so Loong can explain those event
+semantics too.
+
 ## Fast Path: Scaffold A Trusted Host Extension
 
 ### Example: host hook
