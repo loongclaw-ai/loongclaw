@@ -598,6 +598,13 @@ fn runtime_snapshot_json_payload_projects_trusted_host_extension_declarations() 
         smoke_test_command.contains("loong plugins invoke-host-hook"),
         "unexpected smoke command: {smoke_test_command}"
     );
+    let runtime_execute_command = plugin["authoring_guidance"]["runtime_execute_command"]
+        .as_str()
+        .expect("authoring runtime execute command");
+    assert!(
+        runtime_execute_command.contains("loong plugins run-tui-surface"),
+        "unexpected runtime execute command: {runtime_execute_command}"
+    );
 
     fs::remove_dir_all(&root).ok();
 }
@@ -956,6 +963,7 @@ fn runtime_snapshot_text_projects_trusted_host_extension_declarations() {
     assert!(rendered.contains("authoring validate=loong plugins doctor --root"));
     assert!(rendered.contains("operator_actions=loong plugins actions --root"));
     assert!(rendered.contains("smoke_test=loong plugins invoke-host-hook"));
+    assert!(rendered.contains("runtime_execute=loong plugins run-tui-surface"));
 
     fs::remove_dir_all(&root).ok();
 }

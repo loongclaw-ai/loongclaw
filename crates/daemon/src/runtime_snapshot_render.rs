@@ -579,12 +579,17 @@ fn render_runtime_plugins_lines(snapshot: &RuntimeSnapshotRuntimePluginsState) -
             ));
         }
         if let Some(guidance) = plugin.authoring_guidance.as_ref() {
-            lines.push(format!(
+            let mut authoring_line = format!(
                 "    authoring validate={} operator_actions={} smoke_test={}",
                 guidance.validate_command,
                 guidance.operator_actions_command,
                 guidance.smoke_test_command,
-            ));
+            );
+            if let Some(runtime_execute_command) = guidance.runtime_execute_command.as_deref() {
+                authoring_line
+                    .push_str(format!(" runtime_execute={runtime_execute_command}").as_str());
+            }
+            lines.push(authoring_line);
         }
     }
 

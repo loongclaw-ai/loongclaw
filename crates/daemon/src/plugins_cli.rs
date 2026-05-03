@@ -871,6 +871,8 @@ pub struct PluginsInitExecution {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub smoke_test_command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_execute_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub native_extension_authoring_profile: Option<NativeExtensionAuthoringProfileExecution>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_files_written: Vec<String>,
@@ -893,6 +895,8 @@ pub struct NativeExtensionAuthoringProfileExecution {
     pub inventory_command: String,
     pub smoke_allow_command: String,
     pub smoke_test_command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_execute_command: Option<String>,
     pub example_package_root: String,
 }
 
@@ -1590,6 +1594,12 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         declared_host_hooks.as_slice(),
         declared_tui_surfaces.as_slice(),
     );
+    let runtime_execute_command = declared_tui_surfaces.first().map(|surface| {
+        crate::native_extension_authoring::render_runtime_tui_surface_execution_command(
+            plugin_id.as_str(),
+            surface.as_str(),
+        )
+    });
     let doctor_command = render_authoring_doctor_command(package_root.as_str());
     let inventory_command = render_authoring_inventory_command(package_root.as_str());
     let operator_actions_command = render_authoring_actions_command(package_root.as_str());
@@ -1618,6 +1628,7 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         inventory_command.as_str(),
         operator_actions_command.as_str(),
         smoke_test_command.as_deref(),
+        runtime_execute_command.as_deref(),
         native_extension_authoring_profile
             .as_ref()
             .map(|profile| profile.reference_example_path.as_str()),
@@ -1656,6 +1667,7 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         inventory_command,
         operator_actions_command,
         smoke_test_command,
+        runtime_execute_command,
         native_extension_authoring_profile,
         runtime_files_written,
         files_written,
@@ -2252,6 +2264,12 @@ fn build_native_extension_authoring_profile(
         declared_host_hooks,
         declared_tui_surfaces,
     )?;
+    let runtime_execute_command = declared_tui_surfaces.first().map(|surface| {
+        crate::native_extension_authoring::render_runtime_tui_surface_execution_command(
+            plugin_id,
+            surface.as_str(),
+        )
+    });
     let has_trusted_host_projection =
         !declared_host_hooks.is_empty() || !declared_tui_surfaces.is_empty();
     let example_package_root = if has_trusted_host_projection {
@@ -2298,6 +2316,7 @@ fn build_native_extension_authoring_profile(
         inventory_command: render_authoring_inventory_command(package_root),
         smoke_allow_command: profile.smoke_allow_command.to_owned(),
         smoke_test_command,
+        runtime_execute_command,
         example_package_root: example_package_root.to_owned(),
     })
 }
@@ -2542,6 +2561,7 @@ fn render_plugin_scaffold_readme(
     inventory_command: &str,
     operator_actions_command: &str,
     smoke_test_command: Option<&str>,
+    runtime_execute_command: Option<&str>,
     reference_example_path: Option<&str>,
 ) -> String {
     let runtime_files_summary = match runtime_files {
@@ -2612,6 +2632,16 @@ fn render_plugin_scaffold_readme(
             String::new(),
             "```bash".to_owned(),
             smoke_test_command.to_owned(),
+            "```".to_owned(),
+        ]);
+    }
+    if let Some(runtime_execute_command) = runtime_execute_command {
+        lines.extend([
+            String::new(),
+            "7. Execute the runtime-managed trusted TUI surface path after the package is on an active runtime_plugins lane:".to_owned(),
+            String::new(),
+            "```bash".to_owned(),
+            runtime_execute_command.to_owned(),
             "```".to_owned(),
         ]);
     }
@@ -2775,6 +2805,11 @@ fn render_plugins_init_text(execution: &PluginsInitExecution) -> String {
     if let Some(smoke_test_command) = execution.smoke_test_command.as_deref() {
         lines.push(format!("- smoke_test_command={smoke_test_command}"));
     }
+    if let Some(runtime_execute_command) = execution.runtime_execute_command.as_deref() {
+        lines.push(format!(
+            "- runtime_execute_command={runtime_execute_command}"
+        ));
+    }
     lines.push(format!("- manifest={}", execution.manifest_path));
     lines.push(format!("- readme={}", execution.readme_path));
     lines.push(format!("- doctor_command={}", execution.doctor_command));
@@ -2934,6 +2969,11 @@ fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> Strin
                 "  authoring_smoke_test={}",
                 guidance.smoke_test_command
             ));
+            if let Some(runtime_execute_command) = guidance.runtime_execute_command.as_deref() {
+                lines.push(format!(
+                    "  authoring_runtime_execute={runtime_execute_command}"
+                ));
+            }
         }
         if let Some(reason) = result.activation_reason.as_deref() {
             lines.push(format!("  activation_reason={reason}"));
@@ -3279,6 +3319,11 @@ fn render_plugin_doctor_result_lines(result: &PluginPreflightResult) -> Vec<Stri
             "  authoring_smoke_test={}",
             guidance.smoke_test_command
         ));
+        if let Some(runtime_execute_command) = guidance.runtime_execute_command.as_deref() {
+            lines.push(format!(
+                "  authoring_runtime_execute={runtime_execute_command}"
+            ));
+        }
     }
     lines.push(format!(
         "  blocking_diagnostics={} advisory_diagnostics={}",
@@ -5005,6 +5050,7 @@ mod tests {
         assert!(rendered.contains("authoring validate=loong plugins doctor --root"));
         assert!(rendered.contains("operator_actions=loong plugins actions --root"));
         assert!(rendered.contains("authoring_smoke_test=loong plugins invoke-host-hook"));
+        assert!(rendered.contains("authoring_runtime_execute=loong plugins run-tui-surface"));
 
         let encoded = serde_json::to_value(&execution).expect("serialize inventory execution");
         assert_eq!(
@@ -5024,6 +5070,13 @@ mod tests {
             serde_json::json!(format!(
                 "loong plugins actions --root \"{}\" --profile sdk-release",
                 result.package_root
+            ))
+        );
+        assert_eq!(
+            encoded["results"][0]["authoring_guidance"]["runtime_execute_command"],
+            serde_json::json!(format!(
+                "loong plugins run-tui-surface --plugin-id \"{}\" --tui-surface command_palette --payload '{{}}'",
+                result.plugin_id
             ))
         );
     }
@@ -5181,6 +5234,7 @@ mod tests {
         assert!(rendered.contains("authoring validate=loong plugins doctor --root"));
         assert!(rendered.contains("operator_actions=loong plugins actions --root"));
         assert!(rendered.contains("authoring_smoke_test=loong plugins invoke-host-hook"));
+        assert!(rendered.contains("authoring_runtime_execute=loong plugins run-tui-surface"));
 
         let encoded = serde_json::to_value(&execution).expect("serialize doctor execution");
         assert_eq!(
@@ -5196,6 +5250,13 @@ mod tests {
             serde_json::json!(format!(
                 "loong plugins invoke-host-hook --root \"{}\" --plugin-id \"{}\" --hook turn_start --payload '{{}}' --allow-command node",
                 result.package_root, result.plugin_id
+            ))
+        );
+        assert_eq!(
+            encoded["results"][0]["plugin"]["authoring_guidance"]["runtime_execute_command"],
+            serde_json::json!(format!(
+                "loong plugins run-tui-surface --plugin-id \"{}\" --tui-surface command_palette --payload '{{}}'",
+                result.plugin_id
             ))
         );
     }
@@ -6118,6 +6179,7 @@ mod tests {
             execution.smoke_test_command.as_deref(),
             Some(expected_smoke_test_command.as_str())
         );
+        assert_eq!(execution.runtime_execute_command, None);
         assert_eq!(execution.runtime_files_written.len(), 1);
         assert!(
             execution.runtime_files_written[0].ends_with("index.py"),
@@ -6140,6 +6202,7 @@ mod tests {
             )
         );
         assert_eq!(authoring_profile.smoke_allow_command, "python3".to_owned());
+        assert_eq!(authoring_profile.runtime_execute_command, None);
         assert_eq!(
             authoring_profile.example_package_root,
             "examples/plugins-process/native-extension-python".to_owned()
@@ -6609,6 +6672,12 @@ mod tests {
                 .as_deref()
                 .is_some_and(|command| command.contains("plugins invoke-host-hook"))
         );
+        assert!(
+            execution
+                .runtime_execute_command
+                .as_deref()
+                .is_some_and(|command| command.contains("plugins run-tui-surface"))
+        );
         assert!(!execution.runtime_files_written.is_empty());
 
         let rendered_manifest =
@@ -6635,6 +6704,12 @@ mod tests {
                 .get("loong_extension_host_hooks_json")
                 .map(String::as_str),
             Some("[\"turn_start\"]")
+        );
+        let rendered_readme =
+            fs::read_to_string(&execution.readme_path).expect("scaffold readme should exist");
+        assert!(
+            rendered_readme.contains("loong plugins run-tui-surface"),
+            "README should mention the runtime-managed trusted TUI lane: {rendered_readme}"
         );
     }
 

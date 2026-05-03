@@ -174,6 +174,15 @@ pub(crate) fn render_authoring_tui_surface_probe_command(
     )
 }
 
+pub(crate) fn render_runtime_tui_surface_execution_command(
+    plugin_id: &str,
+    surface: &str,
+) -> String {
+    format!(
+        "loong plugins run-tui-surface --plugin-id \"{plugin_id}\" --tui-surface {surface} --payload '{{}}'"
+    )
+}
+
 pub(crate) fn process_stdio_native_extension_authoring_guidance(
     package_root: &str,
     plugin_id: &str,
@@ -209,6 +218,11 @@ pub(crate) fn process_stdio_native_extension_authoring_guidance(
         render_authoring_smoke_test_command(package_root, plugin_id, profile.smoke_allow_command)
     };
 
+    let runtime_execute_command = native_extension
+        .tui_surfaces
+        .first()
+        .map(|surface| render_runtime_tui_surface_execution_command(plugin_id, surface.as_str()));
+
     Some(crate::PluginNativeExtensionAuthoringGuidance {
         validate_command: format!(
             "loong plugins doctor --root \"{package_root}\" --profile sdk-release"
@@ -217,6 +231,7 @@ pub(crate) fn process_stdio_native_extension_authoring_guidance(
             "loong plugins actions --root \"{package_root}\" --profile sdk-release"
         ),
         smoke_test_command,
+        runtime_execute_command,
     })
 }
 

@@ -1115,6 +1115,8 @@ pub struct PluginNativeExtensionAuthoringGuidance {
     pub validate_command: String,
     pub operator_actions_command: String,
     pub smoke_test_command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_execute_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
