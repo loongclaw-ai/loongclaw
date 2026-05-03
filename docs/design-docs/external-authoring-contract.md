@@ -76,6 +76,10 @@ identifiers such as `sidebar_widget`. Those custom identifiers stay runtime
 executable and inspectable even when they do not yet have richer first-party
 Loong affordances.
 
+When a trusted surface needs stronger self-description, authors should add
+`loong_extension_tui_surface_specs_json` so Loong can project labels,
+summaries, sample payloads, and operator hints from shared contract truth.
+
 ### Workflow and flow assets
 
 These are strategically important, especially because promotion already points

@@ -40,6 +40,11 @@ such as `sidebar_widget`. Those custom surfaces stay inspectable and runnable
 through the same trusted runtime lane even when they do not yet have dedicated
 first-party UI affordances.
 
+When a trusted surface needs stronger self-description, add
+`loong_extension_tui_surface_specs_json` so Loong can reuse shared labels,
+summaries, sample payloads, and operator hints across docs and operator
+surfaces.
+
 ## Fast Path: Scaffold A Trusted Host Extension
 
 ### Example: host hook

@@ -280,7 +280,8 @@ fn install_trusted_host_runtime_plugin_package(root: &Path, config_path: &Path) 
     "loong_extension_trust_lane": "trusted_host",
     "loong_extension_methods_json": "[\"extension/event\"]",
     "loong_extension_host_hooks_json": "[\"turn_start\",\"turn_end\"]",
-    "loong_extension_tui_surfaces_json": "[\"command_palette\"]"
+    "loong_extension_tui_surfaces_json": "[\"command_palette\"]",
+    "loong_extension_tui_surface_specs_json": "{\"command_palette\":{\"label\":\"Command Palette\",\"summary\":\"Inspect extension commands from the shell-first command palette.\",\"sample_payload\":{\"query\":\":ext\"}}}"
   },
   "summary": "Trusted host read-only hook probe example"
 }"#,
@@ -578,6 +579,10 @@ fn runtime_snapshot_json_payload_projects_trusted_host_extension_declarations() 
     assert_eq!(
         plugin["native_extension"]["tui_surfaces"],
         serde_json::json!(["command_palette"])
+    );
+    assert_eq!(
+        plugin["native_extension"]["tui_surface_specs"][0]["surface"],
+        serde_json::json!("command_palette")
     );
     assert_eq!(
         plugin["native_extension"]["metadata_issues"],
@@ -960,6 +965,7 @@ fn runtime_snapshot_text_projects_trusted_host_extension_declarations() {
     assert!(rendered.contains("methods=extension/event"));
     assert!(rendered.contains("host_hooks=turn_start,turn_end"));
     assert!(rendered.contains("tui_surfaces=command_palette"));
+    assert!(rendered.contains("tui_surface_specs=command_palette"));
     assert!(rendered.contains("authoring validate=loong plugins doctor --root"));
     assert!(rendered.contains("operator_actions=loong plugins actions --root"));
     assert!(rendered.contains("smoke_test=loong plugins invoke-host-hook"));

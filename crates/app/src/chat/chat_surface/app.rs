@@ -5998,21 +5998,28 @@ fn render_extension_detail_lines_with_width(
         return super::super::render_cli_chat_message_spec_with_width(&message_spec, width);
     };
 
-    let extension_family = translation
-        .and_then(|entry| entry.metadata.get("loong_extension_family"))
-        .map(String::as_str)
-        .filter(|value| !value.trim().is_empty())
+    let extension_declarations = translation.map(|entry| {
+        loong_kernel::plugin_native_extension_declarations_from_metadata(&entry.metadata)
+    });
+    let extension_family = extension_declarations
+        .as_ref()
+        .and_then(|declarations| declarations.family.as_deref())
         .unwrap_or("-");
-    let extension_trust_lane = translation
-        .and_then(|entry| entry.metadata.get("loong_extension_trust_lane"))
-        .map(String::as_str)
-        .filter(|value| !value.trim().is_empty())
+    let extension_trust_lane = extension_declarations
+        .as_ref()
+        .and_then(|declarations| declarations.trust_lane.as_deref())
         .unwrap_or("-");
-    let declared_tui_surfaces = translation
-        .map(|entry| metadata_string_list(&entry.metadata, "loong_extension_tui_surfaces_json"))
+    let declared_tui_surfaces = extension_declarations
+        .as_ref()
+        .map(|declarations| declarations.tui_surfaces.clone())
         .unwrap_or_default();
-    let declared_host_hooks = translation
-        .map(|entry| metadata_string_list(&entry.metadata, "loong_extension_host_hooks_json"))
+    let declared_host_hooks = extension_declarations
+        .as_ref()
+        .map(|declarations| declarations.host_hooks.clone())
+        .unwrap_or_default();
+    let trusted_tui_surface_specs = extension_declarations
+        .as_ref()
+        .map(|declarations| declarations.tui_surface_specs.clone())
         .unwrap_or_default();
     let allow_command_hint = runtime_probe_allow_command_hint(&entry.source_language);
 
@@ -6042,20 +6049,28 @@ fn render_extension_detail_lines_with_width(
         )
     }));
     footer_lines.extend(declared_tui_surfaces.iter().map(|surface| {
+        let sample_payload = trusted_tui_surface_spec(trusted_tui_surface_specs.as_slice(), surface)
+            .and_then(|spec| spec.sample_payload_json.as_deref())
+            .unwrap_or_else(|| sample_tui_surface_payload(surface));
         format!(
             "Probe TUI surface `{surface}` with `loong plugins invoke-tui-surface --root \"{}\" --plugin-id \"{}\" --tui-surface \"{}\" --payload '{}' --allow-command {}`.",
             entry.package_root,
             entry.plugin_id,
             surface,
-            sample_tui_surface_payload(surface),
+            sample_payload,
             allow_command_hint,
         )
     }));
     footer_lines.extend(declared_tui_surfaces.iter().map(|surface| {
-        format!(
-            "Execute runtime-managed TUI surface `{surface}` with `/extensions run {} {}`.",
-            entry.plugin_id, surface
-        )
+        trusted_tui_surface_spec(trusted_tui_surface_specs.as_slice(), surface)
+            .and_then(|spec| spec.operator_hint.as_deref())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                format!(
+                    "Execute runtime-managed TUI surface `{surface}` with `/extensions run {} {}`.",
+                    entry.plugin_id, surface
+                )
+            })
     }));
     if declared_host_hooks.is_empty() && declared_tui_surfaces.is_empty() {
         footer_lines.push(format!(
@@ -6069,50 +6084,69 @@ fn render_extension_detail_lines_with_width(
     let message_spec = TuiMessageSpec {
         role: "extensions".to_owned(),
         caption: Some(entry.plugin_id.clone()),
-        sections: vec![
-            TuiSectionSpec::KeyValues {
-                title: Some("runtime".to_owned()),
-                items: vec![
-                    TuiKeyValueSpec::Plain {
-                        key: "status".to_owned(),
-                        value: activation_status,
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "bridge".to_owned(),
-                        value: entry.bridge_kind.as_str().to_owned(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "source language".to_owned(),
-                        value: entry.source_language.clone(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "package root".to_owned(),
-                        value: entry.package_root.clone(),
-                    },
-                ],
-            },
-            TuiSectionSpec::KeyValues {
-                title: Some("extension contract".to_owned()),
-                items: vec![
-                    TuiKeyValueSpec::Plain {
-                        key: "family".to_owned(),
-                        value: extension_family.to_owned(),
-                    },
-                    TuiKeyValueSpec::Plain {
-                        key: "trust lane".to_owned(),
-                        value: extension_trust_lane.to_owned(),
-                    },
-                    TuiKeyValueSpec::Csv {
-                        key: "host hooks".to_owned(),
-                        values: declared_host_hooks,
-                    },
-                    TuiKeyValueSpec::Csv {
-                        key: "tui surfaces".to_owned(),
-                        values: declared_tui_surfaces,
-                    },
-                ],
-            },
-        ],
+        sections: {
+            let mut sections = vec![
+                TuiSectionSpec::KeyValues {
+                    title: Some("runtime".to_owned()),
+                    items: vec![
+                        TuiKeyValueSpec::Plain {
+                            key: "status".to_owned(),
+                            value: activation_status,
+                        },
+                        TuiKeyValueSpec::Plain {
+                            key: "bridge".to_owned(),
+                            value: entry.bridge_kind.as_str().to_owned(),
+                        },
+                        TuiKeyValueSpec::Plain {
+                            key: "source language".to_owned(),
+                            value: entry.source_language.clone(),
+                        },
+                        TuiKeyValueSpec::Plain {
+                            key: "package root".to_owned(),
+                            value: entry.package_root.clone(),
+                        },
+                    ],
+                },
+                TuiSectionSpec::KeyValues {
+                    title: Some("extension contract".to_owned()),
+                    items: vec![
+                        TuiKeyValueSpec::Plain {
+                            key: "family".to_owned(),
+                            value: extension_family.to_owned(),
+                        },
+                        TuiKeyValueSpec::Plain {
+                            key: "trust lane".to_owned(),
+                            value: extension_trust_lane.to_owned(),
+                        },
+                        TuiKeyValueSpec::Csv {
+                            key: "host hooks".to_owned(),
+                            values: declared_host_hooks,
+                        },
+                        TuiKeyValueSpec::Csv {
+                            key: "tui surfaces".to_owned(),
+                            values: declared_tui_surfaces.clone(),
+                        },
+                    ],
+                },
+            ];
+            if !trusted_tui_surface_specs.is_empty() {
+                sections.push(TuiSectionSpec::KeyValues {
+                    title: Some("trusted TUI surface specs".to_owned()),
+                    items: trusted_tui_surface_specs
+                        .iter()
+                        .map(|spec| {
+                            let label = spec.label.as_deref().unwrap_or(spec.surface.as_str());
+                            let summary = spec.summary.as_deref().unwrap_or("declared");
+                            TuiKeyValueSpec::Plain {
+                                key: spec.surface.clone(),
+                                value: format!("{label} · {summary}"),
+                            }
+                        })
+                        .collect(),
+                });
+            }
+            sections
+        },
         footer_lines,
     };
 
@@ -6167,6 +6201,14 @@ fn sample_tui_surface_payload(surface: &str) -> &'static str {
         "startup_onboarding" => "{\"step\":\"welcome\"}",
         _ => "{}",
     }
+}
+
+#[cfg(feature = "channel-plugin-bridge")]
+fn trusted_tui_surface_spec<'a>(
+    specs: &'a [loong_kernel::PluginTrustedTuiSurfaceSpec],
+    surface: &str,
+) -> Option<&'a loong_kernel::PluginTrustedTuiSurfaceSpec> {
+    specs.iter().find(|spec| spec.surface == surface)
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -7998,6 +8040,10 @@ mod tests {
                     "loong_extension_tui_surfaces_json".to_owned(),
                     "[\"command_palette\"]".to_owned(),
                 ),
+                (
+                    "loong_extension_tui_surface_specs_json".to_owned(),
+                    "{\"command_palette\":{\"label\":\"Command Palette\",\"summary\":\"Inspect extension commands from the shell-first command palette.\",\"sample_payload\":{\"query\":\":ext\"},\"operator_hint\":\"Run `/extensions run weather-extension command_palette` from the shell-first TUI.\"}}".to_owned(),
+                ),
             ]),
             summary: Some("runtime extension example".to_owned()),
             tags: Vec::new(),
@@ -8032,6 +8078,13 @@ mod tests {
         manifest.metadata.insert(
             "loong_extension_tui_surfaces_json".to_owned(),
             format!("[\"{tui_surface}\"]"),
+        );
+        manifest.metadata.insert(
+            "loong_extension_tui_surface_specs_json".to_owned(),
+            format!(
+                "{{\"{tui_surface}\":{{\"label\":\"{}\",\"summary\":\"Inspect or extend the trusted TUI surface `{tui_surface}`.\",\"sample_payload\":{{\"query\":\":ext\"}},\"operator_hint\":\"Run `/extensions run weather-extension {tui_surface}` from the shell-first TUI.\"}}}}",
+                tui_surface.replace(['_', '-'], " ")
+            ),
         );
         manifest
     }
@@ -8645,11 +8698,49 @@ mod tests {
         assert!(rendered.contains("command_palette"));
         assert!(rendered.contains("turn_start"));
         assert!(rendered.contains("package root"));
+        assert!(rendered.contains("trusted TUI surface specs"));
+        assert!(rendered.contains("Command Palette"));
+        assert!(rendered.contains("Inspect extension commands"));
         assert!(rendered.contains("invoke-host-hook"));
         assert!(rendered.contains("--hook \"turn_start\""));
         assert!(rendered.contains("{\"turn_id\":\"demo-turn\"}"));
         assert!(rendered.contains("invoke-tui-surface"));
         assert!(rendered.contains("--tui-surface \"command_palette\""));
+        assert!(rendered.contains("{\"query\":\":ext\"}"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extensions_command_can_render_custom_surface_detail_with_spec() {
+        let root = std::env::temp_dir().join(format!(
+            "loong-chat-extension-custom-detail-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("mkdir extension root");
+        write_runtime_plugin_manifest(
+            root.as_path(),
+            "weather-extension",
+            &sample_process_stdio_tui_surface_manifest("weather-extension", "sidebar_widget"),
+        );
+
+        let mut config = LoongConfig::default();
+        config.runtime_plugins.enabled = true;
+        config.runtime_plugins.roots = vec![root.display().to_string()];
+
+        let runtime = test_runtime_with_config(root.join("loong.toml"), config);
+        let rendered =
+            super::render_extensions_command_lines_with_width(&runtime, 100, "weather-extension")
+                .expect("render custom extension detail")
+                .join("\n");
+
+        assert!(rendered.contains("sidebar_widget"));
+        assert!(rendered.contains("trusted TUI surface specs"));
+        assert!(rendered.contains("Inspect or extend the trusted TUI surface `sidebar_widget`."));
+        assert!(rendered.contains("--tui-surface \"sidebar_widget\""));
         assert!(rendered.contains("{\"query\":\":ext\"}"));
 
         let _ = fs::remove_dir_all(root);

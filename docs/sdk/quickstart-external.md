@@ -272,6 +272,10 @@ Trusted host packages can also declare additional lowercase identifiers such as
 `loong plugins run-tui-surface` and `/extensions run`, even when they do not
 yet have dedicated first-party UI affordances.
 
+When you want Loong to explain those surfaces well, keep
+`loong_extension_tui_surface_specs_json` aligned with each declared surface's
+label, summary, sample payload, and operator hint.
+
 Scaffold them with one or more `--tui-surface` flags:
 
 ```bash

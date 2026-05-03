@@ -1629,6 +1629,7 @@ fn execute_plugins_init(command: PluginInitCommand) -> CliResult<PluginsInitExec
         operator_actions_command.as_str(),
         smoke_test_command.as_deref(),
         runtime_execute_command.as_deref(),
+        !declared_tui_surfaces.is_empty(),
         native_extension_authoring_profile
             .as_ref()
             .map(|profile| profile.reference_example_path.as_str()),
@@ -2491,6 +2492,14 @@ fn build_plugin_scaffold_manifest(
             "loong_extension_tui_surfaces_json".to_owned(),
             serde_json::to_string(&tui_surfaces).unwrap_or_else(|_| "[]".to_owned()),
         );
+        if let Some(tui_surface_specs_json) =
+            render_scaffold_tui_surface_specs_json(tui_surfaces.as_slice())
+        {
+            metadata.insert(
+                "loong_extension_tui_surface_specs_json".to_owned(),
+                tui_surface_specs_json,
+            );
+        }
     }
 
     let host_version_req = format!(">={}", env!("CARGO_PKG_VERSION"));
@@ -2519,6 +2528,67 @@ fn build_plugin_scaffold_manifest(
         slot_claims: Vec::new(),
         compatibility: Some(compatibility),
     }
+}
+
+fn render_scaffold_tui_surface_specs_json(tui_surfaces: &[String]) -> Option<String> {
+    if tui_surfaces.is_empty() {
+        return None;
+    }
+
+    let specs = tui_surfaces
+        .iter()
+        .map(|surface| {
+            let human_label = humanize_tui_surface_identifier(surface);
+            let summary = match surface.as_str() {
+                "command_palette" => {
+                    "Inspect or extend the shell-first command palette.".to_owned()
+                }
+                "settings_flow" => "Inspect or extend the shell-first settings flow.".to_owned(),
+                "startup_onboarding" => {
+                    "Inspect or extend the shell-first startup onboarding flow.".to_owned()
+                }
+                _ => format!("Inspect or extend the trusted TUI surface `{surface}`."),
+            };
+            let sample_payload = match surface.as_str() {
+                "command_palette" => serde_json::json!({"query":":ext"}),
+                "settings_flow" => serde_json::json!({"section":"general"}),
+                "startup_onboarding" => serde_json::json!({"step":"welcome"}),
+                _ => serde_json::json!({}),
+            };
+            (
+                surface.clone(),
+                serde_json::json!({
+                    "label": human_label,
+                    "summary": summary,
+                    "sample_payload": sample_payload,
+                    "operator_hint": format!(
+                        "Run `/extensions run <plugin-id> {surface}` or `loong plugins run-tui-surface --plugin-id \\\"<plugin-id>\\\" --tui-surface {surface} --payload '{{}}'` after the package is on an active runtime_plugins lane."
+                    ),
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    serde_json::to_string(&specs).ok()
+}
+
+fn humanize_tui_surface_identifier(surface: &str) -> String {
+    let mut label = String::new();
+    let mut capitalize_next = true;
+    for character in surface.chars() {
+        if matches!(character, '_' | '-') {
+            label.push(' ');
+            capitalize_next = true;
+            continue;
+        }
+        if capitalize_next {
+            label.push(character.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            label.push(character);
+        }
+    }
+    label.trim().to_owned()
 }
 
 fn plugin_scaffold_manifest_document(
@@ -2559,6 +2629,7 @@ fn render_plugin_scaffold_readme(
     operator_actions_command: &str,
     smoke_test_command: Option<&str>,
     runtime_execute_command: Option<&str>,
+    has_trusted_tui_surface_projection: bool,
     reference_example_path: Option<&str>,
 ) -> String {
     let runtime_files_summary = match runtime_files {
@@ -2613,6 +2684,13 @@ fn render_plugin_scaffold_readme(
         operator_actions_command.to_owned(),
         "```".to_owned(),
     ];
+    if has_trusted_tui_surface_projection {
+        lines.extend([
+            String::new(),
+            "Keep `loong_extension_tui_surface_specs_json` aligned with each declared trusted TUI surface so Loong can surface labels, summaries, sample payloads, and operator hints."
+                .to_owned(),
+        ]);
+    }
     if let Some(reference_example_path) = reference_example_path {
         lines.extend([
             String::new(),
@@ -2944,16 +3022,18 @@ fn render_plugins_inventory_text(execution: &PluginsInventoryExecution) -> Strin
             || !native_extension.methods.is_empty()
             || !native_extension.host_hooks.is_empty()
             || !native_extension.tui_surfaces.is_empty()
+            || !native_extension.tui_surface_specs.is_empty()
             || !native_extension.metadata_issues.is_empty();
         if has_native_extension_projection {
             lines.push(format!(
-                "  native_extension contract={} family={} trust_lane={} methods={} host_hooks={} tui_surfaces={} metadata_issues={}",
+                "  native_extension contract={} family={} trust_lane={} methods={} host_hooks={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
                 display_text_or_dash(native_extension.contract.as_deref()),
                 display_text_or_dash(native_extension.family.as_deref()),
                 display_text_or_dash(native_extension.trust_lane.as_deref()),
                 format_csv_or_dash(&native_extension.methods),
                 format_csv_or_dash(&native_extension.host_hooks),
                 format_csv_or_dash(&native_extension.tui_surfaces),
+                format_tui_surface_specs_or_dash(&native_extension.tui_surface_specs),
                 format_csv_or_dash(&native_extension.metadata_issues),
             ));
         }
@@ -3294,16 +3374,18 @@ fn render_plugin_doctor_result_lines(result: &PluginPreflightResult) -> Vec<Stri
         || !native_extension.methods.is_empty()
         || !native_extension.host_hooks.is_empty()
         || !native_extension.tui_surfaces.is_empty()
+        || !native_extension.tui_surface_specs.is_empty()
         || !native_extension.metadata_issues.is_empty();
     if has_native_extension_projection {
         lines.push(format!(
-            "  native_extension contract={} family={} trust_lane={} methods={} host_hooks={} tui_surfaces={} metadata_issues={}",
+            "  native_extension contract={} family={} trust_lane={} methods={} host_hooks={} tui_surfaces={} tui_surface_specs={} metadata_issues={}",
             display_text_or_dash(native_extension.contract.as_deref()),
             display_text_or_dash(native_extension.family.as_deref()),
             display_text_or_dash(native_extension.trust_lane.as_deref()),
             format_csv_or_dash(&native_extension.methods),
             format_csv_or_dash(&native_extension.host_hooks),
             format_csv_or_dash(&native_extension.tui_surfaces),
+            format_tui_surface_specs_or_dash(&native_extension.tui_surface_specs),
             format_csv_or_dash(&native_extension.metadata_issues),
         ));
     }
@@ -4388,6 +4470,23 @@ fn format_csv_or_dash(values: &[String]) -> String {
     }
 }
 
+fn format_tui_surface_specs_or_dash(
+    specs: &[crate::kernel::PluginTrustedTuiSurfaceSpec],
+) -> String {
+    if specs.is_empty() {
+        return "-".to_owned();
+    }
+
+    specs
+        .iter()
+        .map(|spec| match spec.label.as_deref() {
+            Some(label) => format!("{}:{}", spec.surface, label),
+            None => spec.surface.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn format_rollup_map(values: &BTreeMap<String, usize>) -> String {
     if values.is_empty() {
         return "-".to_owned();
@@ -4733,7 +4832,8 @@ mod tests {
                 "loong_extension_trust_lane": "trusted_host",
                 "loong_extension_methods_json": "[\"extension/event\"]",
                 "loong_extension_host_hooks_json": "[\"turn_start\",\"turn_end\"]",
-                "loong_extension_tui_surfaces_json": "[\"command_palette\"]"
+                "loong_extension_tui_surfaces_json": "[\"command_palette\"]",
+                "loong_extension_tui_surface_specs_json": "{\"command_palette\":{\"label\":\"Command Palette\",\"summary\":\"Inspect extension commands from the shell-first command palette.\",\"sample_payload\":{\"query\":\":ext\"}}}"
             },
             "summary": "Trusted host read-only hook probe example"
         });
@@ -5031,6 +5131,11 @@ mod tests {
             result.native_extension.tui_surfaces,
             vec!["command_palette".to_owned()]
         );
+        assert_eq!(result.native_extension.tui_surface_specs.len(), 1);
+        assert_eq!(
+            result.native_extension.tui_surface_specs[0].surface,
+            "command_palette"
+        );
         assert!(
             result.native_extension.metadata_issues.is_empty(),
             "trusted-host inventory projection should stay clean: {:?}",
@@ -5044,6 +5149,7 @@ mod tests {
         assert!(rendered.contains("methods=extension/event"));
         assert!(rendered.contains("host_hooks=turn_start,turn_end"));
         assert!(rendered.contains("tui_surfaces=command_palette"));
+        assert!(rendered.contains("tui_surface_specs=command_palette:Command Palette"));
         assert!(rendered.contains("authoring validate=loong plugins doctor --root"));
         assert!(rendered.contains("operator_actions=loong plugins actions --root"));
         assert!(rendered.contains("authoring_smoke_test=loong plugins invoke-host-hook"));
@@ -5061,6 +5167,10 @@ mod tests {
         assert_eq!(
             encoded["results"][0]["native_extension"]["tui_surfaces"],
             serde_json::json!(["command_palette"])
+        );
+        assert_eq!(
+            encoded["results"][0]["native_extension"]["tui_surface_specs"][0]["surface"],
+            serde_json::json!("command_palette")
         );
         assert_eq!(
             encoded["results"][0]["authoring_guidance"]["operator_actions_command"],
@@ -5216,6 +5326,11 @@ mod tests {
             result.native_extension.tui_surfaces,
             vec!["command_palette".to_owned()]
         );
+        assert_eq!(result.native_extension.tui_surface_specs.len(), 1);
+        assert_eq!(
+            result.native_extension.tui_surface_specs[0].surface,
+            "command_palette"
+        );
         assert!(
             result.native_extension.metadata_issues.is_empty(),
             "trusted-host doctor projection should stay clean: {:?}",
@@ -5228,6 +5343,7 @@ mod tests {
         assert!(rendered.contains("trust_lane=trusted_host"));
         assert!(rendered.contains("host_hooks=turn_start,turn_end"));
         assert!(rendered.contains("tui_surfaces=command_palette"));
+        assert!(rendered.contains("tui_surface_specs=command_palette:Command Palette"));
         assert!(rendered.contains("authoring validate=loong plugins doctor --root"));
         assert!(rendered.contains("operator_actions=loong plugins actions --root"));
         assert!(rendered.contains("authoring_smoke_test=loong plugins invoke-host-hook"));
@@ -5241,6 +5357,10 @@ mod tests {
         assert_eq!(
             encoded["results"][0]["plugin"]["native_extension"]["tui_surfaces"],
             serde_json::json!(["command_palette"])
+        );
+        assert_eq!(
+            encoded["results"][0]["plugin"]["native_extension"]["tui_surface_specs"][0]["surface"],
+            serde_json::json!("command_palette")
         );
         assert_eq!(
             encoded["results"][0]["plugin"]["authoring_guidance"]["smoke_test_command"],
@@ -6229,6 +6349,12 @@ mod tests {
             manifest.metadata.get("source_language").map(String::as_str),
             Some("python")
         );
+        assert!(
+            !manifest
+                .metadata
+                .contains_key("loong_extension_tui_surface_specs_json"),
+            "governed process stdio scaffold should not emit trusted TUI surface specs"
+        );
         assert_eq!(
             manifest.metadata.get("adapter_family").map(String::as_str),
             Some("python-stdio-adapter")
@@ -6702,11 +6828,21 @@ mod tests {
                 .map(String::as_str),
             Some("[\"turn_start\"]")
         );
+        assert!(
+            manifest
+                .metadata
+                .contains_key("loong_extension_tui_surface_specs_json"),
+            "trusted host scaffold should emit trusted TUI surface specs"
+        );
         let rendered_readme =
             fs::read_to_string(&execution.readme_path).expect("scaffold readme should exist");
         assert!(
             rendered_readme.contains("loong plugins run-tui-surface"),
             "README should mention the runtime-managed trusted TUI lane: {rendered_readme}"
+        );
+        assert!(
+            rendered_readme.contains("loong_extension_tui_surface_specs_json"),
+            "README should mention the trusted TUI surface spec contract: {rendered_readme}"
         );
     }
 
@@ -6981,6 +7117,9 @@ mod tests {
         .expect("decode trusted-host manifest");
         manifest["metadata"]["loong_extension_tui_surfaces_json"] =
             serde_json::json!("[\"sidebar_widget\"]");
+        manifest["metadata"]["loong_extension_tui_surface_specs_json"] = serde_json::json!(
+            "{\"sidebar_widget\":{\"label\":\"Sidebar Widget\",\"summary\":\"Inspect or extend the trusted TUI surface `sidebar_widget`.\",\"sample_payload\":{\"tab\":\"plugins\"}}}"
+        );
         fs::write(
             &manifest_path,
             serde_json::to_string_pretty(&manifest).expect("encode trusted-host manifest"),
@@ -7073,6 +7212,9 @@ mod tests {
         .expect("decode trusted-host manifest");
         manifest["metadata"]["loong_extension_tui_surfaces_json"] =
             serde_json::json!("[\"sidebar_widget\"]");
+        manifest["metadata"]["loong_extension_tui_surface_specs_json"] = serde_json::json!(
+            "{\"sidebar_widget\":{\"label\":\"Sidebar Widget\",\"summary\":\"Inspect or extend the trusted TUI surface `sidebar_widget`.\",\"sample_payload\":{\"tab\":\"plugins\"}}}"
+        );
         fs::write(
             &manifest_path,
             serde_json::to_string_pretty(&manifest).expect("encode trusted-host manifest"),
@@ -7341,6 +7483,10 @@ mod tests {
             assert!(
                 doc.contains("sidebar_widget"),
                 "doc should mention that custom trusted TUI surface identifiers are valid"
+            );
+            assert!(
+                doc.contains("loong_extension_tui_surface_specs_json"),
+                "doc should mention the trusted TUI surface spec metadata field"
             );
         }
     }
