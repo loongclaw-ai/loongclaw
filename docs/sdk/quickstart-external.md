@@ -93,8 +93,18 @@ Right now, trusted host scaffolds are intentionally limited to:
 
 ## Reference Examples
 
-The repository now keeps three checked-in trusted-host example packages you can
-diff against directly, depending on the `--source-language` you want to author:
+The repository now keeps two checked-in example lanes you can diff against
+directly.
+
+Governed native runtime extensions:
+
+- `examples/plugins-process/native-extension-python/`
+- `examples/plugins-process/native-extension-javascript/`
+- `examples/plugins-process/native-extension-typescript/`
+- `examples/plugins-process/native-extension-go/`
+- `examples/plugins-process/native-extension-rust/`
+
+Trusted-host extensions:
 
 - `examples/plugins-process/native-extension-trusted-host-javascript/`
 - `examples/plugins-process/native-extension-trusted-host-go/`

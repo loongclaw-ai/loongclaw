@@ -5988,6 +5988,67 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn checked_in_governed_native_extension_examples_probe_successfully() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("repo root");
+        for (relative_root, plugin_id, allow_command) in [
+            (
+                "examples/plugins-process/native-extension-python",
+                "native-extension-python-example",
+                "python3",
+            ),
+            (
+                "examples/plugins-process/native-extension-javascript",
+                "native-extension-javascript-example",
+                "node",
+            ),
+            (
+                "examples/plugins-process/native-extension-typescript",
+                "native-extension-typescript-example",
+                "node",
+            ),
+            (
+                "examples/plugins-process/native-extension-go",
+                "native-extension-go-example",
+                "go",
+            ),
+            (
+                "examples/plugins-process/native-extension-rust",
+                "native-extension-rust-example",
+                "cargo",
+            ),
+        ] {
+            let package_root = repo_root.join(relative_root).display().to_string();
+
+            let invoke_execution = execute_plugins_command(PluginsCommandOptions {
+                json: false,
+                command: PluginsCommands::InvokeExtension(PluginInvokeExtensionCommand {
+                    root: package_root,
+                    plugin_id: plugin_id.to_owned(),
+                    method: "extension/event".to_owned(),
+                    payload: "{\"event\":\"session_start\"}".to_owned(),
+                    allow_commands: vec![allow_command.to_owned()],
+                }),
+            })
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{plugin_id} should probe invoke-extension successfully: {error}")
+            });
+
+            let PluginsCommandExecution::InvokeExtension(invoke_execution) = invoke_execution
+            else {
+                panic!("expected invoke-extension execution");
+            };
+            assert_eq!(
+                invoke_execution.response_payload["handled_event"],
+                serde_json::json!("session_start")
+            );
+        }
+    }
+
     #[test]
     fn public_extension_docs_describe_conflict_review_loop() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -6015,6 +6076,14 @@ mod tests {
             assert!(
                 doc.contains("git diff --no-index"),
                 "doc should mention manifest comparison for shadowed extension conflicts"
+            );
+            assert!(
+                doc.contains("native-extension-python"),
+                "doc should mention the governed native extension example lane"
+            );
+            assert!(
+                doc.contains("native-extension-trusted-host-javascript"),
+                "doc should mention the trusted-host example lane"
             );
         }
     }
