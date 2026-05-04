@@ -127,10 +127,7 @@ fn active_skill_workspace_root_for_tool_payload(
         return None;
     }
 
-    if !matches!(
-        canonical_tool_name,
-        "file.read" | "glob.search" | "content.search"
-    ) {
+    if crate::tools::user_visible_tool_name(canonical_tool_name) != "read" {
         return None;
     }
 
@@ -164,10 +161,7 @@ fn visible_skill_workspace_root_for_tool_payload(
         return None;
     }
 
-    if !matches!(
-        canonical_tool_name,
-        "file.read" | "glob.search" | "content.search"
-    ) {
+    if crate::tools::user_visible_tool_name(canonical_tool_name) != "read" {
         return None;
     }
 
@@ -209,21 +203,24 @@ fn requested_file_tool_path(
     payload: &serde_json::Value,
 ) -> Option<std::path::PathBuf> {
     let payload_object = payload.as_object()?;
-    match tool_name {
-        "file.read" => payload_object
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(std::path::PathBuf::from),
-        "glob.search" | "content.search" => payload_object
-            .get("root")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(std::path::PathBuf::from),
-        _ => None,
+    if crate::tools::user_visible_tool_name(tool_name) != "read" {
+        return None;
     }
+
+    payload_object
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            payload_object
+                .get("root")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+        })
 }
 
 fn task_scope_injection_required(tool_name: &str) -> bool {

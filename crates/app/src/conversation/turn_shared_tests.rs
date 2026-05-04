@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::tool_result_reduction::SHELL_FOLLOWUP_STDIO_PREVIEW_CHARS;
 use crate::conversation::turn_engine::{
     ApprovalRequirement, ApprovalRequirementKind, TurnFailure, TurnResult,
 };
@@ -2173,13 +2174,13 @@ fn reduce_followup_payload_for_model_compacts_tool_search_summary() {
         summary["diagnostics"]["reason"],
         "exact_tool_id_not_visible"
     );
-    assert_eq!(summary["adapter"], "core-tools");
-    assert_eq!(summary["tool_name"], "tool.search");
     assert_eq!(summary["returned"], 1);
     assert_eq!(first["tool_id"], "file.read");
     assert_eq!(first["lease"], "lease-file");
-    assert!(first.get("tags").and_then(Value::as_array).is_some());
-    assert!(first.get("why").and_then(Value::as_array).is_some());
+    assert_eq!(summary["adapter"], Value::Null);
+    assert_eq!(summary["tool_name"], Value::Null);
+    assert!(first.get("tags").is_none());
+    assert!(first.get("why").is_none());
 }
 
 #[test]

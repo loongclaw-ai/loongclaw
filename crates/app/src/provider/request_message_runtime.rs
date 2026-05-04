@@ -429,7 +429,7 @@ async fn read_runtime_self_source_via_kernel(
 ) -> Option<String> {
     let request_path = workspace_guidance::workspace_source_request_path(workspace_root, path)?;
     let request = ToolCoreRequest {
-        tool_name: "file.read".to_owned(),
+        tool_name: "read".to_owned(),
         payload: json!({
             "path": request_path,
         }),
@@ -453,7 +453,7 @@ async fn read_workspace_guidance_source_via_kernel(
 ) -> Option<String> {
     let request_path = workspace_guidance::workspace_source_request_path(workspace_root, path)?;
     let request = ToolCoreRequest {
-        tool_name: "file.read".to_owned(),
+        tool_name: "read".to_owned(),
         payload: json!({
             "path": request_path,
         }),

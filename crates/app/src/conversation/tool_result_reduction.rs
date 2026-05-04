@@ -41,14 +41,14 @@ fn reduce_tool_result_line_for_model(line: &str) -> String {
     let reduction = if payload_summary.is_empty() {
         None
     } else {
-        match canonical_tool_name {
-            "file.read" => {
+        match visible_tool_name.as_str() {
+            "read" => {
                 let Ok(payload_json) = serde_json::from_str::<Value>(payload_summary) else {
                     return line.to_owned();
                 };
                 reduce_file_read_payload_summary(&payload_json).map(|summary| (summary, true))
             }
-            "shell.exec" => {
+            "bash" => {
                 let Ok(mut payload_json) = serde_json::from_str::<Value>(payload_summary) else {
                     return line.to_owned();
                 };

@@ -71,7 +71,7 @@ pub(crate) fn collect_active_external_skills_from_tool_result_text_with_config(
         let Some(tool_result_line) = ToolResultLine::parse(line) else {
             continue;
         };
-        if crate::tools::canonical_tool_name(tool_result_line.tool_name()) != "file.read" {
+        if crate::tools::user_visible_tool_name(tool_result_line.tool_name()) != "read" {
             continue;
         }
         let Some(payload_json) = tool_result_line.payload_summary_json() else {

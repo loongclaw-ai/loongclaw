@@ -101,9 +101,6 @@ pub use runtime_support::{
 };
 use tool_result::{parse_tool_result_continuation, parse_tool_result_followup_context};
 pub use tool_result::{reduce_followup_payload_for_model, tool_result_contains_truncation_signal};
-const FILE_READ_FOLLOWUP_CONTENT_PREVIEW_CHARS: usize = 384;
-const SHELL_FOLLOWUP_STDIO_PREVIEW_CHARS: usize = 384;
-const SHELL_FOLLOWUP_STDIO_OMISSION_MARKER: &str = "\n[... omitted ...]\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
