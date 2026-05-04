@@ -25,6 +25,7 @@ struct BrowserPage {
     final_url: String,
     host: String,
     title: Option<String>,
+    summary: Option<String>,
     content_type: Option<String>,
     raw_html: String,
     page_text: String,
@@ -166,6 +167,7 @@ fn execute_browser_extract(
             "mode": mode.as_str(),
             "final_url": page.final_url,
             "title": page.title,
+            "summary": page.summary,
             "content": truncate_chars(&page.page_text, config.browser.max_text_chars),
         }),
         BrowserExtractMode::Title => json!({
@@ -405,8 +407,12 @@ fn fetch_browser_page(
             let title = is_html
                 .then(|| super::web_fetch::extract_html_title(raw_text.as_str()))
                 .flatten();
+            let summary = is_html
+                .then(|| super::web_fetch::extract_html_summary(raw_text.as_str()))
+                .flatten();
             let page_text = if is_html {
-                super::web_fetch::extract_readable_text_from_html(&raw_text)
+                let readable = super::web_fetch::extract_readable_text_from_html(&raw_text);
+                super::web_fetch::compose_html_readable_content(summary.as_deref(), readable)
             } else {
                 raw_text.trim().to_owned()
             };
@@ -427,6 +433,7 @@ fn fetch_browser_page(
                 final_url: current_url.to_string(),
                 host: current_host,
                 title,
+                summary,
                 content_type,
                 raw_html: raw_text,
                 page_text,
@@ -552,6 +559,7 @@ fn browser_page_payload(
         "final_url": page.final_url,
         "host": page.host,
         "title": page.title,
+        "summary": page.summary,
         "content_type": page.content_type,
         "page_text": page.page_text,
         "available_links": page.links.iter().map(browser_link_json).collect::<Vec<_>>(),
@@ -928,6 +936,7 @@ mod tests {
         );
         assert_eq!(outcome.payload["execution_tier"], json!("restricted"));
         assert_eq!(outcome.payload["title"], json!("Fixture Home"));
+        assert_eq!(outcome.payload["summary"], Value::Null);
         assert!(
             outcome.payload["page_text"]
                 .as_str()
@@ -963,6 +972,46 @@ mod tests {
 
         assert_eq!(outcome.status, "ok");
         assert_eq!(outcome.payload["title"], json!("Fixture Home"));
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn browser_open_promotes_meta_description_into_summary_and_page_text() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept stream");
+            let body = "<html><head><title>Profile</title><meta name=\"description\" content=\"Short profile summary for the target page.\"></head><body><header>Marketing nav</header><main><h1>Profile</h1><p>Main profile content with links and details.</p></main></body></html>";
+            let response = build_http_response("200 OK", "text/html; charset=utf-8", body, None);
+            let mut request_buffer = [0_u8; 4_096];
+
+            stream
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .expect("set read timeout");
+            let _ = stream.read(&mut request_buffer);
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        });
+        let url = format!("http://127.0.0.1:{}/", address.port());
+        let config = local_browser_config();
+
+        let outcome = execute_browser_tool_with_config(
+            scoped_request("browser.open", json!({"url": url}), "test-open-summary"),
+            &config,
+        )
+        .expect("browser.open should succeed");
+
+        assert_eq!(
+            outcome.payload["summary"],
+            "Short profile summary for the target page."
+        );
+        let page_text = outcome.payload["page_text"]
+            .as_str()
+            .expect("page_text should be string");
+        assert!(page_text.starts_with("Summary: Short profile summary for the target page."));
+        assert!(page_text.contains("Main profile content with links and details."));
+        assert!(!page_text.contains("Marketing nav"));
         handle.join().expect("server thread");
     }
 

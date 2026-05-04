@@ -402,7 +402,7 @@ pub(crate) fn extract_readable_text_from_html(html: &str) -> String {
     feature = "tool-browser",
     feature = "tool-websearch"
 ))]
-fn compose_html_readable_content(summary: Option<&str>, readable: String) -> String {
+pub(crate) fn compose_html_readable_content(summary: Option<&str>, readable: String) -> String {
     let readable = readable.trim().to_owned();
     let Some(summary) = summary.map(str::trim).filter(|value| !value.is_empty()) else {
         return readable;
