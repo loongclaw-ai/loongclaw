@@ -1671,13 +1671,14 @@ fn build_tool_access_read_model(
 fn build_tool_surface_read_model(
     surface: &mvp::tools::ToolSurfaceState,
 ) -> GatewayToolSurfaceReadModel {
+    let visible_tool_names = visible_tool_names_for_surface(surface);
     GatewayToolSurfaceReadModel {
         surface_id: surface.surface_id.clone(),
         prompt_snippet: surface.prompt_snippet.clone(),
         usage_guidance: surface.usage_guidance.clone(),
         tool_count: surface.tool_count(),
-        visible_tool_names: visible_tool_names_for_surface(surface),
-        tool_ids: surface.tool_ids.clone(),
+        visible_tool_names: visible_tool_names.clone(),
+        tool_ids: visible_tool_names,
     }
 }
 
@@ -2364,7 +2365,7 @@ mod tests {
         assert_eq!(read_model.surface_id, "read");
         assert_eq!(read_model.tool_count, 2);
         assert_eq!(read_model.visible_tool_names, vec!["read", "write"]);
-        assert_eq!(read_model.tool_ids, vec!["file.read", "file.write"]);
+        assert_eq!(read_model.tool_ids, vec!["read", "write"]);
         assert_eq!(read_model.usage_guidance, "prefer direct read before shell");
     }
 
