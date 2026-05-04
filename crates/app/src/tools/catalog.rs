@@ -1925,6 +1925,7 @@ pub fn runtime_tool_view_for_config_with_external_skills(
             .descriptors()
             .iter()
             .filter(|descriptor| descriptor.availability == ToolAvailability::Runtime)
+            .filter(|descriptor| !runtime_view_hides_hidden_file_executor(descriptor.name))
             .filter(|descriptor| {
                 tool_visibility_gate_enabled_for_runtime_view(
                     descriptor.visibility_gate,
@@ -1943,11 +1944,16 @@ pub fn runtime_tool_view_for_runtime_config(config: &ToolRuntimeConfig) -> ToolV
             .descriptors()
             .iter()
             .filter(|descriptor| descriptor.availability == ToolAvailability::Runtime)
+            .filter(|descriptor| !runtime_view_hides_hidden_file_executor(descriptor.name))
             .filter(|descriptor| {
                 tool_visibility_gate_enabled_for_runtime_policy(descriptor.visibility_gate, config)
             })
             .map(|descriptor| descriptor.name),
     )
+}
+
+fn runtime_view_hides_hidden_file_executor(tool_name: &str) -> bool {
+    matches!(tool_name, "file.read" | "file.write" | "file.edit")
 }
 
 pub fn planned_root_tool_view() -> ToolView {

@@ -153,11 +153,7 @@ pub(super) fn execute_tool_search_tool_with_config(
         query.as_deref(),
         diagnostics_reason,
     );
-    let response_exact_tool_id = if exact_match_found {
-        visible_requested_exact_tool_id.clone()
-    } else {
-        visible_requested_exact_tool_id
-    };
+    let response_exact_tool_id = visible_requested_exact_tool_id;
 
     Ok(ToolCoreOutcome {
         status: "ok".to_owned(),

@@ -496,6 +496,18 @@ fn runtime_tool_view_hides_web_fetch_when_disabled() {
 }
 
 #[test]
+fn runtime_tool_view_hides_hidden_file_executor_tools() {
+    let root_view = runtime_tool_view_for_config(&crate::config::ToolConfig::default());
+
+    assert!(root_view.contains("read"));
+    assert!(root_view.contains("write"));
+    assert!(root_view.contains("edit"));
+    assert!(!root_view.contains("file.read"));
+    assert!(!root_view.contains("file.write"));
+    assert!(!root_view.contains("file.edit"));
+}
+
+#[test]
 fn runtime_tool_view_hides_web_search_when_disabled() {
     let mut config = crate::config::ToolConfig::default();
     config.web_search.enabled = false;
