@@ -16622,7 +16622,7 @@ async fn load_discovery_first_event_summary_accepts_explicit_runtime_binding() {
                 "provider_round": 1,
                 "outcome": "tool.invoke",
                 "followup_tool_name": "tool.invoke",
-                "followup_target_tool_id": "file.read",
+                "followup_target_tool_id": "read",
                 "resolved_to_tool_invoke": true,
                 "raw_tool_output_requested": true
             }
@@ -16649,7 +16649,7 @@ async fn load_discovery_first_event_summary_accepts_explicit_runtime_binding() {
     assert_eq!(direct_summary.followup_result_events, 1);
     assert_eq!(
         direct_summary.latest_followup_target_tool_id.as_deref(),
-        Some("file.read")
+        Some("read")
     );
 
     let audit = Arc::new(InMemoryAuditSink::default());
@@ -16669,7 +16669,7 @@ async fn load_discovery_first_event_summary_accepts_explicit_runtime_binding() {
     assert_eq!(kernel_summary.followup_result_events, 1);
     assert_eq!(
         kernel_summary.latest_followup_target_tool_id.as_deref(),
-        Some("file.read")
+        Some("read")
     );
 
     let captured = invocations.lock().expect("invocations lock");
@@ -16706,7 +16706,7 @@ async fn load_discovery_first_event_summary_with_kernel_context_preserves_compat
                 "provider_round": 0,
                 "outcome": "tool.invoke",
                 "followup_tool_name": "tool.invoke",
-                "followup_target_tool_id": "file.read",
+                "followup_target_tool_id": "read",
                 "resolved_to_tool_invoke": true,
                 "raw_tool_output_requested": false
             }
@@ -16732,7 +16732,7 @@ async fn load_discovery_first_event_summary_with_kernel_context_preserves_compat
     assert_eq!(direct_summary.followup_result_events, 1);
     assert_eq!(
         direct_summary.latest_followup_target_tool_id.as_deref(),
-        Some("file.read")
+        Some("read")
     );
 
     let audit = Arc::new(InMemoryAuditSink::default());
@@ -16751,7 +16751,7 @@ async fn load_discovery_first_event_summary_with_kernel_context_preserves_compat
     assert_eq!(kernel_summary.followup_result_events, 1);
     assert_eq!(
         kernel_summary.latest_followup_target_tool_id.as_deref(),
-        Some("file.read")
+        Some("read")
     );
 
     let captured = invocations.lock().expect("invocations lock");

@@ -215,7 +215,7 @@ pub(super) fn summarize_followup_turn(turn: &ProviderTurn) -> FollowupTurnSummar
                 .args_json
                 .get("tool_id")
                 .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
+                .map(crate::tools::user_visible_tool_name)
         })
         .flatten();
 

@@ -3302,7 +3302,7 @@ mod tests {
                     "provider_round": 1,
                     "outcome": "hidden tool",
                     "followup_tool_name": "hidden tool",
-                    "followup_target_tool_id": "file.read",
+                    "followup_target_tool_id": "read",
                     "used_legacy_hidden_tool_wrapper": true,
                     "raw_tool_output_requested": true
                 }
@@ -3328,7 +3328,7 @@ mod tests {
         );
         assert_eq!(
             summary.latest_followup_target_tool_id.as_deref(),
-            Some("file.read")
+            Some("read")
         );
         assert_eq!(summary.latest_initial_estimated_tokens, Some(12));
         assert_eq!(summary.latest_followup_estimated_tokens, Some(21));
@@ -3479,7 +3479,7 @@ mod tests {
                 "raw_tool_output_requested": true,
                 "used_legacy_hidden_tool_wrapper": true,
                 "followup_tool_name": "hidden tool",
-                "followup_target_tool_id": "file.read"
+                "followup_target_tool_id": "read"
             }
         })
         .to_string()];
@@ -3495,7 +3495,7 @@ mod tests {
         );
         assert_eq!(
             summary.latest_followup_target_tool_id.as_deref(),
-            Some("file.read")
+            Some("read")
         );
         assert_eq!(summary.latest_followup_outcome, None);
         assert!(summary.outcome_counts.is_empty());
