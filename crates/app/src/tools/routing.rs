@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use super::{
     BASH_EXEC_TOOL_NAME, ToolView, canonical_tool_name, execute_discoverable_tool_core_with_config,
-    runtime_config, runtime_tool_view_for_runtime_config, tool_surface,
+    file, runtime_config, runtime_tool_view_for_runtime_config, tool_surface,
 };
 use super::{DELEGATE_ASYNC_TOOL_NAME, DELEGATE_TOOL_NAME, config_import};
 
@@ -26,7 +26,11 @@ pub(super) fn resolved_inner_tool_name_for_logs(canonical_name: &str, payload: &
     }
 
     let direct_tool_name = canonical_name;
-    let resolved_tool_name = route_direct_tool_name(direct_tool_name, payload).ok();
+    let resolved_tool_name = if direct_tool_name == "read" {
+        classify_direct_read_executor_name(payload).ok()
+    } else {
+        route_direct_tool_name(direct_tool_name, payload).ok()
+    };
     let resolved_tool_name = resolved_tool_name
         .map(display_inner_tool_name_for_logs)
         .unwrap_or("-");
@@ -37,8 +41,43 @@ pub(super) fn execute_direct_tool_core_with_config(
     request: ToolCoreRequest,
     config: &runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
+    if request.tool_name == "read" {
+        return execute_direct_read_tool_core_with_config(request, config);
+    }
+
     let routed_request = route_direct_tool_request(request, config)?;
     execute_discoverable_tool_core_with_config(routed_request, config)
+}
+
+fn execute_direct_read_tool_core_with_config(
+    request: ToolCoreRequest,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    let runtime_view = runtime_tool_view_for_runtime_config(config);
+    if !runtime_view.contains("read") {
+        let unavailable_hint = unavailable_runtime_hint("read", &runtime_view);
+        return Err(format!(
+            "tool_surface_unavailable: `read` cannot route to `read` in this runtime{}",
+            unavailable_hint
+        ));
+    }
+
+    let read_executor_name = classify_direct_read_executor_name(&request.payload)?;
+    let mut payload = request.payload;
+    normalize_direct_payload_for_routed_tool("read", read_executor_name, &mut payload);
+    let direct_request = ToolCoreRequest {
+        tool_name: "read".to_owned(),
+        payload,
+    };
+
+    match read_executor_name {
+        "file.read" => file::execute_file_read_tool_with_config(direct_request, config),
+        "content.search" => file::execute_content_search_tool_with_config(direct_request, config),
+        "glob.search" => file::execute_glob_search_tool_with_config(direct_request, config),
+        _ => Err(format!(
+            "tool_not_found: unsupported direct read executor `{read_executor_name}`"
+        )),
+    }
 }
 
 fn route_direct_tool_request(
@@ -121,6 +160,11 @@ fn route_direct_bash_tool_name(payload: &Value) -> Result<&'static str, String> 
 }
 
 fn route_direct_read_tool_name(payload: &Value) -> Result<&'static str, String> {
+    classify_direct_read_executor_name(payload)?;
+    Ok("read")
+}
+
+fn classify_direct_read_executor_name(payload: &Value) -> Result<&'static str, String> {
     let has_path = payload_has_non_empty_string_field(payload, "path");
     let has_query = payload_has_non_empty_string_field(payload, "query");
     let has_pattern = payload_has_non_empty_string_field(payload, "pattern")
@@ -134,7 +178,7 @@ fn route_direct_read_tool_name(payload: &Value) -> Result<&'static str, String> 
     }
 
     if has_path {
-        return Ok("read");
+        return Ok("file.read");
     }
 
     if has_query {

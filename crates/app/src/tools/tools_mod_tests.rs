@@ -1906,7 +1906,7 @@ fn direct_read_ignores_empty_mode_fields_and_accepts_glob_alias() {
             })
         )
         .expect("glob alias should route through direct read"),
-        "glob.search"
+        "read"
     );
 }
 
@@ -1954,7 +1954,7 @@ fn direct_read_glob_alias_executes_glob_search_with_pattern_rewrite() {
     )
     .expect("glob alias direct read should execute");
 
-    assert_eq!(outcome.payload["tool_name"], "glob.search");
+    assert_eq!(outcome.payload["tool_name"], "read");
     let matches = outcome.payload["matches"]
         .as_array()
         .expect("glob search matches");
