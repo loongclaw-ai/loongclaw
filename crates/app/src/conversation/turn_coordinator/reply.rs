@@ -468,7 +468,11 @@ async fn handle_followup_reply_decision<R: ConversationRuntime + ?Sized>(
         MissingToolContinuationExpectation::from_followup_payload(&followup);
     let provider_continuation_enabled = current_continue_phase
         .lane_execution
-        .supports_provider_turn_followup;
+        .supports_provider_turn_followup
+        || (current_continue_phase
+            .lane_execution
+            .provider_originated_tool_intents
+            && matches!(followup, ToolDrivenFollowupPayload::ToolResult { .. }));
     #[cfg(feature = "memory-sqlite")]
     persist_active_external_skills_from_followup_payload_if_needed(
         &current_continue_phase.followup_config,

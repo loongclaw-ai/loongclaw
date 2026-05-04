@@ -2051,17 +2051,6 @@ fn provider_tool_intent(
     }
 }
 
-fn parsed_provider_tool_turn_meta() -> Value {
-    json!({
-        "loong_provider_parse": {
-            "inline_function": {
-                "status": "parsed",
-                "tool_count": 1
-            }
-        }
-    })
-}
-
 #[cfg(feature = "memory-sqlite")]
 fn delegate_test_git_executable() -> std::path::PathBuf {
     crate::conversation::workspace_isolation::resolve_git_executable()
@@ -7105,20 +7094,27 @@ async fn handle_turn_with_runtime_tool_turn_uses_natural_language_completion_by_
     )
     .expect("seed test note");
 
-    let runtime = FakeRuntime::with_turn_and_completion(
+    let runtime = FakeRuntime::with_turns_and_completions(
         vec![],
-        Ok(ProviderTurn {
-            assistant_text: "Reading the file now.".to_owned(),
-            tool_intents: vec![provider_tool_intent(
-                "file.read",
-                json!({"path": "note.md"}),
-                "session-tool",
-                "turn-tool",
-                "call-tool",
-            )],
-            raw_meta: Value::Null,
-        }),
-        Ok("Summary: the note says hello from coordinator test.".to_owned()),
+        vec![
+            Ok(ProviderTurn {
+                assistant_text: "Reading the file now.".to_owned(),
+                tool_intents: vec![provider_tool_intent(
+                    "file.read",
+                    json!({"path": "note.md"}),
+                    "session-tool",
+                    "turn-tool-1",
+                    "call-tool-read",
+                )],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "Summary: the note says hello from coordinator test.".to_owned(),
+                tool_intents: Vec::new(),
+                raw_meta: Value::Null,
+            }),
+        ],
+        vec![],
     );
 
     let coordinator = ConversationTurnCoordinator::new();
@@ -7144,9 +7140,9 @@ async fn handle_turn_with_runtime_tool_turn_uses_natural_language_completion_by_
             .completion_calls
             .lock()
             .expect("completion calls lock"),
-        1
+        0
     );
-    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 1);
+    assert_eq!(*runtime.turn_calls.lock().expect("turn calls lock"), 2);
 
     let persisted = runtime.persisted.lock().expect("persisted lock").clone();
     let visible_turns = persisted_visible_turns(&persisted);
@@ -7617,6 +7613,7 @@ async fn handle_turn_with_runtime_includes_same_tool_warning_in_followup_provide
         loong_contracts::Capability::FilesystemWrite,
         loong_contracts::Capability::NetworkEgress,
     ]));
+    std::fs::write(harness.temp_dir.join("note.md"), "loop warning fixture").expect("seed note");
 
     let repeated_search_turns = (0..10).map(|index| {
         let assistant_text = if index == 0 {
@@ -7633,7 +7630,7 @@ async fn handle_turn_with_runtime_includes_same_tool_warning_in_followup_provide
                 "turn-tool-search-warning",
                 &format!("call-tool-search-warning-{index}"),
             )],
-            raw_meta: parsed_provider_tool_turn_meta(),
+            raw_meta: Value::Null,
         })
     });
     let final_turn = std::iter::once(Ok(ProviderTurn {
@@ -7710,7 +7707,7 @@ async fn handle_turn_with_runtime_continues_direct_tool_chain_after_initial_tool
                     "turn-direct-chain",
                     "call-read",
                 )],
-                raw_meta: parsed_provider_tool_turn_meta(),
+                raw_meta: Value::Null,
             }),
             Ok(ProviderTurn {
                 assistant_text: "Now I'll save it into response.log.".to_owned(),
@@ -7724,7 +7721,7 @@ async fn handle_turn_with_runtime_continues_direct_tool_chain_after_initial_tool
                     "turn-direct-chain",
                     "call-write",
                 )],
-                raw_meta: parsed_provider_tool_turn_meta(),
+                raw_meta: Value::Null,
             }),
             Ok(ProviderTurn {
                 assistant_text: "Done: saved response.log.".to_owned(),
@@ -8024,21 +8021,28 @@ async fn handle_turn_with_runtime_provider_switch_tool_updates_provider_for_foll
 
     let runtime = FakeRuntime::with_turns_and_completions(
         vec![],
-        vec![Ok(ProviderTurn {
-            assistant_text: "Switching provider.".to_owned(),
-            tool_intents: vec![provider_tool_intent(
-                "provider.switch",
-                json!({
-                    "selector": "deepseek",
-                    "config_path": canonical_config_path.display().to_string()
-                }),
-                "session-provider-switch",
-                "turn-provider-switch-1",
-                "call-provider-switch",
-            )],
-            raw_meta: Value::Null,
-        })],
-        vec![Ok("DeepSeek is now active.".to_owned())],
+        vec![
+            Ok(ProviderTurn {
+                assistant_text: "Switching provider.".to_owned(),
+                tool_intents: vec![provider_tool_intent(
+                    "provider.switch",
+                    json!({
+                        "selector": "deepseek",
+                        "config_path": canonical_config_path.display().to_string()
+                    }),
+                    "session-provider-switch",
+                    "turn-provider-switch-1",
+                    "call-provider-switch",
+                )],
+                raw_meta: Value::Null,
+            }),
+            Ok(ProviderTurn {
+                assistant_text: "DeepSeek is now active.".to_owned(),
+                tool_intents: Vec::new(),
+                raw_meta: Value::Null,
+            }),
+        ],
+        vec![],
     );
 
     let coordinator = ConversationTurnCoordinator::new();
@@ -8061,7 +8065,7 @@ async fn handle_turn_with_runtime_provider_switch_tool_updates_provider_for_foll
             .lock()
             .expect("turn provider ids lock")
             .clone(),
-        vec!["openai-gpt-5".to_owned()]
+        vec!["openai-gpt-5".to_owned(), "deepseek-chat".to_owned()]
     );
     assert_eq!(
         runtime
@@ -8069,7 +8073,7 @@ async fn handle_turn_with_runtime_provider_switch_tool_updates_provider_for_foll
             .lock()
             .expect("completion provider ids lock")
             .clone(),
-        vec!["deepseek-chat".to_owned()]
+        Vec::<String>::new()
     );
 
     let (_, reloaded) =
