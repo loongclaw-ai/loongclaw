@@ -4,7 +4,7 @@ use loong_contracts::{Capability, ToolCoreRequest};
 use serde_json::Value;
 
 use super::{
-    BASH_EXEC_TOOL_NAME, HTTP_REQUEST_TOOL_NAME, ToolExecutionKind, ToolView, config_import,
+    HTTP_REQUEST_TOOL_NAME, ToolExecutionKind, ToolView, config_import,
     feishu, runtime_tool_view, tool_catalog, tool_surface,
 };
 
@@ -46,15 +46,19 @@ pub(crate) fn required_capabilities_for_tool_name_and_payload(
 ) -> BTreeSet<Capability> {
     let _ = payload;
     let mut caps = BTreeSet::from([Capability::InvokeTool]);
+    let visible_tool_name = user_visible_tool_name(tool_name);
     if tool_requires_network_egress(tool_name) {
         caps.insert(Capability::NetworkEgress);
     }
-    match tool_name {
-        "read" | "file.read" | "glob.search" | "content.search" => {
+    match visible_tool_name.as_str() {
+        "read" => {
             caps.insert(Capability::FilesystemRead);
         }
-        "memory" | "memory_search" | "memory_get" => {
+        "memory" => {
             caps.insert(Capability::FilesystemRead);
+        }
+        "write" | "edit" => {
+            caps.insert(Capability::FilesystemWrite);
         }
         "sessions_list"
         | "tasks_list"
@@ -74,15 +78,12 @@ pub(crate) fn required_capabilities_for_tool_name_and_payload(
         | "session_tool_policy_status" => {
             caps.insert(Capability::MemoryRead);
         }
-        "write" | "edit" | "file.write" | "file.edit" => {
-            caps.insert(Capability::FilesystemWrite);
-        }
-        "bash" | BASH_EXEC_TOOL_NAME => {
+        "bash" => {
             caps.insert(Capability::FilesystemRead);
             caps.insert(Capability::FilesystemWrite);
             caps.insert(Capability::NetworkEgress);
         }
-        config_import::CONFIG_IMPORT_TOOL_NAME => {
+        _ if tool_name == config_import::CONFIG_IMPORT_TOOL_NAME => {
             caps.insert(Capability::FilesystemRead);
             let mode_requires_write =
                 config_import::config_import_mode_requires_write_value(payload);

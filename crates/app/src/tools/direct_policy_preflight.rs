@@ -19,10 +19,9 @@ pub(super) fn run(
         return shell_policy_ext::authorize_direct_shell_payload(payload, config);
     }
 
-    let is_file_tool = matches!(
-        tool_name,
-        "file.read" | "file.write" | "file.edit" | "config.import"
-    );
+    let visible_tool_name = super::user_visible_tool_name(tool_name);
+    let is_file_tool = matches!(visible_tool_name.as_str(), "read" | "write" | "edit")
+        || tool_name == "config.import";
     if is_file_tool {
         return file_policy_ext::authorize_direct_file_payload(tool_name, payload, config);
     }

@@ -34,15 +34,19 @@ impl FilePolicyExtension {
         payload: &serde_json::Map<String, serde_json::Value>,
     ) -> BTreeSet<Capability> {
         let mut required_capabilities = BTreeSet::new();
+        let visible_tool_name = super::user_visible_tool_name(tool_name);
 
-        match tool_name {
-            "file.read" | "glob.search" | "content.search" | "memory_search" | "memory_get" => {
+        match visible_tool_name.as_str() {
+            "read" => {
                 required_capabilities.insert(Capability::FilesystemRead);
             }
-            "file.write" | "file.edit" => {
+            "write" | "edit" => {
                 required_capabilities.insert(Capability::FilesystemWrite);
             }
-            "config.import" => {
+            _ if matches!(tool_name, "memory_search" | "memory_get") => {
+                required_capabilities.insert(Capability::FilesystemRead);
+            }
+            _ if tool_name == "config.import" => {
                 required_capabilities.insert(Capability::FilesystemRead);
 
                 let mode_requires_write =
