@@ -16,16 +16,16 @@ use crate::secrets::DefaultSecretResolver;
 use loong_contracts::{SecretRef, SecretResolver};
 
 use super::{
-    OnebotChannelConfig, WeixinChannelConfig,
+    OnebotChannelConfig, QqbotChannelConfig, WeixinChannelConfig,
     audit::AuditConfig,
     channels::{
         CliChannelConfig, DingtalkChannelConfig, DiscordChannelConfig, EmailChannelConfig,
         FeishuChannelConfig, GoogleChatChannelConfig, ImessageChannelConfig, IrcChannelConfig,
         LineChannelConfig, MatrixChannelConfig, MattermostChannelConfig,
-        NextcloudTalkChannelConfig, NostrChannelConfig, QqbotChannelConfig, SignalChannelConfig,
-        SlackChannelConfig, SynologyChatChannelConfig, TeamsChannelConfig, TelegramChannelConfig,
-        TlonChannelConfig, TwitchChannelConfig, WebhookChannelConfig, WecomChannelConfig,
-        WhatsappChannelConfig, WhatsappPersonalChannelConfig,
+        NextcloudTalkChannelConfig, NostrChannelConfig, SignalChannelConfig, SlackChannelConfig,
+        SynologyChatChannelConfig, TeamsChannelConfig, TelegramChannelConfig, TlonChannelConfig,
+        TwitchChannelConfig, WebhookChannelConfig, WecomChannelConfig, WhatsappChannelConfig,
+        WhatsappPersonalChannelConfig,
     },
     conversation::ConversationConfig,
     feishu_integration::FeishuIntegrationConfig,
@@ -2902,10 +2902,12 @@ api_key_env = "{secret}"
         let mut config = LoongConfig::default();
         let personalization = crate::config::PersonalizationConfig {
             preferred_name: Some("Chum".to_owned()),
+            pronouns: Some("he/they".to_owned()),
             response_density: Some(crate::config::ResponseDensity::Thorough),
             initiative_level: Some(crate::config::InitiativeLevel::HighInitiative),
             standing_boundaries: Some("Ask before destructive actions.".to_owned()),
             timezone: Some("Asia/Shanghai".to_owned()),
+            notes: Some("Works mostly late at night.".to_owned()),
             locale: Some("zh-CN".to_owned()),
             prompt_state: crate::config::PersonalizationPromptState::Configured,
             schema_version: 1,
@@ -2924,16 +2926,19 @@ api_key_env = "{secret}"
             .personalization
             .expect("typed personalization should persist");
         let preferred_name = loaded_personalization.preferred_name.as_deref();
+        let pronouns = loaded_personalization.pronouns.as_deref();
         let response_density = loaded_personalization.response_density;
         let initiative_level = loaded_personalization.initiative_level;
         let standing_boundaries = loaded_personalization.standing_boundaries.as_deref();
         let timezone = loaded_personalization.timezone.as_deref();
+        let notes = loaded_personalization.notes.as_deref();
         let locale = loaded_personalization.locale.as_deref();
         let prompt_state = loaded_personalization.prompt_state;
         let schema_version = loaded_personalization.schema_version;
         let updated_at_epoch_seconds = loaded_personalization.updated_at_epoch_seconds;
 
         assert_eq!(preferred_name, Some("Chum"));
+        assert_eq!(pronouns, Some("he/they"));
         assert_eq!(
             response_density,
             Some(crate::config::ResponseDensity::Thorough)
@@ -2944,6 +2949,7 @@ api_key_env = "{secret}"
         );
         assert_eq!(standing_boundaries, Some("Ask before destructive actions."));
         assert_eq!(timezone, Some("Asia/Shanghai"));
+        assert_eq!(notes, Some("Works mostly late at night."));
         assert_eq!(locale, Some("zh-CN"));
         assert_eq!(
             prompt_state,

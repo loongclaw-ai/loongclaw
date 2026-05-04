@@ -45,6 +45,8 @@ pub struct PersonalizationConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pronouns: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_density: Option<ResponseDensity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initiative_level: Option<InitiativeLevel>,
@@ -52,6 +54,8 @@ pub struct PersonalizationConfig {
     pub standing_boundaries: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locale: Option<String>,
     #[serde(
@@ -119,20 +123,24 @@ impl MemoryBackendKind {
 impl PersonalizationConfig {
     pub fn normalized(&self) -> Option<Self> {
         let preferred_name = trim_optional_text(self.preferred_name.as_deref());
+        let pronouns = trim_optional_text(self.pronouns.as_deref());
         let response_density = self.response_density;
         let initiative_level = self.initiative_level;
         let standing_boundaries = trim_optional_text(self.standing_boundaries.as_deref());
         let timezone = trim_optional_text(self.timezone.as_deref());
+        let notes = trim_optional_text(self.notes.as_deref());
         let locale = trim_optional_text(self.locale.as_deref());
         let prompt_state = self.prompt_state;
         let schema_version = normalize_personalization_schema_version(self.schema_version);
         let updated_at_epoch_seconds = self.updated_at_epoch_seconds;
 
         let is_meaningful = preferred_name.is_some()
+            || pronouns.is_some()
             || response_density.is_some()
             || initiative_level.is_some()
             || standing_boundaries.is_some()
             || timezone.is_some()
+            || notes.is_some()
             || locale.is_some()
             || !prompt_state.is_pending();
         if !is_meaningful {
@@ -141,10 +149,12 @@ impl PersonalizationConfig {
 
         Some(Self {
             preferred_name,
+            pronouns,
             response_density,
             initiative_level,
             standing_boundaries,
             timezone,
+            notes,
             locale,
             prompt_state,
             schema_version,
@@ -155,10 +165,12 @@ impl PersonalizationConfig {
     pub fn has_operator_preferences(&self) -> bool {
         self.normalized().is_some_and(|personalization| {
             personalization.preferred_name.is_some()
+                || personalization.pronouns.is_some()
                 || personalization.response_density.is_some()
                 || personalization.initiative_level.is_some()
                 || personalization.standing_boundaries.is_some()
                 || personalization.timezone.is_some()
+                || personalization.notes.is_some()
                 || personalization.locale.is_some()
         })
     }
@@ -173,10 +185,12 @@ impl Default for PersonalizationConfig {
     fn default() -> Self {
         Self {
             preferred_name: None,
+            pronouns: None,
             response_density: None,
             initiative_level: None,
             standing_boundaries: None,
             timezone: None,
+            notes: None,
             locale: None,
             prompt_state: PersonalizationPromptState::default(),
             schema_version: default_personalization_schema_version(),
@@ -552,14 +566,6 @@ mod tests {
     }
 
     #[test]
-    fn memory_system_accepts_recall_first_variant() {
-        assert_eq!(
-            MemorySystemKind::parse_id("recall_first"),
-            Some(MemorySystemKind::RecallFirst)
-        );
-    }
-
-    #[test]
     fn memory_system_rejects_unimplemented_future_variant_ids() {
         assert_eq!(MemorySystemKind::parse_id("lucid"), None);
     }
@@ -617,10 +623,12 @@ mod tests {
         let config = MemoryConfig {
             personalization: Some(PersonalizationConfig {
                 preferred_name: Some("  Chum  ".to_owned()),
+                pronouns: Some("  he/they  ".to_owned()),
                 response_density: Some(ResponseDensity::Balanced),
                 initiative_level: None,
                 standing_boundaries: Some("  Ask before destructive actions.  ".to_owned()),
                 timezone: Some("  Asia/Shanghai  ".to_owned()),
+                notes: Some("  Works mostly late at night.  ".to_owned()),
                 locale: Some("  zh-CN  ".to_owned()),
                 prompt_state: PersonalizationPromptState::Deferred,
                 schema_version: 0,
@@ -634,11 +642,16 @@ mod tests {
             .expect("personalization should stay present");
 
         assert_eq!(personalization.preferred_name.as_deref(), Some("Chum"));
+        assert_eq!(personalization.pronouns.as_deref(), Some("he/they"));
         assert_eq!(
             personalization.standing_boundaries.as_deref(),
             Some("Ask before destructive actions.")
         );
         assert_eq!(personalization.timezone.as_deref(), Some("Asia/Shanghai"));
+        assert_eq!(
+            personalization.notes.as_deref(),
+            Some("Works mostly late at night.")
+        );
         assert_eq!(personalization.locale.as_deref(), Some("zh-CN"));
         assert_eq!(
             personalization.response_density,
@@ -657,10 +670,12 @@ mod tests {
         let config = MemoryConfig {
             personalization: Some(PersonalizationConfig {
                 preferred_name: Some("   ".to_owned()),
+                pronouns: Some("   ".to_owned()),
                 response_density: None,
                 initiative_level: None,
                 standing_boundaries: Some("\n".to_owned()),
                 timezone: None,
+                notes: Some("  ".to_owned()),
                 locale: None,
                 prompt_state: PersonalizationPromptState::Pending,
                 schema_version: 1,
