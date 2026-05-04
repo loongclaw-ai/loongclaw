@@ -428,6 +428,12 @@ fn surface_covers_tool_name(surface: &ToolSurfaceDescriptor, tool_name: &str) ->
 }
 
 fn surface_has_visible_covered_tool(surface: &ToolSurfaceDescriptor, view: &ToolView) -> bool {
+    if let Some(direct_tool_name) = surface.direct_tool_name
+        && view.contains(direct_tool_name)
+    {
+        return true;
+    }
+
     surface
         .covered_tool_names
         .iter()
@@ -694,14 +700,7 @@ mod tests {
 
     #[test]
     fn visible_direct_tool_states_follow_runtime_view() {
-        let view = ToolView::from_tool_names([
-            "file.read",
-            "file.write",
-            "file.edit",
-            "shell.exec",
-            "web.fetch",
-            "memory_search",
-        ]);
+        let view = ToolView::from_tool_names(["read", "write", "edit", "bash", "web", "memory"]);
 
         let states = visible_direct_tool_states_for_view(&view);
         let state_ids: Vec<&str> = states
@@ -713,6 +712,18 @@ mod tests {
             state_ids,
             vec!["read", "write", "edit", "bash", "web", "memory"]
         );
+    }
+
+    #[test]
+    fn direct_tool_visibility_accepts_direct_allowlist_names() {
+        let view = ToolView::from_tool_names(["read", "write", "edit", "bash", "web", "memory"]);
+
+        assert!(direct_tool_visible_in_view("read", &view));
+        assert!(direct_tool_visible_in_view("write", &view));
+        assert!(direct_tool_visible_in_view("edit", &view));
+        assert!(direct_tool_visible_in_view("bash", &view));
+        assert!(direct_tool_visible_in_view("web", &view));
+        assert!(direct_tool_visible_in_view("memory", &view));
     }
 
     #[test]
