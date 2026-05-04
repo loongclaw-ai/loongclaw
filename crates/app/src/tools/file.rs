@@ -41,6 +41,7 @@ struct FileReadSelection {
 fn optional_positive_usize_field(
     payload: &serde_json::Map<String, Value>,
     field_name: &str,
+    tool_name: &str,
 ) -> Result<Option<usize>, String> {
     let Some(value) = payload.get(field_name) else {
         return Ok(None);
@@ -48,17 +49,17 @@ fn optional_positive_usize_field(
 
     let raw_value = value
         .as_u64()
-        .ok_or_else(|| format!("file.read payload.{field_name} must be a positive integer"))?;
+        .ok_or_else(|| format!("{tool_name} payload.{field_name} must be a positive integer"))?;
     if raw_value == 0 {
         return Err(format!(
-            "file.read payload.{field_name} must be a positive integer"
+            "{tool_name} payload.{field_name} must be a positive integer"
         ));
     }
 
     usize::try_from(raw_value)
         .map(Some)
         .map_err(|conversion_error| {
-            format!("file.read payload.{field_name} is too large: {conversion_error}")
+            format!("{tool_name} payload.{field_name} is too large: {conversion_error}")
         })
 }
 
@@ -88,6 +89,7 @@ fn select_file_read_content(
     max_bytes: usize,
     offset: Option<usize>,
     limit: Option<usize>,
+    tool_name: &str,
 ) -> Result<FileReadSelection, String> {
     let line_window_requested = offset.is_some() || limit.is_some();
     if !line_window_requested {
@@ -110,7 +112,7 @@ fn select_file_read_content(
         .min(total_lines);
     let selected_lines = all_lines
         .get(start_index..end_index)
-        .ok_or_else(|| "file.read internal line window is out of bounds".to_owned())?;
+        .ok_or_else(|| format!("{tool_name} internal line window is out of bounds"))?;
     let selected_content = selected_lines.join("\n");
     let mut selection = clip_file_read_content(selected_content.as_str(), max_bytes);
     selection.line_start = Some(line_start);
@@ -132,24 +134,25 @@ pub(super) fn execute_file_read_tool_with_config(
 
     #[cfg(feature = "tool-file")]
     {
+        let tool_name = super::user_visible_tool_name(request.tool_name.as_str());
         let payload = request
             .payload
             .as_object()
-            .ok_or_else(|| "file.read payload must be an object".to_owned())?;
+            .ok_or_else(|| format!("{tool_name} payload must be an object"))?;
         let target = payload
             .get("path")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| "file.read requires payload.path".to_owned())?;
+            .ok_or_else(|| format!("{tool_name} requires payload.path"))?;
 
         let max_bytes = payload
             .get("max_bytes")
             .and_then(Value::as_u64)
             .unwrap_or(1_048_576)
             .min(8 * 1_048_576) as usize;
-        let offset = optional_positive_usize_field(payload, "offset")?;
-        let limit = optional_positive_usize_field(payload, "limit")?;
+        let offset = optional_positive_usize_field(payload, "offset", tool_name.as_str())?;
+        let limit = optional_positive_usize_field(payload, "limit", tool_name.as_str())?;
 
         let resolved = resolve_safe_file_path_with_config(target, config)?;
         if resolved.is_dir() {
@@ -161,7 +164,13 @@ pub(super) fn execute_file_read_tool_with_config(
         let bytes = fs::read(&resolved)
             .map_err(|error| format!("failed to read file {}: {error}", resolved.display()))?;
         let file_text = String::from_utf8_lossy(&bytes).to_string();
-        let selection = select_file_read_content(file_text.as_str(), max_bytes, offset, limit)?;
+        let selection = select_file_read_content(
+            file_text.as_str(),
+            max_bytes,
+            offset,
+            limit,
+            tool_name.as_str(),
+        )?;
 
         let mut response_payload = json!({
             "adapter": "core-tools",
@@ -172,7 +181,9 @@ pub(super) fn execute_file_read_tool_with_config(
             "content": selection.content,
         });
         let Some(response_object) = response_payload.as_object_mut() else {
-            return Err("file.read internal response payload must be an object".to_owned());
+            return Err(format!(
+                "{tool_name} internal response payload must be an object"
+            ));
         };
         if let Some(line_start) = selection.line_start {
             response_object.insert("line_start".to_owned(), json!(line_start));
