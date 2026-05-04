@@ -565,11 +565,44 @@ pub struct ToolExecutionConfig {
 
 impl ToolExecutionConfig {
     pub fn timeout_for_tool(&self, tool_name: &str) -> Option<u64> {
-        let key = tool_name.to_lowercase();
-        self.per_tool_timeout
-            .get(&key)
-            .copied()
-            .or(self.default_timeout_seconds)
+        for key in tool_timeout_lookup_keys(tool_name) {
+            if let Some(timeout) = self.per_tool_timeout.get(key.as_str()).copied() {
+                return Some(timeout);
+            }
+        }
+        self.default_timeout_seconds
+    }
+}
+
+fn tool_timeout_lookup_keys(tool_name: &str) -> Vec<String> {
+    let canonical_tool_name = super::canonical_tool_name(tool_name);
+    let visible_tool_name = super::user_visible_tool_name(canonical_tool_name);
+    let mut keys = Vec::new();
+
+    for candidate in [
+        tool_name.to_lowercase(),
+        canonical_tool_name.to_lowercase(),
+        visible_tool_name.to_lowercase(),
+    ] {
+        if !keys.contains(&candidate) {
+            keys.push(candidate);
+        }
+    }
+
+    match visible_tool_name.as_str() {
+        "read" => push_timeout_lookup_key(&mut keys, "file.read"),
+        "write" => push_timeout_lookup_key(&mut keys, "file.write"),
+        "edit" => push_timeout_lookup_key(&mut keys, "file.edit"),
+        _ => {}
+    }
+
+    keys
+}
+
+fn push_timeout_lookup_key(keys: &mut Vec<String>, candidate: &str) {
+    let candidate = candidate.to_owned();
+    if !keys.contains(&candidate) {
+        keys.push(candidate);
     }
 }
 

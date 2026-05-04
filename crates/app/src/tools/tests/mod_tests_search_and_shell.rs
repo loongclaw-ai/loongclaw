@@ -280,6 +280,8 @@ fn tool_execution_config_timeout_for_tool_prefers_per_tool() {
 
     let mut per_tool = BTreeMap::new();
     per_tool.insert("file.read".to_owned(), 30u64);
+    per_tool.insert("write".to_owned(), 45u64);
+    per_tool.insert("edit".to_owned(), 15u64);
 
     let config = runtime_config::ToolExecutionConfig {
         default_timeout_seconds: Some(60u64),
@@ -287,7 +289,11 @@ fn tool_execution_config_timeout_for_tool_prefers_per_tool() {
     };
 
     assert_eq!(config.timeout_for_tool("file.read"), Some(30));
-    assert_eq!(config.timeout_for_tool("file.write"), Some(60));
+    assert_eq!(config.timeout_for_tool("read"), Some(30));
+    assert_eq!(config.timeout_for_tool("file.write"), Some(45));
+    assert_eq!(config.timeout_for_tool("write"), Some(45));
+    assert_eq!(config.timeout_for_tool("edit"), Some(15));
+    assert_eq!(config.timeout_for_tool("file.edit"), Some(15));
     assert_eq!(config.timeout_for_tool("unknown"), Some(60));
 }
 
@@ -299,6 +305,7 @@ fn tool_execution_config_timeout_for_tool_none_when_no_default() {
     };
 
     assert_eq!(config.timeout_for_tool("file.read"), None);
+    assert_eq!(config.timeout_for_tool("read"), None);
 }
 
 #[test]
