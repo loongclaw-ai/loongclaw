@@ -4,15 +4,19 @@ use super::*;
 enum MissingToolContinuationExpectation {
     RetryableFailure,
     RetryableFailureAfterRepair,
+    MissingToolCall,
+    MissingToolCallAfterRepair,
 }
 
 impl MissingToolContinuationExpectation {
     fn from_tool_failure(payload: &ToolDrivenFollowupPayload) -> Option<Self> {
         match payload {
-            ToolDrivenFollowupPayload::ToolFailure { reason, retryable }
-                if *retryable && reason.starts_with("missing_tool_call_followup:") =>
-            {
-                Some(Self::RetryableFailure)
+            ToolDrivenFollowupPayload::ToolFailure { reason, retryable } if *retryable => {
+                if reason.starts_with("missing_tool_call_followup:") {
+                    Some(Self::MissingToolCall)
+                } else {
+                    Some(Self::RetryableFailure)
+                }
             }
             ToolDrivenFollowupPayload::ToolFailure { .. }
             | ToolDrivenFollowupPayload::ToolResult { .. }
@@ -22,8 +26,10 @@ impl MissingToolContinuationExpectation {
 
     fn contract_mode(self) -> ToolDrivenFollowupContractMode {
         match self {
-            Self::RetryableFailure => ToolDrivenFollowupContractMode::RetryableFailure,
-            Self::RetryableFailureAfterRepair => {
+            Self::RetryableFailure | Self::MissingToolCall => {
+                ToolDrivenFollowupContractMode::RetryableFailure
+            }
+            Self::RetryableFailureAfterRepair | Self::MissingToolCallAfterRepair => {
                 ToolDrivenFollowupContractMode::RepairRetryableFailure
             }
         }
@@ -33,19 +39,32 @@ impl MissingToolContinuationExpectation {
         match self {
             Self::RetryableFailure => Self::RetryableFailureAfterRepair,
             Self::RetryableFailureAfterRepair => Self::RetryableFailureAfterRepair,
+            Self::MissingToolCall => Self::MissingToolCallAfterRepair,
+            Self::MissingToolCallAfterRepair => Self::MissingToolCallAfterRepair,
         }
     }
 
     fn after_attempted(self) -> bool {
-        matches!(self, Self::RetryableFailureAfterRepair)
+        matches!(
+            self,
+            Self::RetryableFailureAfterRepair | Self::MissingToolCallAfterRepair
+        )
     }
 
     fn payload_kind(self) -> ToolDrivenFollowupKind {
         match self {
-            Self::RetryableFailure | Self::RetryableFailureAfterRepair => {
-                ToolDrivenFollowupKind::ToolFailure
-            }
+            Self::RetryableFailure
+            | Self::RetryableFailureAfterRepair
+            | Self::MissingToolCall
+            | Self::MissingToolCallAfterRepair => ToolDrivenFollowupKind::ToolFailure,
         }
+    }
+
+    fn missing_tool_call(self) -> bool {
+        matches!(
+            self,
+            Self::MissingToolCall | Self::MissingToolCallAfterRepair
+        )
     }
 }
 
@@ -106,7 +125,12 @@ fn missing_tool_continuation_blocked_reply(
     expectation: MissingToolContinuationExpectation,
 ) -> String {
     match expectation.payload_kind() {
-        ToolDrivenFollowupKind::ToolFailure => "I couldn't continue because the required retry tool call was never issued. The turn stopped here instead of pretending the retry happened.".to_owned(),
+        ToolDrivenFollowupKind::ToolFailure if expectation.missing_tool_call() => {
+            "I couldn't continue because the required retry tool call was never issued. The turn stopped here instead of pretending the retry happened.".to_owned()
+        }
+        ToolDrivenFollowupKind::ToolFailure => {
+            "I couldn't continue because the retryable tool failure was not repaired with a new tool call. The turn stopped here instead of pretending the retry succeeded.".to_owned()
+        }
         ToolDrivenFollowupKind::ToolResult => "I couldn't continue because the required follow-up tool call was never issued. The turn stopped here instead of pretending the work completed.".to_owned(),
         ToolDrivenFollowupKind::DiscoveryRecovery => "I couldn't continue because the required follow-up tool call was never issued.".to_owned(),
     }
@@ -410,7 +434,7 @@ fn provider_turn_missing_tool_followup_payload(
         lane_execution
             .malformed_parse_followup_turn
             .then(|| ToolDrivenFollowupPayload::ToolFailure {
-                reason: "missing_tool_call_followup: previous provider reply contained malformed tool-call markup instead of a valid tool call. If another tool is required, emit the exact next tool call now instead of malformed tool text.".to_owned(),
+                reason: "missing_tool_call_followup: previous provider reply contained malformed tool-call markup instead of a valid tool call. If another tool is required, emit the exact next tool call now instead of malformed tool text or leaked wrapper text.".to_owned(),
                 retryable: true,
             })
     })
@@ -1109,6 +1133,8 @@ pub(super) fn build_turn_reply_followup_messages_with_warning(
     user_input: &str,
     loop_warning_reason: Option<&str>,
 ) -> Vec<Value> {
+    let continuation_contract = MissingToolContinuationExpectation::from_tool_failure(&followup)
+        .map(MissingToolContinuationExpectation::contract_mode);
     build_turn_reply_followup_messages_with_contract(
         base_messages,
         assistant_preface,
@@ -1116,7 +1142,7 @@ pub(super) fn build_turn_reply_followup_messages_with_warning(
         tool_request_summary,
         user_input,
         loop_warning_reason,
-        None,
+        continuation_contract,
     )
 }
 

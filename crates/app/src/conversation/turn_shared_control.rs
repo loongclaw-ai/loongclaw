@@ -27,6 +27,9 @@ pub fn missing_tool_call_followup_payload(reply_text: &str) -> Option<ToolDriven
         MissingToolCallKind::PseudoToolCommand => format!(
             "{MISSING_TOOL_CALL_REASON_PREFIX} previous assistant reply emitted pseudo-tool text instead of a real tool call. If another tool is required, emit the exact next tool call now instead of formatting it as plain text.\nReply excerpt:\n{excerpt}"
         ),
+        MissingToolCallKind::PseudoToolMarkup => format!(
+            "{MISSING_TOOL_CALL_REASON_PREFIX} previous assistant reply emitted malformed tool-call markup instead of a real tool call. If another tool is required, emit the exact next tool call now instead of leaking tool wrapper text.\nReply excerpt:\n{excerpt}"
+        ),
     };
 
     Some(ToolDrivenFollowupPayload::ToolFailure {
@@ -39,6 +42,7 @@ pub fn missing_tool_call_followup_payload(reply_text: &str) -> Option<ToolDriven
 enum MissingToolCallKind {
     EmptyFollowup,
     PseudoToolCommand,
+    PseudoToolMarkup,
 }
 
 fn detect_missing_tool_call_kind(reply_text: &str) -> Option<MissingToolCallKind> {
@@ -47,11 +51,36 @@ fn detect_missing_tool_call_kind(reply_text: &str) -> Option<MissingToolCallKind
         return Some(MissingToolCallKind::EmptyFollowup);
     }
 
+    if contains_pseudo_tool_markup(normalized_reply) {
+        return Some(MissingToolCallKind::PseudoToolMarkup);
+    }
+
     normalized_reply
         .lines()
         .map(str::trim)
         .any(line_looks_like_pseudo_tool_command)
         .then_some(MissingToolCallKind::PseudoToolCommand)
+}
+
+fn contains_pseudo_tool_markup(reply_text: &str) -> bool {
+    let normalized_reply = reply_text.trim();
+
+    if normalized_reply.starts_with("[tool_request]")
+        || normalized_reply.starts_with("[tool_failure]")
+    {
+        return true;
+    }
+
+    let contains_tool_marker =
+        normalized_reply.contains("[tool_request]") || normalized_reply.contains("[tool_failure]");
+    let contains_json_tool_shape = normalized_reply.contains('{')
+        && normalized_reply.contains('}')
+        && (normalized_reply.contains("\"name\"")
+            || normalized_reply.contains("\"tool\"")
+            || normalized_reply.contains("\"tool_name\""))
+        && (normalized_reply.contains("\"arguments\"") || normalized_reply.contains("\"request\""));
+
+    contains_tool_marker || contains_json_tool_shape
 }
 
 fn line_looks_like_pseudo_tool_command(line: &str) -> bool {

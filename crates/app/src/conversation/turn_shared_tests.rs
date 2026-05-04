@@ -562,6 +562,22 @@ fn missing_tool_call_followup_detects_empty_followup() {
 }
 
 #[test]
+fn missing_tool_call_followup_detects_tool_request_markup_with_glued_summary_text() {
+    let payload = missing_tool_call_followup_payload(
+        "[tool_request]\n{\"url\":\"https://example.com\"},\"name\":\"web\"}page summary here",
+    )
+    .expect("tool-request markup should trigger missing-tool-call recovery");
+
+    let ToolDrivenFollowupPayload::ToolFailure { reason, retryable } = payload else {
+        panic!("expected tool failure payload");
+    };
+
+    assert!(reason.contains("malformed tool-call markup"));
+    assert!(reason.contains("Reply excerpt"));
+    assert!(retryable);
+}
+
+#[test]
 fn missing_tool_call_followup_ignores_normal_final_answer_text() {
     let payload = missing_tool_call_followup_payload(
         "The disk is nearly full because the cache directory is consuming most of the space.",
