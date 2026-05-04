@@ -349,7 +349,10 @@ async fn status_cli_prefers_live_gateway_operator_summary_for_matching_config() 
     let loaded_config = load_status_config_fixture(config_path.as_path());
     seed_approved_pairing_device(&loaded_config.config);
 
-    let runtime_dir = default_gateway_runtime_state_dir();
+    let runtime_dir = config_path
+        .parent()
+        .expect("config parent")
+        .join("gateway-runtime");
     let hooks = SupervisorRuntimeHooks {
         load_config: Arc::new({
             let config_path = config_path.clone();
