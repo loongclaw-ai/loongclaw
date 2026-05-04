@@ -160,8 +160,14 @@ fn execute_web_fetch_tool_enabled(
             let title = is_html
                 .then(|| extract_html_title(raw_text.as_str()))
                 .flatten();
+            let summary = is_html
+                .then(|| extract_html_summary(raw_text.as_str()))
+                .flatten();
             let content = match mode {
-                RenderMode::ReadableText if is_html => extract_readable_text_from_html(&raw_text),
+                RenderMode::ReadableText if is_html => {
+                    let readable = extract_readable_text_from_html(&raw_text);
+                    compose_html_readable_content(summary.as_deref(), readable)
+                }
                 RenderMode::ReadableText | RenderMode::RawText => raw_text.trim().to_owned(),
             };
 
@@ -178,6 +184,7 @@ fn execute_web_fetch_tool_enabled(
                     "mode": mode.as_str(),
                     "content": content,
                     "title": title,
+                    "summary": summary,
                     "bytes_downloaded": budget.consumed(),
                     "truncated": truncated,
                     "redirect_count": redirect_count,
@@ -354,6 +361,25 @@ pub(crate) fn extract_html_title(html: &str) -> Option<String> {
     feature = "tool-browser",
     feature = "tool-websearch"
 ))]
+pub(crate) fn extract_html_summary(html: &str) -> Option<String> {
+    let document = Html::parse_document(html);
+    let selector = Selector::parse(
+        "meta[name='description'], meta[property='og:description'], meta[name='twitter:description']",
+    )
+    .ok()?;
+
+    document
+        .select(&selector)
+        .filter_map(|element| element.value().attr("content"))
+        .map(|value| collapse_whitespace(&decode_basic_entities(value.trim())))
+        .find(|value| !value.is_empty())
+}
+
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 pub(crate) fn extract_readable_text_from_html(html: &str) -> String {
     if let Some(main_text) = extract_primary_html_text(html) {
         return main_text;
@@ -369,6 +395,26 @@ pub(crate) fn extract_readable_text_from_html(html: &str) -> String {
     sanitized = strip_tag_block(&sanitized, "aside");
     let text = strip_tags(&sanitized);
     collapse_whitespace(&decode_basic_entities(&text))
+}
+
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
+fn compose_html_readable_content(summary: Option<&str>, readable: String) -> String {
+    let readable = readable.trim().to_owned();
+    let Some(summary) = summary.map(str::trim).filter(|value| !value.is_empty()) else {
+        return readable;
+    };
+    if readable.is_empty() {
+        return summary.to_owned();
+    }
+    if readable.contains(summary) {
+        return readable;
+    }
+
+    format!("Summary: {summary}\n\n{readable}")
 }
 
 #[cfg(any(
@@ -676,12 +722,40 @@ mod tests {
         assert_eq!(outcome.payload["tool_name"], "web.fetch");
         assert_eq!(outcome.payload["mode"], "readable_text");
         assert_eq!(outcome.payload["title"], "Demo Page");
+        assert_eq!(outcome.payload["summary"], Value::Null);
         let content = outcome.payload["content"]
             .as_str()
             .expect("content should be string");
         assert!(content.contains("Hello world"));
         assert!(content.contains("Loong fetches docs."));
         assert!(!content.contains("window.alert"));
+    }
+
+    #[test]
+    fn web_fetch_promotes_meta_description_into_summary_and_readable_content() {
+        let url = spawn_http_server(|_request| {
+            ok_response(
+                "text/html; charset=utf-8",
+                "<html><head><title>Profile</title><meta name=\"description\" content=\"Short profile summary for the target page.\"></head><body><header>Marketing nav</header><main><h1>Profile</h1><p>Main profile content with links and details.</p></main></body></html>",
+            )
+        });
+
+        let outcome = super::super::execute_tool_core_with_config(
+            request(json!({"url": url})),
+            &local_runtime_config(),
+        )
+        .expect("local HTML fixture should fetch");
+
+        assert_eq!(
+            outcome.payload["summary"],
+            "Short profile summary for the target page."
+        );
+        let content = outcome.payload["content"]
+            .as_str()
+            .expect("content should be string");
+        assert!(content.starts_with("Summary: Short profile summary for the target page."));
+        assert!(content.contains("Main profile content with links and details."));
+        assert!(!content.contains("Marketing nav"));
     }
 
     #[test]
