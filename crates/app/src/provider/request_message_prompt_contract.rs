@@ -175,6 +175,8 @@ pub(super) fn render_execution_discipline_section() -> String {
             .to_owned(),
         "- Prefer runtime evidence over recalled assumptions about the current environment."
             .to_owned(),
+        "- When `read`, `web`, or `browse` is already available, do not ask for permission to inspect repository files or pages; emit the tool call."
+            .to_owned(),
         "</mandatory_tool_use>".to_owned(),
         "<act_dont_ask>".to_owned(),
         "- If ambiguity does not change the next tool or side effect, act on the obvious local interpretation."
@@ -246,6 +248,7 @@ fn render_deferred_tool_text_workflow_section() -> String {
         "For straightforward page reading and summarization, prefer `web` with `url`. Use `browse` when you need a bounded browser session, link discovery, or follow-up page interaction.".to_owned(),
         "In raw JSON mode, do not emit hidden discoverable names such as `browser.open`, `browser.extract`, `browser.click`, or dotted variants like `browse.open`.".to_owned(),
         "When you need a tool, emit one standalone JSON object with exactly `name` and `arguments` instead of only describing the missing capability.".to_owned(),
+        "Do not say that you need permission to read a file or page when the direct tool is already available; emit the direct tool call instead.".to_owned(),
         "Do not emit legacy `tool` / `request` wrappers in raw JSON mode.".to_owned(),
         "Direct tool example:".to_owned(),
         direct_call_example,

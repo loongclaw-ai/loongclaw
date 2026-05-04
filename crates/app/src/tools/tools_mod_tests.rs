@@ -1891,6 +1891,59 @@ fn direct_web_routes_low_level_request_fields_through_web_surface() {
 }
 
 #[test]
+fn direct_read_ignores_empty_mode_fields_and_accepts_glob_alias() {
+    assert_eq!(
+        super::routing::route_direct_tool_name(
+            "read",
+            &json!({
+                "pattern": "",
+                "path": "",
+                "query": "",
+                "glob": "README.md|AGENTS.md",
+                "root": ".",
+                "max_results": 20
+            })
+        )
+        .expect("glob alias should route through direct read"),
+        "glob.search"
+    );
+}
+
+#[test]
+fn direct_read_glob_alias_executes_glob_search_with_pattern_rewrite() {
+    let root = unique_temp_dir("loong-direct-read-glob-alias");
+    std::fs::create_dir_all(root.join("docs")).expect("create docs dir");
+    std::fs::write(root.join("AGENTS.md"), "agent guidance").expect("write AGENTS fixture");
+    std::fs::write(root.join("docs/README.md"), "docs overview").expect("write docs fixture");
+    let config = test_tool_runtime_config(&root).into_inner();
+
+    let outcome = execute_tool_core_with_config(
+        ToolCoreRequest {
+            tool_name: "read".to_owned(),
+            payload: json!({
+                "path": "",
+                "query": "",
+                "pattern": "",
+                "glob": "README.md|AGENTS.md",
+                "root": ".",
+                "max_results": 20
+            }),
+        },
+        &config,
+    )
+    .expect("glob alias direct read should execute");
+
+    assert_eq!(outcome.payload["tool_name"], "glob.search");
+    let matches = outcome.payload["matches"]
+        .as_array()
+        .expect("glob search matches");
+    assert!(
+        matches.iter().any(|entry| entry["path"] == "AGENTS.md"),
+        "glob alias should return AGENTS.md: {matches:?}"
+    );
+}
+
+#[test]
 fn direct_web_runtime_routing_keeps_network_mode_when_search_mode_is_unavailable() {
     let view = ToolView::from_tool_names(["web.fetch", "http.request"]);
     let error = route_direct_web_tool_name_for_view(

@@ -1629,6 +1629,9 @@ mod tests {
         assert!(content.contains("<prerequisite_checks>"));
         assert!(content.contains("<verification>"));
         assert!(content.contains("<missing_context>"));
+        assert!(content.contains(
+            "do not ask for permission to inspect repository files or pages; emit the tool call"
+        ));
     }
 
     #[test]
@@ -1658,6 +1661,9 @@ mod tests {
         assert!(content.contains("Do not ask for confirmation for ordinary allowed work."));
         assert!(content.contains("Continue from tool results and retrieved evidence until no useful bounded action remains."));
         assert!(content.contains("Only stop for a verified completion condition, a concrete blocker, or a real approval boundary."));
+        assert!(content.contains(
+            "do not ask for permission to inspect repository files or pages; emit the tool call"
+        ));
     }
 
     #[test]

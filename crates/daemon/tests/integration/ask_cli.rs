@@ -1196,6 +1196,84 @@ fn ask_cli_web_summary_uses_page_metadata_and_hides_tool_markup() {
 }
 
 #[test]
+fn ask_cli_recovers_textual_tool_request_wrappers_and_completes() {
+    let fixture = LatestSelectorCliFixture::new("ask-text-tool-request-e2e");
+    std::fs::create_dir_all(fixture.root_path().join("docs")).expect("create docs dir");
+    std::fs::write(
+        fixture.root_path().join("AGENTS.md"),
+        "Repository guidance for E2E textual tool request recovery.",
+    )
+    .expect("write AGENTS fixture");
+    std::fs::write(
+        fixture.root_path().join("docs/README.md"),
+        "Documentation overview for E2E textual tool request recovery.",
+    )
+    .expect("write docs README fixture");
+
+    let final_reply = "E2E PASS textual tool request recovery.";
+    let provider_server =
+        DynamicMockProviderServer::spawn(2, move |request_index, request| match request_index {
+            0 => MockProviderResponse::ok_json(openai_chat_final_body(
+                "[tool_request]\n{\"arguments\":{\"path\":\"AGENTS.md\"},\"name\":\"read\"}[tool_request]\n{\"arguments\":{\"path\":\"docs/README.md\"},\"name\":\"read\"}I need the contents of `AGENTS.md` and `docs/README.md` to ground the summary, but I do not have their tool outputs yet.",
+            )),
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Repository guidance for E2E textual tool request recovery.",
+                    "textual tool request follow-up provider request",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "Documentation overview for E2E textual tool request recovery.",
+                    "textual tool request follow-up provider request",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(final_reply))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.file_root = Some(fixture.root_path().display().to_string());
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--message",
+            "Summarize this repository and suggest the best next step.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+
+    assert!(
+        output.status.success(),
+        "ask textual tool request e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the terminal answer after recovering textual tool requests: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("[tool_request]"),
+        "stdout should not leak textual tool request markup: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        2,
+        "ask should continue after recovering textual tool request wrappers: {provider_requests:#?}"
+    );
+}
+
+#[test]
 fn ask_cli_installed_skill_can_be_discovered_and_loaded_e2e() {
     let fixture = LatestSelectorCliFixture::new("ask-installed-skill-e2e");
     let skill_source_dir = fixture.root_path().join("source/release-guard");

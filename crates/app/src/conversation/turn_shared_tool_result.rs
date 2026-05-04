@@ -24,8 +24,10 @@ pub(super) fn proactive_followup_continuation_context(
     let primary_context = tool_result_text.and_then(parse_tool_result_followup_context);
     let fallback_context = rendered_tool_result_text.and_then(parse_tool_result_followup_context);
     let tool_result_context = primary_context.or(fallback_context)?;
-    let continuation = parse_tool_result_continuation(&tool_result_context.payload_json)?;
-    Some(render_tool_result_continuation_guidance(&continuation))
+    if let Some(continuation) = parse_tool_result_continuation(&tool_result_context.payload_json) {
+        return Some(render_tool_result_continuation_guidance(&continuation));
+    }
+    render_tool_result_partial_evidence_guidance(&tool_result_context.payload_json)
 }
 
 pub(super) fn followup_prompt_needs_truncation_hint(
@@ -191,6 +193,18 @@ fn render_tool_result_continuation_guidance(continuation: &ToolResultContinuatio
     }
 
     lines.join("\n")
+}
+
+fn render_tool_result_partial_evidence_guidance(payload_json: &Value) -> Option<String> {
+    let matches = payload_json.get("matches")?.as_array()?;
+    if matches.is_empty() {
+        return None;
+    }
+
+    Some(
+        "Continuation guidance:\nThe last read result only listed matching paths. If the user still needs file contents or a grounded repository summary, continue with another direct `read` call for the highest-value files instead of stopping at the listing."
+            .to_owned(),
+    )
 }
 
 fn reduce_tool_result_text_for_model(text: &str) -> Option<String> {

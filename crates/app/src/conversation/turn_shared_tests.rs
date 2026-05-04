@@ -1530,7 +1530,43 @@ fn followup_prompt_uses_discovery_guidance_for_discovery_shaped_results() {
     );
 
     assert!(prompt.contains(prompt::TOOL_FOLLOWUP_PROMPT));
+    assert!(prompt.contains(
+        "If the result is only a path listing, metadata summary, or other partial evidence"
+    ));
     assert!(prompt.contains("Original request:\nfind the latest ai news and summarize it"));
+}
+
+#[test]
+fn followup_prompt_treats_path_listing_as_partial_evidence() {
+    let tool_result = format!(
+        "[ok] {}",
+        json!({
+            "status": "ok",
+            "tool": "read",
+            "tool_call_id": "call-read-listing",
+            "payload_summary": json!({
+                "tool_name": "glob.search",
+                "matches": [
+                    {"path": "README.md", "kind": "file"},
+                    {"path": "AGENTS.md", "kind": "file"}
+                ]
+            })
+            .to_string(),
+            "payload_chars": 256,
+            "payload_truncated": false
+        })
+    );
+
+    let prompt = build_tool_followup_user_prompt(
+        "summarize this repository and suggest the best next step",
+        None,
+        Some(tool_result.as_str()),
+        None,
+        None,
+    );
+
+    assert!(prompt.contains("The last read result only listed matching paths."));
+    assert!(prompt.contains("continue with another direct `read` call"));
 }
 
 #[test]

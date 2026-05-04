@@ -514,8 +514,8 @@ mod tests {
             Some("turn-a"),
         );
         let descriptor = tools::tool_catalog()
-            .resolve("file.read")
-            .expect("file.read descriptor");
+            .resolve("read")
+            .expect("read descriptor");
         let request = ToolCoreRequest { tool_name, payload };
 
         let issue = detect_repairable_tool_request_issue(descriptor, &request);

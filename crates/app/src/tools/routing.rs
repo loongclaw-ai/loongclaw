@@ -46,7 +46,7 @@ fn route_direct_tool_request(
     config: &runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreRequest, String> {
     let tool_name = request.tool_name;
-    let payload = request.payload;
+    let mut payload = request.payload;
     let runtime_view = runtime_tool_view_for_runtime_config(config);
     let routed_tool_name =
         route_direct_tool_name_for_view(tool_name.as_str(), &payload, &runtime_view)?;
@@ -59,6 +59,8 @@ fn route_direct_tool_request(
             tool_name, routed_tool_display, unavailable_hint
         ));
     }
+
+    normalize_direct_payload_for_routed_tool(tool_name.as_str(), routed_tool_name, &mut payload);
 
     Ok(ToolCoreRequest {
         tool_name: routed_tool_name.to_owned(),
@@ -119,9 +121,10 @@ fn route_direct_bash_tool_name(payload: &Value) -> Result<&'static str, String> 
 }
 
 fn route_direct_read_tool_name(payload: &Value) -> Result<&'static str, String> {
-    let has_path = payload_has_non_null_field(payload, "path");
-    let has_query = payload_has_non_null_field(payload, "query");
-    let has_pattern = payload_has_non_null_field(payload, "pattern");
+    let has_path = payload_has_non_empty_string_field(payload, "path");
+    let has_query = payload_has_non_empty_string_field(payload, "query");
+    let has_pattern = payload_has_non_empty_string_field(payload, "pattern")
+        || payload_has_non_empty_string_field(payload, "glob");
     let mode_count = count_true([has_path, has_query, has_pattern]);
 
     if mode_count == 0 {
@@ -147,6 +150,14 @@ fn route_direct_read_tool_name(payload: &Value) -> Result<&'static str, String> 
     }
 
     Ok("glob.search")
+}
+
+fn payload_has_non_empty_string_field(payload: &Value, field_name: &str) -> bool {
+    payload
+        .get(field_name)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
 }
 
 fn route_direct_write_tool_name(payload: &Value) -> Result<&'static str, String> {
@@ -695,6 +706,52 @@ pub(super) fn payload_has_non_null_field(payload: &Value, field_name: &str) -> b
         .get(field_name)
         .filter(|value| !value.is_null())
         .is_some()
+}
+
+fn normalize_direct_payload_for_routed_tool(
+    original_tool_name: &str,
+    routed_tool_name: &str,
+    payload: &mut Value,
+) {
+    if original_tool_name != "read" || routed_tool_name != "glob.search" {
+        return;
+    }
+    let Some(payload_object) = payload.as_object_mut() else {
+        return;
+    };
+    let pattern_missing = payload_object
+        .get("pattern")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_none_or(str::is_empty);
+    if pattern_missing
+        && let Some(glob_value) = payload_object
+            .get("glob")
+            .cloned()
+            .filter(|value| value.as_str().map(str::trim).is_some_and(|v| !v.is_empty()))
+    {
+        let normalized_glob = glob_value
+            .as_str()
+            .map(normalize_direct_read_glob_alias_pattern)
+            .map(Value::String)
+            .unwrap_or(glob_value);
+        payload_object.insert("pattern".to_owned(), normalized_glob);
+    }
+}
+
+fn normalize_direct_read_glob_alias_pattern(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.contains('|') && !trimmed.contains('{') && !trimmed.contains('}') {
+        let parts = trimmed
+            .split('|')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        if parts.len() > 1 {
+            return format!("{{{}}}", parts.join(","));
+        }
+    }
+    trimmed.to_owned()
 }
 
 pub(super) fn count_true<const N: usize>(values: [bool; N]) -> usize {

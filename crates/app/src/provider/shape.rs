@@ -1363,6 +1363,11 @@ fn strip_trailing_tool_wrapper_marker_line_start(
     cursor: usize,
     start: usize,
 ) -> Option<usize> {
+    let between = text.get(cursor..start)?.trim();
+    if matches!(between, "[tool_request]" | "[tool_failure]") {
+        return Some(cursor);
+    }
+
     let current_line_start = text[..start]
         .rfind('\n')
         .map(|index| index + 1)
@@ -3307,6 +3312,58 @@ mod tests {
         assert_eq!(
             turn.tool_intents[0].args_json,
             json!({"url": "https://example.com"})
+        );
+    }
+
+    #[test]
+    fn extract_provider_turn_recovers_multiple_glued_tool_request_wrappers_before_final_text() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "[tool_request]\n{\"arguments\":{\"path\":\"AGENTS.md\"},\"name\":\"read\"}[tool_request]\n{\"arguments\":{\"path\":\"docs/README.md\"},\"name\":\"read\"}I do not yet have the tool outputs needed to summarize the repository."
+                }
+            }]
+        });
+
+        let turn = extract_provider_turn(&body).expect("turn");
+        assert_eq!(
+            turn.assistant_text,
+            "I do not yet have the tool outputs needed to summarize the repository."
+        );
+        assert_eq!(turn.tool_intents.len(), 2);
+        assert_eq!(turn.tool_intents[0].tool_name, "read");
+        assert_eq!(turn.tool_intents[0].args_json, json!({"path": "AGENTS.md"}));
+        assert_eq!(turn.tool_intents[1].tool_name, "read");
+        assert_eq!(
+            turn.tool_intents[1].args_json,
+            json!({"path": "docs/README.md"})
+        );
+    }
+
+    #[test]
+    fn extract_provider_turn_recovers_multiple_glued_tool_request_wrappers_without_final_text() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "[tool_request]\n{\"arguments\":{\"path\":\"README.md\"},\"name\":\"read\"}[tool_request]\n{\"arguments\":{\"path\":\"ARCHITECTURE.md\"},\"name\":\"read\"}[tool_request]\n{\"arguments\":{\"path\":\"docs/ROADMAP.md\"},\"name\":\"read\"}"
+                }
+            }]
+        });
+
+        let turn = extract_provider_turn(&body).expect("turn");
+        assert_eq!(turn.assistant_text, "");
+        assert_eq!(turn.tool_intents.len(), 3);
+        assert_eq!(turn.tool_intents[0].tool_name, "read");
+        assert_eq!(turn.tool_intents[0].args_json, json!({"path": "README.md"}));
+        assert_eq!(turn.tool_intents[1].tool_name, "read");
+        assert_eq!(
+            turn.tool_intents[1].args_json,
+            json!({"path": "ARCHITECTURE.md"})
+        );
+        assert_eq!(turn.tool_intents[2].tool_name, "read");
+        assert_eq!(
+            turn.tool_intents[2].args_json,
+            json!({"path": "docs/ROADMAP.md"})
         );
     }
 

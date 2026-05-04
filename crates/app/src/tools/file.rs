@@ -1503,21 +1503,57 @@ struct LineInfo {
 
 #[cfg(feature = "tool-file")]
 struct GlobMatcher {
-    regex: Regex,
+    regexes: Vec<Regex>,
 }
 
 #[cfg(feature = "tool-file")]
 impl GlobMatcher {
     fn new(pattern: &str) -> Result<Self, String> {
-        let regex_pattern = glob_pattern_to_regex(pattern);
-        let regex = Regex::new(regex_pattern.as_str())
-            .map_err(|error| format!("invalid glob pattern `{pattern}`: {error}"))?;
-        Ok(Self { regex })
+        let regexes = split_glob_matcher_patterns(pattern)
+            .into_iter()
+            .map(|candidate| {
+                let regex_pattern = glob_pattern_to_regex(candidate.as_str());
+                Regex::new(regex_pattern.as_str())
+                    .map_err(|error| format!("invalid glob pattern `{pattern}`: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { regexes })
     }
 
     fn is_match(&self, relative_path: &str) -> bool {
-        self.regex.is_match(relative_path)
+        self.regexes
+            .iter()
+            .any(|regex| regex.is_match(relative_path))
     }
+}
+
+#[cfg(feature = "tool-file")]
+fn split_glob_matcher_patterns(pattern: &str) -> Vec<String> {
+    let trimmed = pattern.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        let inner = &trimmed[1..trimmed.len().saturating_sub(1)];
+        let parts = inner
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        if !parts.is_empty() {
+            return parts;
+        }
+    }
+
+    let pipe_parts = trimmed
+        .split('|')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if pipe_parts.len() > 1 {
+        return pipe_parts;
+    }
+
+    vec![trimmed.to_owned()]
 }
 
 #[cfg(feature = "tool-file")]
