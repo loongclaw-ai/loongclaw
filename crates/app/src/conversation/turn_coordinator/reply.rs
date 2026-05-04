@@ -2,8 +2,6 @@ use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingToolContinuationExpectation {
-    RetryableFailure,
-    RetryableFailureAfterRepair,
     MissingToolCall,
     MissingToolCallAfterRepair,
 }
@@ -15,7 +13,7 @@ impl MissingToolContinuationExpectation {
                 if reason.starts_with("missing_tool_call_followup:") {
                     Some(Self::MissingToolCall)
                 } else {
-                    Some(Self::RetryableFailure)
+                    None
                 }
             }
             ToolDrivenFollowupPayload::ToolFailure { .. }
@@ -26,10 +24,8 @@ impl MissingToolContinuationExpectation {
 
     fn contract_mode(self) -> ToolDrivenFollowupContractMode {
         match self {
-            Self::RetryableFailure | Self::MissingToolCall => {
-                ToolDrivenFollowupContractMode::RetryableFailure
-            }
-            Self::RetryableFailureAfterRepair | Self::MissingToolCallAfterRepair => {
+            Self::MissingToolCall => ToolDrivenFollowupContractMode::RetryableFailure,
+            Self::MissingToolCallAfterRepair => {
                 ToolDrivenFollowupContractMode::RepairRetryableFailure
             }
         }
@@ -37,26 +33,20 @@ impl MissingToolContinuationExpectation {
 
     fn after_attempt(self) -> Self {
         match self {
-            Self::RetryableFailure => Self::RetryableFailureAfterRepair,
-            Self::RetryableFailureAfterRepair => Self::RetryableFailureAfterRepair,
             Self::MissingToolCall => Self::MissingToolCallAfterRepair,
             Self::MissingToolCallAfterRepair => Self::MissingToolCallAfterRepair,
         }
     }
 
     fn after_attempted(self) -> bool {
-        matches!(
-            self,
-            Self::RetryableFailureAfterRepair | Self::MissingToolCallAfterRepair
-        )
+        matches!(self, Self::MissingToolCallAfterRepair)
     }
 
     fn payload_kind(self) -> ToolDrivenFollowupKind {
         match self {
-            Self::RetryableFailure
-            | Self::RetryableFailureAfterRepair
-            | Self::MissingToolCall
-            | Self::MissingToolCallAfterRepair => ToolDrivenFollowupKind::ToolFailure,
+            Self::MissingToolCall | Self::MissingToolCallAfterRepair => {
+                ToolDrivenFollowupKind::ToolFailure
+            }
         }
     }
 

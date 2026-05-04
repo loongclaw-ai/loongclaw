@@ -47,34 +47,6 @@ fn build_turn_reply_followup_messages_do_not_include_truncation_hint_for_failure
 }
 
 #[test]
-fn build_turn_reply_followup_messages_include_retryable_failure_continuation_contract() {
-    let messages = build_turn_reply_followup_messages_with_warning(
-        &[serde_json::json!({
-            "role": "system",
-            "content": "sys"
-        })],
-        "preface",
-        ToolDrivenFollowupPayload::ToolFailure {
-            reason: "web.fetch returned non-success status 429".to_owned(),
-            retryable: true,
-        },
-        Some(r#"{"name":"web","arguments":{"url":"https://example.com"}}"#),
-        "summarize the page",
-        None,
-    );
-
-    let user_prompt = messages
-        .last()
-        .and_then(|message| message.get("content"))
-        .and_then(Value::as_str)
-        .expect("user followup prompt should exist");
-
-    assert!(user_prompt.contains("[followup_state:continue]"));
-    assert!(user_prompt.contains("retryable"));
-    assert!(user_prompt.contains("emit the next tool call now"));
-}
-
-#[test]
 fn build_turn_reply_followup_messages_promotes_external_skill_invoke_to_system_context() {
     let messages = build_turn_reply_followup_messages(
         &[serde_json::json!({
