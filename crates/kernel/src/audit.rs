@@ -251,7 +251,10 @@ fn load_last_audit_entry_hash(path: &Path) -> Result<Option<String>, AuditError>
     decode_last_audit_entry_hash_from_line(&line, path)
 }
 
-fn load_last_audit_entry_hash_from_file(file: &File, path: &Path) -> Result<Option<String>, AuditError> {
+fn load_last_audit_entry_hash_from_file(
+    file: &File,
+    path: &Path,
+) -> Result<Option<String>, AuditError> {
     let mut clone = file.try_clone().map_err(|error| {
         AuditError::Sink(format!(
             "failed to clone audit journal handle `{}` while loading tail hash: {error}",
@@ -286,7 +289,10 @@ fn load_last_audit_entry_hash_from_file(file: &File, path: &Path) -> Result<Opti
     decode_last_audit_entry_hash_from_line(&line, path)
 }
 
-fn decode_last_audit_entry_hash_from_line(line: &str, path: &Path) -> Result<Option<String>, AuditError> {
+fn decode_last_audit_entry_hash_from_line(
+    line: &str,
+    path: &Path,
+) -> Result<Option<String>, AuditError> {
     let persisted_event = decode_persisted_audit_event_line(line, path, "tail line")?;
     let last_hash = persisted_event.integrity.and_then(|value| {
         let hash = value.entry_hash;
