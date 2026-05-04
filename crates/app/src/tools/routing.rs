@@ -209,31 +209,11 @@ fn route_direct_write_tool_name(payload: &Value) -> Result<&'static str, String>
 
 fn route_direct_edit_tool_name(payload: &Value) -> Result<&'static str, String> {
     let has_edits = payload_has_non_null_field(payload, "edits");
-    let has_old_string = payload_has_non_null_field(payload, "old_string");
-    let has_new_string = payload_has_non_null_field(payload, "new_string");
-    let legacy_edit_mode = has_old_string || has_new_string;
-    let mode_count = count_true([has_edits, legacy_edit_mode]);
-
-    if mode_count == 0 {
-        return Err(
-            "direct_edit_requires_one_mode: expected `edits`, or legacy `old_string` and `new_string`"
-                .to_owned(),
-        );
-    }
-    if mode_count > 1 {
-        return Err(
-            "direct_edit_ambiguous: do not mix `edits` with legacy `old_string` / `new_string`"
-                .to_owned(),
-        );
+    if !has_edits {
+        return Err("direct_edit_requires_edits: expected `edits`".to_owned());
     }
     if !payload_has_non_null_field(payload, "path") {
         return Err("direct_edit_requires_path: expected `path` for direct edit".to_owned());
-    }
-    if legacy_edit_mode && (!has_old_string || !has_new_string) {
-        return Err(
-            "direct_edit_requires_complete_legacy_fields: expected both `old_string` and `new_string`"
-                .to_owned(),
-        );
     }
     Ok("edit")
 }

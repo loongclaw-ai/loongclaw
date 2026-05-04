@@ -365,11 +365,6 @@ struct ExactTextEditBlock {
 #[cfg(feature = "tool-file")]
 enum FileEditRequest {
     ExactBlocks(Vec<ExactTextEditBlock>),
-    LegacySingle {
-        old_string: String,
-        new_string: String,
-        replace_all: bool,
-    },
 }
 
 #[cfg(feature = "tool-file")]
@@ -378,22 +373,6 @@ struct LocatedExactTextEditBlock<'a> {
     start: usize,
     end: usize,
     block: &'a ExactTextEditBlock,
-}
-
-#[cfg(feature = "tool-file")]
-fn payload_optional_edit_string_field<'a>(
-    payload: &'a serde_json::Map<String, Value>,
-    field_name: &str,
-    tool_name: &str,
-) -> Result<Option<&'a str>, String> {
-    let Some(value) = payload.get(field_name) else {
-        return Ok(None);
-    };
-
-    let string_value = value
-        .as_str()
-        .ok_or_else(|| format!("{tool_name} payload.{field_name} must be a string"))?;
-    Ok(Some(string_value))
 }
 
 #[cfg(feature = "tool-file")]
@@ -456,41 +435,11 @@ fn parse_file_edit_request(
     tool_name: &str,
 ) -> Result<FileEditRequest, String> {
     let parsed_blocks = parse_exact_edit_blocks(payload, tool_name)?;
-    let old_string = payload_optional_edit_string_field(payload, "old_string", tool_name)?;
-    let new_string = payload_optional_edit_string_field(payload, "new_string", tool_name)?;
-    let replace_all = payload
-        .get("replace_all")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let mixed_modes = parsed_blocks.is_some()
-        && (old_string.is_some() || new_string.is_some() || payload.contains_key("replace_all"));
-    if mixed_modes {
-        return Err(format!(
-            "{tool_name} does not allow mixing `edits` with legacy `old_string` / `new_string` fields"
-        ));
-    }
-
     if let Some(blocks) = parsed_blocks {
         return Ok(FileEditRequest::ExactBlocks(blocks));
     }
 
-    let Some(old_string) = old_string else {
-        return Err(format!(
-            "{tool_name} requires payload.edits, or legacy payload.old_string and payload.new_string"
-        ));
-    };
-    let Some(new_string) = new_string else {
-        return Err(format!("{tool_name} requires payload.new_string (string)"));
-    };
-    if old_string.is_empty() {
-        return Err("edit_failed: old_string must not be empty".to_owned());
-    }
-
-    Ok(FileEditRequest::LegacySingle {
-        old_string: old_string.to_owned(),
-        new_string: new_string.to_owned(),
-        replace_all,
-    })
+    Err(format!("{tool_name} requires payload.edits"))
 }
 
 #[cfg(feature = "tool-file")]
@@ -559,32 +508,6 @@ fn apply_exact_edit_blocks(
     Ok((updated, located_blocks.len()))
 }
 
-#[cfg(feature = "tool-file")]
-fn apply_legacy_single_edit(
-    content: &str,
-    old_string: &str,
-    new_string: &str,
-    replace_all: bool,
-) -> Result<(String, usize), String> {
-    let match_count = content.matches(old_string).count();
-    if match_count == 0 {
-        return Err("edit_failed: old_string not found in file".to_owned());
-    }
-    if match_count > 1 && !replace_all {
-        return Err(format!(
-            "edit_failed: old_string matches {match_count} locations; \
-             set replace_all:true to replace all occurrences"
-        ));
-    }
-
-    let (updated, replacements_made) = if replace_all {
-        (content.replace(old_string, new_string), match_count)
-    } else {
-        (content.replacen(old_string, new_string, 1), 1usize)
-    };
-    Ok((updated, replacements_made))
-}
-
 pub(super) fn execute_file_edit_tool_with_config(
     request: ToolCoreRequest,
     config: &super::runtime_config::ToolRuntimeConfig,
@@ -618,16 +541,6 @@ pub(super) fn execute_file_edit_tool_with_config(
             FileEditRequest::ExactBlocks(blocks) => {
                 apply_exact_edit_blocks(content.as_str(), blocks)
             }
-            FileEditRequest::LegacySingle {
-                old_string,
-                new_string,
-                replace_all,
-            } => apply_legacy_single_edit(
-                content.as_str(),
-                old_string.as_str(),
-                new_string.as_str(),
-                *replace_all,
-            ),
         }?;
 
         fs::write(&resolved, updated.as_bytes())
@@ -641,7 +554,6 @@ pub(super) fn execute_file_edit_tool_with_config(
 
         let edit_blocks_applied = match &edit_request {
             FileEditRequest::ExactBlocks(blocks) => Some(blocks.len()),
-            FileEditRequest::LegacySingle { .. } => None,
         };
         let mut response_payload = json!({
             "adapter": "core-tools",
@@ -2174,25 +2086,6 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
 
-    fn make_edit_request(
-        path: &str,
-        old: &str,
-        new: &str,
-        replace_all: Option<bool>,
-    ) -> ToolCoreRequest {
-        let mut map = serde_json::Map::new();
-        map.insert("path".into(), Value::String(path.to_owned()));
-        map.insert("old_string".into(), Value::String(old.to_owned()));
-        map.insert("new_string".into(), Value::String(new.to_owned()));
-        if let Some(ra) = replace_all {
-            map.insert("replace_all".into(), Value::Bool(ra));
-        }
-        ToolCoreRequest {
-            tool_name: "file.edit".to_owned(),
-            payload: Value::Object(map),
-        }
-    }
-
     fn make_edit_blocks_request(path: &str, edits: &[(&str, &str)]) -> ToolCoreRequest {
         let edit_blocks = edits
             .iter()
@@ -2244,7 +2137,7 @@ mod tests {
             ..ToolRuntimeConfig::default()
         };
         let result = execute_file_edit_tool_with_config(
-            make_edit_request("file.txt", "hello", "hi", None),
+            make_edit_blocks_request("file.txt", &[("hello", "hi")]),
             &config,
         );
         assert!(result.is_ok(), "unexpected error: {result:?}");
@@ -2267,16 +2160,16 @@ mod tests {
             ..ToolRuntimeConfig::default()
         };
         let err = execute_file_edit_tool_with_config(
-            make_edit_request("file.txt", "nothere", "x", None),
+            make_edit_blocks_request("file.txt", &[("nothere", "x")]),
             &config,
         )
         .expect_err("should fail");
-        assert!(err.contains("old_string not found"), "got: {err}");
+        assert!(err.contains("old_text not found"), "got: {err}");
         let _ = fs::remove_dir_all(base);
     }
 
     #[test]
-    fn file_edit_multiple_match_without_replace_all_errors() {
+    fn file_edit_multiple_match_errors() {
         let base = unique_temp_dir("loong-file-edit-multi");
         let root = base.join("root");
         fs::create_dir_all(&root).expect("create root");
@@ -2287,34 +2180,11 @@ mod tests {
             ..ToolRuntimeConfig::default()
         };
         let err = execute_file_edit_tool_with_config(
-            make_edit_request("file.txt", "a", "b", None),
+            make_edit_blocks_request("file.txt", &[("a", "b")]),
             &config,
         )
         .expect_err("should fail");
         assert!(err.contains("matches 2 locations"), "got: {err}");
-        let _ = fs::remove_dir_all(base);
-    }
-
-    #[test]
-    fn file_edit_replace_all_replaces_all_occurrences() {
-        let base = unique_temp_dir("loong-file-edit-replaceall");
-        let root = base.join("root");
-        fs::create_dir_all(&root).expect("create root");
-        let target = root.join("file.txt");
-        fs::write(&target, "a\na\na\n").expect("write");
-
-        let config = ToolRuntimeConfig {
-            file_root: Some(root),
-            ..ToolRuntimeConfig::default()
-        };
-        let result = execute_file_edit_tool_with_config(
-            make_edit_request("file.txt", "a", "b", Some(true)),
-            &config,
-        );
-        assert!(result.is_ok(), "unexpected error: {result:?}");
-        let outcome = result.unwrap();
-        assert_eq!(outcome.payload["replacements_made"], 3);
-        assert_eq!(fs::read_to_string(&target).unwrap(), "b\nb\nb\n");
         let _ = fs::remove_dir_all(base);
     }
 
@@ -2330,7 +2200,7 @@ mod tests {
             file_root: Some(root),
             ..ToolRuntimeConfig::default()
         };
-        let request = make_edit_request("file.txt", "old line", "new line", None);
+        let request = make_edit_blocks_request("file.txt", &[("old line", "new line")]);
         let sink = Arc::new(RecordingRuntimeSink::default());
         let runtime_sink: Arc<dyn ToolRuntimeEventSink> = sink.clone();
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -2468,11 +2338,11 @@ mod tests {
             ..ToolRuntimeConfig::default()
         };
         let err = execute_file_edit_tool_with_config(
-            make_edit_request("file.txt", "", "x", None),
+            make_edit_blocks_request("file.txt", &[("", "x")]),
             &config,
         )
         .expect_err("should fail");
-        assert!(err.contains("old_string must not be empty"), "got: {err}");
+        assert!(err.contains("old_text must not be empty"), "got: {err}");
         let _ = fs::remove_dir_all(base);
     }
 
@@ -2495,7 +2365,7 @@ mod tests {
             ..ToolRuntimeConfig::default()
         };
         let err = execute_file_edit_tool_with_config(
-            make_edit_request("escape-link", "secret", "pwned", None),
+            make_edit_blocks_request("escape-link", &[("secret", "pwned")]),
             &config,
         )
         .expect_err("escape denied");

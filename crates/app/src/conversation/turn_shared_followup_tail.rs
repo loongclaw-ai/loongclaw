@@ -469,16 +469,10 @@ fn render_direct_routing_failure_repair_guidance(
         "Add `path` to tell the direct write surface which file to replace.".to_owned()
     } else if normalized_reason.starts_with("direct_write_requires_content:") {
         "Add `content` with the full replacement text for the direct write request.".to_owned()
-    } else if normalized_reason.starts_with("direct_edit_requires_one_mode:") {
-        "Use either `edits`, or the legacy `old_string` plus `new_string` pair, and include `path`."
-            .to_owned()
-    } else if normalized_reason.starts_with("direct_edit_ambiguous:") {
-        "Do not mix `edits` with legacy `old_string` / `new_string` fields in the same direct edit request.".to_owned()
+    } else if normalized_reason.starts_with("direct_edit_requires_edits:") {
+        "Add `edits` with one or more exact edit blocks, and include `path`.".to_owned()
     } else if normalized_reason.starts_with("direct_edit_requires_path:") {
         "Add `path` so the direct edit surface knows which file to patch.".to_owned()
-    } else if normalized_reason.starts_with("direct_edit_requires_complete_legacy_fields:") {
-        "When using legacy edit mode, provide both `old_string` and `new_string` together."
-            .to_owned()
     } else if normalized_reason.starts_with("direct_bash_requires_command:") {
         "Add `command` with the bash command string to execute.".to_owned()
     } else if normalized_reason.starts_with("direct_web_requires_query_or_url:") {

@@ -274,12 +274,21 @@ pub(super) fn search_tool_view_from_payload(
             .and_then(|body| body.get(LOONG_INTERNAL_TOOL_SEARCH_VISIBLE_TOOL_IDS_KEY))
             .and_then(Value::as_array)
             .map(|tool_names| {
-                tool_names
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(canonical_tool_name)
-                    .map(super::user_visible_tool_name)
-                    .collect::<Vec<_>>()
+                let mut normalized_tool_names = Vec::new();
+
+                for tool_name in tool_names.iter().filter_map(Value::as_str) {
+                    let canonical_tool_name = canonical_tool_name(tool_name);
+                    let visible_tool_name = super::user_visible_tool_name(canonical_tool_name);
+
+                    if !normalized_tool_names.contains(&canonical_tool_name.to_owned()) {
+                        normalized_tool_names.push(canonical_tool_name.to_owned());
+                    }
+                    if !normalized_tool_names.contains(&visible_tool_name) {
+                        normalized_tool_names.push(visible_tool_name);
+                    }
+                }
+
+                normalized_tool_names
             })
     } else {
         None

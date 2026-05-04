@@ -2041,8 +2041,12 @@ fn direct_edit_executes_without_hopping_through_hidden_file_edit() {
             tool_name: "edit".to_owned(),
             payload: json!({
                 "path": "notes.txt",
-                "old_string": "beta",
-                "new_string": "gamma"
+                "edits": [
+                    {
+                        "old_text": "beta",
+                        "new_text": "gamma"
+                    }
+                ]
             }),
         },
         &config,

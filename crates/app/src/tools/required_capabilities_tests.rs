@@ -63,7 +63,7 @@ fn required_capabilities_follow_effective_tool_request() {
 
     let direct_file_edit = ToolCoreRequest {
         tool_name: "file.edit".to_owned(),
-        payload: json!({"path": "notes.txt", "old_string": "a", "new_string": "b"}),
+        payload: json!({"path": "notes.txt", "edits": [{"old_text": "a", "new_text": "b"}]}),
     };
     assert_eq!(
         required_capabilities_for_request(&direct_file_edit),
@@ -72,7 +72,7 @@ fn required_capabilities_follow_effective_tool_request() {
 
     let direct_edit = ToolCoreRequest {
         tool_name: "edit".to_owned(),
-        payload: json!({"path": "notes.txt", "old_string": "a", "new_string": "b"}),
+        payload: json!({"path": "notes.txt", "edits": [{"old_text": "a", "new_text": "b"}]}),
     };
     assert_eq!(
         required_capabilities_for_request(&direct_edit),

@@ -248,30 +248,9 @@ pub(super) fn file_edit_definition(descriptor: &ToolDescriptor) -> Value {
                         "description": "One or more exact text replacement blocks matched against the original file. Each block must match uniquely and must not overlap another block.",
                         "items": exact_edit_block_definition(),
                         "minItems": 1
-                    },
-                    "old_string": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Legacy single-block exact edit field. Prefer `edits` for new requests."
-                    },
-                    "new_string": {
-                        "type": "string",
-                        "description": "Legacy replacement text paired with `old_string`. Prefer `edits` for new requests."
-                    },
-                    "replace_all": {
-                        "type": "boolean",
-                        "description": "Legacy single-block mode only. Replace all occurrences instead of requiring a unique match. Zero-match still fails regardless of this flag. Defaults to false."
                     }
                 },
-                "required": ["path"],
-                "anyOf": [
-                    {
-                        "required": ["edits"]
-                    },
-                    {
-                        "required": ["old_string", "new_string"]
-                    }
-                ],
+                "required": ["path", "edits"],
                 "additionalProperties": false
             }
         }
