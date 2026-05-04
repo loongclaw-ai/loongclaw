@@ -1926,7 +1926,7 @@ fn direct_read_prioritizes_path_over_incidental_search_fields() {
             })
         )
         .expect("path mode should win over incidental search fields"),
-        "file.read"
+        "read"
     );
 }
 
@@ -1988,7 +1988,7 @@ fn direct_read_path_mode_executes_after_dropping_incidental_search_fields() {
     )
     .expect("path-priority direct read should execute");
 
-    assert_eq!(outcome.payload["tool_name"], "file.read");
+    assert_eq!(outcome.payload["tool_name"], "read");
     assert_eq!(outcome.payload["content"], "claude guidance");
 }
 

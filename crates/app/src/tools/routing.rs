@@ -134,7 +134,7 @@ fn route_direct_read_tool_name(payload: &Value) -> Result<&'static str, String> 
     }
 
     if has_path {
-        return Ok("file.read");
+        return Ok("read");
     }
 
     if has_query {
@@ -713,7 +713,7 @@ fn normalize_direct_payload_for_routed_tool(
     };
 
     match routed_tool_name {
-        "file.read" => {
+        "read" | "file.read" => {
             payload_object.remove("query");
             payload_object.remove("pattern");
             payload_object.remove("glob");
