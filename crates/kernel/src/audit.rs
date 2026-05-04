@@ -619,13 +619,13 @@ impl AuditSink for JsonlAuditSink {
             .journal
             .lock()
             .map_err(|_error| AuditError::Sink("audit journal mutex poisoned".to_owned()))?;
-        let previous_hash = guard.last_entry_hash.clone();
+        lock_audit_journal(&guard.file, &self.path)?;
+
+        let previous_hash = load_last_audit_entry_hash(&self.path)?;
         let entry_hash =
             compute_audit_event_entry_hash(&event, previous_hash.as_deref(), &self.path)?;
         let persisted_event = event_with_integrity(event, previous_hash, entry_hash.clone());
         let encoded = serialize_audit_event_line(&persisted_event, &self.path)?;
-
-        lock_audit_journal(&guard.file, &self.path)?;
 
         let write_result = guard
             .file

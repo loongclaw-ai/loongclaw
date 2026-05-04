@@ -405,6 +405,31 @@ fn jsonl_audit_sink_waits_for_existing_file_lock_before_appending() {
 }
 
 #[test]
+fn jsonl_audit_sink_refreshes_tail_hash_under_file_lock_across_multiple_sinks() {
+    let path = fresh_audit_temp_path("jsonl-multi-sink");
+    let first_sink = JsonlAuditSink::new(path.clone()).expect("first jsonl sink should initialize");
+    let second_sink =
+        JsonlAuditSink::new(path.clone()).expect("second jsonl sink should initialize");
+
+    first_sink
+        .record(sample_audit_event("evt-first", 301))
+        .expect("first sink should append first event");
+    second_sink
+        .record(sample_audit_event("evt-second", 302))
+        .expect("second sink should append second event");
+    first_sink
+        .record(sample_audit_event("evt-third", 303))
+        .expect("first sink should refresh the tail hash before appending again");
+
+    let report = verify_jsonl_audit_journal(&path).expect("verify repaired chain");
+    assert!(report.valid, "expected valid chain, got {report:?}");
+    assert_eq!(report.total_events, 3);
+    assert_eq!(report.verified_events, 3);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 #[should_panic(expected = "fanout audit sink requires at least one child")]
 fn fanout_audit_sink_rejects_empty_children() {
     let _ = FanoutAuditSink::new(Vec::new());
