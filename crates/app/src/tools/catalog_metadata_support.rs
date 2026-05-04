@@ -168,7 +168,6 @@ pub(super) fn tool_argument_hint(name: &str) -> &'static str {
         }
         "memory_search" => "query:string,max_results?:integer",
         "memory_get" => "path:string,from?:integer,lines?:integer",
-        "file.write" => "path:string,content:string,create_dirs?:boolean,overwrite?:boolean",
         "file.edit" => {
             "path:string,edits?:array,old_string?:string,new_string?:string,replace_all?:boolean"
         }
@@ -226,9 +225,6 @@ pub(super) fn tool_search_hint(name: &str, fallback: &'static str) -> &'static s
         }
         "content.search" => {
             "search workspace file contents, find text in repo files, grep text in the project"
-        }
-        "file.write" => {
-            "write a workspace file, save file content, create or overwrite a repo file"
         }
         "file.edit" => {
             "edit a workspace file, patch file content, or apply exact replacement blocks in a repo file"
@@ -628,12 +624,6 @@ pub(super) fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'sta
             ("from", "integer"),
             ("lines", "integer"),
         ],
-        "file.write" => &[
-            ("path", "string"),
-            ("content", "string"),
-            ("create_dirs", "boolean"),
-            ("overwrite", "boolean"),
-        ],
         "file.edit" => &[
             ("path", "string"),
             ("edits", "array"),
@@ -798,7 +788,6 @@ pub(super) fn tool_required_fields(name: &str) -> &'static [&'static str] {
         "content.search" => &["query"],
         "memory_search" => &["query"],
         "memory_get" => &["path"],
-        "file.write" => &["path", "content"],
         "file.edit" => &["path"],
         "shell.exec" => &["command"],
         "bash.exec" => &["command"],
@@ -904,7 +893,6 @@ pub(super) fn tool_tags(name: &str) -> &'static [&'static str] {
         "content.search" => &["file", "search", "content", "filesystem", "repo"],
         "memory_search" => &["memory", "search", "recall", "durable", "workspace"],
         "memory_get" => &["memory", "read", "recall", "durable", "workspace"],
-        "file.write" => &["file", "write", "filesystem"],
         "file.edit" => &["file", "edit", "filesystem", "exact", "replace"],
         "shell.exec" => &["shell", "command", "process", "exec"],
         "bash.exec" => &["bash", "command", "process", "exec"],
