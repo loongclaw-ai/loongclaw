@@ -1632,6 +1632,13 @@ mod tests {
         assert!(content.contains(
             "do not ask for permission to inspect repository files or pages; emit the tool call"
         ));
+        assert!(content.contains("prefer `edit` or `write` over repeated read-only inspection"));
+        assert!(content.contains(
+            "Do not claim that a file changed unless a mutating tool call actually succeeded"
+        ));
+        assert!(content.contains(
+            "the normal bounded sequence is: inspect only if needed, then `edit` or `write`, then `read` back the changed file"
+        ));
     }
 
     #[test]

@@ -157,14 +157,17 @@ impl ToolSurfaceDescriptor {
 const READ_GUIDELINES: &[&str] = &[
     "Use read for filesystem inspection before shelling out.",
     "Use `offset` and `limit` to page through large files instead of reading everything at once.",
+    "Use read to inspect or verify file contents, not to claim that a file was changed.",
 ];
 const WRITE_GUIDELINES: &[&str] = &[
     "Use write for new files and whole-file writes.",
     "Use edit for surgical replacements instead of pushing exact-edit blocks through write.",
+    "When the user explicitly asks to create or overwrite a file, use write instead of staying in read-only inspection mode.",
 ];
 const EDIT_GUIDELINES: &[&str] = &[
     "Use edit for exact text replacements inside an existing file.",
     "Prefer one or more exact edit blocks over whole-file rewrite when the change is surgical.",
+    "When the user explicitly asks to modify an existing file, use edit once you know the target path and intended replacement.",
 ];
 const BASH_GUIDELINES: &[&str] = &[
     "Use bash for guarded shell commands from the current runtime file root.",
@@ -206,13 +209,7 @@ const WRITE_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
     ("create_dirs", "boolean"),
     ("overwrite", "boolean"),
 ];
-const EDIT_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
-    ("path", "string"),
-    ("edits", "array"),
-    ("old_string", "string"),
-    ("new_string", "string"),
-    ("replace_all", "boolean"),
-];
+const EDIT_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[("path", "string"), ("edits", "array")];
 const BASH_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
     ("command", "string"),
     ("timeout_ms", "integer"),
@@ -267,10 +264,10 @@ const WRITE_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetada
     tags: &["surface", "write", "file", "replace"],
 };
 const EDIT_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata {
-    argument_hint: "path:string,edits?:array,old_string?:string,new_string?:string,replace_all?:boolean",
+    argument_hint: "path:string,edits:array",
     search_hint: "apply one or more exact text edits to an existing file through one direct edit tool",
     parameter_types: EDIT_DIRECT_PARAMETER_TYPES,
-    required_fields: &["path"],
+    required_fields: &["path", "edits"],
     tags: &["surface", "edit", "file", "patch"],
 };
 const BASH_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata {
@@ -304,8 +301,8 @@ const MEMORY_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetad
 
 const READ_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
     id: "read",
-    prompt_snippet: "read files, page through large files, search repo text, or list matching paths.",
-    prompt_guidance: "Use read for normal repo inspection and file pagination.",
+    prompt_snippet: "inspect file contents, page through large files, search repo text, or list matching paths.",
+    prompt_guidance: "Use read for repo inspection, evidence gathering, and post-mutation verification.",
     prompt_guidelines: READ_GUIDELINES,
     direct_tool_name: Some(DIRECT_READ_TOOL_NAME),
     covered_tool_names: READ_COVERED_TOOL_NAMES,
@@ -316,8 +313,8 @@ const READ_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
 
 const WRITE_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
     id: "write",
-    prompt_snippet: "create files or replace full file contents.",
-    prompt_guidance: "Use write for whole-file writes and file creation.",
+    prompt_snippet: "create files or replace full file contents when the task requires a real file mutation.",
+    prompt_guidance: "Use write for whole-file writes, file creation, and explicit overwrite tasks.",
     prompt_guidelines: WRITE_GUIDELINES,
     direct_tool_name: Some(DIRECT_WRITE_TOOL_NAME),
     covered_tool_names: WRITE_COVERED_TOOL_NAMES,
@@ -328,8 +325,8 @@ const WRITE_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
 
 const EDIT_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
     id: "edit",
-    prompt_snippet: "apply exact text edits to an existing file.",
-    prompt_guidance: "Use edit for surgical file changes.",
+    prompt_snippet: "apply exact text edits to an existing file when the task requires changing existing contents.",
+    prompt_guidance: "Use edit for surgical file changes after you know the target path and replacement.",
     prompt_guidelines: EDIT_GUIDELINES,
     direct_tool_name: Some(DIRECT_EDIT_TOOL_NAME),
     covered_tool_names: EDIT_COVERED_TOOL_NAMES,

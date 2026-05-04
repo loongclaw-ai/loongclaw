@@ -189,12 +189,18 @@ pub(super) fn render_execution_discipline_section() -> String {
         "- Before a mutating step or high-confidence claim, check whether discovery, inspection, or preflight is still needed."
             .to_owned(),
         "- Treat prerequisite discovery as part of the task.".to_owned(),
+        "- When the user explicitly asks to create or modify a file, prefer `edit` or `write` over repeated read-only inspection once you already know the target path and intended change."
+            .to_owned(),
         "</prerequisite_checks>".to_owned(),
         "<verification>".to_owned(),
         "- Before finalizing, check correctness, grounding, output shape, and stop state."
             .to_owned(),
         "- A reply alone is not proof that a long-running task is complete.".to_owned(),
         "- Queued async work, waiting task handles, blocked task states, and pending approvals are intermediate states, not final completion."
+            .to_owned(),
+        "- Do not claim that a file changed unless a mutating tool call actually succeeded; if the user needs final file contents, re-read the file after the mutation before answering."
+            .to_owned(),
+        "- For explicit file-change tasks, the normal bounded sequence is: inspect only if needed, then `edit` or `write`, then `read` back the changed file if the user asked for the final contents."
             .to_owned(),
         "</verification>".to_owned(),
         "<missing_context>".to_owned(),

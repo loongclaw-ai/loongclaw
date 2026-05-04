@@ -835,16 +835,13 @@ fn direct_edit_catalog_exposes_exact_edit_blocks_and_write_stays_whole_file_only
     let edit_properties = edit_definition["function"]["parameters"]["properties"]
         .as_object()
         .expect("edit parameters");
-    let edit_any_of = edit_definition["function"]["parameters"]["anyOf"]
-        .as_array()
-        .expect("edit anyOf");
 
     assert!(
         edit_properties.contains_key("edits"),
         "edit schema should expose exact edit blocks"
     );
     assert!(
-        edit_descriptor.argument_hint().contains("edits?:array"),
+        edit_descriptor.argument_hint().contains("edits:array"),
         "edit argument hint should expose edits"
     );
     assert!(
@@ -853,12 +850,16 @@ fn direct_edit_catalog_exposes_exact_edit_blocks_and_write_stays_whole_file_only
             .contains(&("edits", "array")),
         "edit parameter types should expose edits"
     );
-    assert_eq!(edit_descriptor.required_fields(), vec!["path"]);
+    assert_eq!(edit_descriptor.required_fields(), vec!["path", "edits"]);
+    assert_eq!(
+        edit_definition["function"]["parameters"]["required"],
+        json!(["path", "edits"])
+    );
     assert!(
-        edit_any_of
-            .iter()
-            .any(|branch| branch["required"] == json!(["edits"])),
-        "edit anyOf should include edits mode"
+        edit_definition["function"]["parameters"]
+            .get("anyOf")
+            .is_none(),
+        "edit should expose one canonical provider-visible shape"
     );
 }
 

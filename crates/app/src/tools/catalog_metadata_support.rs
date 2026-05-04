@@ -113,9 +113,7 @@ pub(super) fn tool_argument_hint(name: &str) -> &'static str {
             "path?:string,offset?:integer,limit?:integer,max_bytes?:integer,query?:string,pattern?:string,root?:string,glob?:string,max_results?:integer,max_bytes_per_file?:integer,case_sensitive?:boolean,include_directories?:boolean"
         }
         "write" => "path:string,content:string,create_dirs?:boolean,overwrite?:boolean",
-        "edit" => {
-            "path:string,edits?:array,old_string?:string,new_string?:string,replace_all?:boolean"
-        }
+        "edit" => "path:string,edits:array",
         "bash" => "command:string,timeout_ms?:integer,cwd?:string",
         "web" => {
             "url?:string,mode?:string,max_bytes?:integer,query?:string,provider?:string,max_results?:integer"
