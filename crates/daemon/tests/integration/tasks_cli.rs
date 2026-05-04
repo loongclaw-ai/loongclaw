@@ -231,7 +231,7 @@ fn seed_background_task_record(
                 "max_active_children": 2,
                 "timeout_seconds": 60,
                 "allow_shell_in_child": false,
-                "child_tool_allowlist": ["file.read"],
+                "child_tool_allowlist": ["read"],
                 "workspace_root": workspace_root,
                 "kernel_bound": false,
                 "runtime_narrowing": {}
@@ -260,7 +260,7 @@ fn seed_background_task_record(
     .expect("create approval request");
     repo.upsert_session_tool_policy(mvp::session::repository::NewSessionToolPolicyRecord {
         session_id: task_id.to_owned(),
-        requested_tool_ids: vec!["file.read".to_owned()],
+        requested_tool_ids: vec!["read".to_owned()],
         runtime_narrowing: mvp::tools::runtime_config::ToolRuntimeNarrowing::default(),
     })
     .expect("upsert session tool policy");
@@ -772,7 +772,7 @@ async fn execute_tasks_command_status_surfaces_approval_and_tool_policy() {
     );
     assert_eq!(
         execution.payload["task"]["tool_policy"]["requested_tool_ids"][0],
-        "file.read"
+        "read"
     );
     assert_eq!(
         execution.payload["task"]["tool_policy"]["visible_requested_tool_ids"][0],
@@ -780,7 +780,7 @@ async fn execute_tasks_command_status_surfaces_approval_and_tool_policy() {
     );
     assert_eq!(
         execution.payload["task"]["tool_policy"]["effective_tool_ids"][0],
-        "file.read"
+        "read"
     );
     assert_eq!(
         execution.payload["task"]["tool_policy"]["visible_effective_tool_ids"][0],

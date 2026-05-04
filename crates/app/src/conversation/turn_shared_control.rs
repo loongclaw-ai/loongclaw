@@ -300,6 +300,7 @@ impl ToolDrivenContinuationState {
 pub(crate) enum ToolDrivenFollowupContractMode {
     RetryableFailure,
     RepairRetryableFailure,
+    ToolResultContinuation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -349,6 +350,12 @@ pub(crate) fn render_tool_followup_continuation_contract(
             | ToolDrivenFollowupContractMode::RepairRetryableFailure
     ) {
         sections.push(TOOL_FOLLOWUP_RETRYABLE_FAILURE_PROMPT.to_owned());
+    }
+    if matches!(mode, ToolDrivenFollowupContractMode::ToolResultContinuation) {
+        sections.push(
+            "The previous tool step was intermediate. If more tool work is needed, emit the exact next tool call now instead of asking for permission or describing the plan."
+                .to_owned(),
+        );
     }
     sections.push(format!(
         "Structured continuation contract:\n- Start your reply with exactly one marker: {}, {}, or {}.\n- If you choose continue, emit the next tool call now. Do not only describe a plan.\n- If you choose done, give the completed final answer now.\n- If you choose blocked, explain the blocker briefly and do not claim the task is running or complete.",
