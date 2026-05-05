@@ -168,11 +168,6 @@ impl ToolDrivenFollowupPayload {
             Self::ToolFailure { .. } | Self::DiscoveryRecovery { .. } => None,
         }
     }
-
-    pub fn tool_result_reply_requests_more_evidence(&self, reply: &str) -> bool {
-        self.tool_result_continuation()
-            .is_some_and(|continuation| continuation.reply_requests_more_evidence(reply))
-    }
 }
 
 pub fn turn_failure_supports_discovery_recovery(failure: &TurnFailure) -> bool {

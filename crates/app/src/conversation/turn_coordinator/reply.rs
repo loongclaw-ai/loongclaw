@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::turn_shared::ToolResultContinuation;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingToolCallExpectation {
     Initial,
@@ -51,7 +52,7 @@ impl MissingToolCallExpectation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ToolResultContinuationExpectation {
     after_repair: bool,
-    payload: ToolDrivenFollowupPayload,
+    continuation: ToolResultContinuation,
 }
 
 impl ToolResultContinuationExpectation {
@@ -67,9 +68,9 @@ impl ToolResultContinuationExpectation {
             ToolDrivenFollowupPayload::ToolResult { .. }
                 if payload.has_nonterminal_tool_result_continuation() =>
             {
-                Some(Self {
+                payload.tool_result_continuation().map(|continuation| Self {
                     after_repair: false,
-                    payload: payload.clone(),
+                    continuation,
                 })
             }
             ToolDrivenFollowupPayload::ToolResult { .. }
@@ -77,7 +78,13 @@ impl ToolResultContinuationExpectation {
             {
                 Some(Self {
                     after_repair: false,
-                    payload: payload.clone(),
+                    continuation: ToolResultContinuation {
+                        state: "textual_tool_parse_followup".to_owned(),
+                        is_terminal: false,
+                        recommended_tool: None,
+                        recommended_payload: None,
+                        note: None,
+                    },
                 })
             }
             ToolDrivenFollowupPayload::ToolFailure { .. }
@@ -93,7 +100,7 @@ impl ToolResultContinuationExpectation {
     fn after_attempt(&self) -> Self {
         Self {
             after_repair: true,
-            payload: self.payload.clone(),
+            continuation: self.continuation.clone(),
         }
     }
 
@@ -232,8 +239,8 @@ fn evaluate_tool_result_continuation_expectation(
         Some(ToolDrivenContinuationState::Done) => {
             if parsed_reply.reply.is_empty()
                 || expectation
-                    .payload
-                    .tool_result_reply_requests_more_evidence(parsed_reply.reply.as_str())
+                    .continuation
+                    .reply_requests_more_evidence(parsed_reply.reply.as_str())
             {
                 if expectation.after_attempted() {
                     ProviderFollowupExpectationDecision::ForceBlockedReply
