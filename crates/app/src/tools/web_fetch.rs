@@ -178,8 +178,8 @@ fn execute_web_fetch_tool_enabled(
                 }
                 RenderMode::ReadableText | RenderMode::RawText => raw_text.trim().to_owned(),
             };
-            let continuation = truncated.then(|| {
-                json!({
+            let continuation = if truncated {
+                Some(json!({
                     "state": "truncated_page",
                     "is_terminal": false,
                     "recommended_tool": "web",
@@ -189,8 +189,23 @@ fn execute_web_fetch_tool_enabled(
                         "max_bytes": max_bytes,
                     },
                     "note": "The fetched page was truncated before enough evidence could be gathered. Continue with a narrower or higher-budget web fetch before finalizing."
-                })
-            });
+                }))
+            } else if is_html
+                && html_page_has_insufficient_evidence(summary.as_deref(), content.as_str())
+            {
+                Some(json!({
+                    "state": "insufficient_page_evidence",
+                    "is_terminal": false,
+                    "recommended_tool": "web",
+                    "recommended_payload": {
+                        "url": current_url.as_str(),
+                        "mode": mode.as_str(),
+                    },
+                    "note": "The fetched page still looks like shell or navigation content. Continue with a narrower or more focused fetch before finalizing."
+                }))
+            } else {
+                None
+            };
 
             return Ok(ToolCoreOutcome {
                 status: "ok".to_owned(),
@@ -437,6 +452,32 @@ pub(crate) fn compose_html_readable_content(summary: Option<&str>, readable: Str
     }
 
     format!("Summary: {summary}\n\n{readable}")
+}
+
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
+pub(crate) fn html_page_has_insufficient_evidence(
+    summary: Option<&str>,
+    rendered_content: &str,
+) -> bool {
+    let summary = summary.map(str::trim).filter(|value| !value.is_empty());
+    let rendered = rendered_content.trim();
+    if rendered.is_empty() {
+        return true;
+    }
+
+    let rendered_chars = rendered.chars().count();
+    let summary_chars = summary.map(|value| value.chars().count()).unwrap_or(0);
+    let expected_prefix = summary.map(|value| format!("Summary: {value}"));
+    let rendered_is_summary_only = expected_prefix
+        .as_deref()
+        .is_some_and(|prefix| rendered == prefix);
+    let rendered_is_too_short = rendered_chars <= summary_chars.saturating_add(24);
+
+    rendered_is_summary_only || rendered_is_too_short
 }
 
 #[cfg(any(
@@ -778,6 +819,34 @@ mod tests {
         assert!(content.starts_with("Summary: Short profile summary for the target page."));
         assert!(content.contains("Main profile content with links and details."));
         assert!(!content.contains("Marketing nav"));
+    }
+
+    #[test]
+    fn web_fetch_marks_shell_heavy_page_as_insufficient_evidence() {
+        let url = spawn_http_server(|_request| {
+            ok_response(
+                "text/html; charset=utf-8",
+                "<html><head><title>Profile</title><meta name=\"description\" content=\"Short profile summary for the target page.\"></head><body><header>Marketing nav</header><nav>Docs Pricing Sign in</nav><footer>Footer links and policies</footer></body></html>",
+            )
+        });
+
+        let outcome = super::super::execute_tool_core_with_config(
+            request(json!({"url": url})),
+            &local_runtime_config(),
+        )
+        .expect("shell-heavy HTML fixture should fetch");
+
+        assert_eq!(outcome.payload["truncated"], json!(false));
+        assert_eq!(
+            outcome.payload["continuation"]["state"],
+            "insufficient_page_evidence"
+        );
+        assert_eq!(outcome.payload["continuation"]["is_terminal"], json!(false));
+        assert_eq!(outcome.payload["continuation"]["recommended_tool"], "web");
+        assert_eq!(
+            outcome.payload["continuation"]["recommended_payload"]["url"],
+            outcome.payload["final_url"]
+        );
     }
 
     #[test]

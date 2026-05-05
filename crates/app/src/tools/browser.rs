@@ -550,8 +550,8 @@ fn browser_page_payload(
     clicked_link: Option<Value>,
     execution_tier: &str,
 ) -> Value {
-    let continuation = page.truncated.then(|| {
-        json!({
+    let continuation = if page.truncated {
+        Some(json!({
             "state": "truncated_page",
             "is_terminal": false,
             "recommended_tool": "browse",
@@ -560,8 +560,24 @@ fn browser_page_payload(
                 "mode": "page_text",
             },
             "note": "The opened page was truncated before enough evidence could be gathered. Continue with a narrower browser extract before finalizing."
-        })
-    });
+        }))
+    } else if super::web_fetch::html_page_has_insufficient_evidence(
+        page.summary.as_deref(),
+        page.page_text.as_str(),
+    ) {
+        Some(json!({
+            "state": "insufficient_page_evidence",
+            "is_terminal": false,
+            "recommended_tool": "browse",
+            "recommended_payload": {
+                "session_id": session_id,
+                "mode": "page_text",
+            },
+            "note": "The opened page still looks like shell or navigation content. Continue with a narrower browser extract before finalizing."
+        }))
+    } else {
+        None
+    };
     json!({
         "adapter": "core-tools",
         "tool_name": tool_name,
@@ -1025,6 +1041,54 @@ mod tests {
         assert!(page_text.starts_with("Summary: Short profile summary for the target page."));
         assert!(page_text.contains("Main profile content with links and details."));
         assert!(!page_text.contains("Marketing nav"));
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn browser_open_marks_shell_heavy_page_as_insufficient_evidence() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept stream");
+            let body = "<html><head><title>Profile</title><meta name=\"description\" content=\"Short profile summary for the target page.\"></head><body><header>Marketing nav</header><nav>Docs Pricing Sign in</nav><footer>Footer links and policies</footer></body></html>";
+            let response = build_http_response("200 OK", "text/html; charset=utf-8", body, None);
+            let mut request_buffer = [0_u8; 4_096];
+
+            stream
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .expect("set read timeout");
+            let _ = stream.read(&mut request_buffer);
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        });
+        let url = format!("http://127.0.0.1:{}/", address.port());
+        let config = local_browser_config();
+
+        let outcome = execute_browser_tool_with_config(
+            scoped_request(
+                "browser.open",
+                json!({"url": url}),
+                "test-open-insufficient",
+            ),
+            &config,
+        )
+        .expect("browser.open should succeed");
+
+        assert_eq!(outcome.payload["truncated"], json!(false));
+        assert_eq!(
+            outcome.payload["continuation"]["state"],
+            "insufficient_page_evidence"
+        );
+        assert_eq!(outcome.payload["continuation"]["is_terminal"], json!(false));
+        assert_eq!(
+            outcome.payload["continuation"]["recommended_tool"],
+            "browse"
+        );
+        assert_eq!(
+            outcome.payload["continuation"]["recommended_payload"]["session_id"],
+            outcome.payload["session_id"]
+        );
         handle.join().expect("server thread");
     }
 
