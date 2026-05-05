@@ -39,7 +39,8 @@ impl MissingToolContinuationExpectation {
         payload: &ToolDrivenFollowupPayload,
         lane_execution: &ProviderTurnLaneExecution,
     ) -> Option<Self> {
-        (payload.has_nonterminal_tool_result_continuation()
+        ((payload.has_nonterminal_tool_result_continuation()
+            || lane_execution.textual_tool_parse_followup_turn)
             && lane_execution.supports_provider_turn_followup)
             .then_some(Self::ToolResultContinuation)
     }
