@@ -159,17 +159,37 @@ fn execute_browser_extract(
     touch_browser_session(scope_id.as_str(), session_id.as_str(), sequence)?;
 
     let payload = match mode {
-        BrowserExtractMode::PageText => json!({
-            "adapter": "core-tools",
-            "tool_name": "browser.extract",
-            "execution_tier": config.browser_execution_security_tier().as_str(),
-            "session_id": session_id,
-            "mode": mode.as_str(),
-            "final_url": page.final_url,
-            "title": page.title,
-            "summary": page.summary,
-            "content": truncate_chars(&page.page_text, config.browser.max_text_chars),
-        }),
+        BrowserExtractMode::PageText => {
+            let content = truncate_chars(&page.page_text, config.browser.max_text_chars);
+            let continuation = super::web_fetch::html_page_has_insufficient_evidence(
+                page.summary.as_deref(),
+                content.as_str(),
+            )
+            .then(|| {
+                json!({
+                    "state": "insufficient_page_evidence",
+                    "is_terminal": false,
+                    "recommended_tool": "web",
+                    "recommended_payload": {
+                        "url": page.final_url,
+                        "mode": "raw_text",
+                    },
+                    "note": "The extracted page text still looks like shell or navigation content. Continue with a fuller web fetch before finalizing."
+                })
+            });
+            json!({
+                "adapter": "core-tools",
+                "tool_name": "browser.extract",
+                "execution_tier": config.browser_execution_security_tier().as_str(),
+                "session_id": session_id,
+                "mode": mode.as_str(),
+                "final_url": page.final_url,
+                "title": page.title,
+                "summary": page.summary,
+                "content": content,
+                "continuation": continuation,
+            })
+        }
         BrowserExtractMode::Title => json!({
             "adapter": "core-tools",
             "tool_name": "browser.extract",
@@ -1181,6 +1201,63 @@ mod tests {
         .expect("browser.extract selector_text should succeed");
         assert_eq!(selector_text.payload["execution_tier"], json!("restricted"));
         assert_eq!(selector_text.payload["items"], json!(["Alpha", "Beta"]));
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn browser_extract_page_text_marks_shell_heavy_page_as_insufficient_evidence() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept stream");
+            let body = "<html><head><title>Profile</title><meta name=\"description\" content=\"Short profile summary for the target page.\"></head><body><header>Marketing nav</header><nav>Docs Pricing Sign in</nav><footer>Footer links and policies</footer></body></html>";
+            let response = build_http_response("200 OK", "text/html; charset=utf-8", body, None);
+            let mut request_buffer = [0_u8; 4_096];
+
+            stream
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .expect("set read timeout");
+            let _ = stream.read(&mut request_buffer);
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        });
+        let url = format!("http://127.0.0.1:{}/", address.port());
+        let config = local_browser_config();
+
+        let opened = execute_browser_tool_with_config(
+            scoped_request(
+                "browser.open",
+                json!({"url": url}),
+                "test-extract-insufficient",
+            ),
+            &config,
+        )
+        .expect("browser.open should succeed");
+        let session_id = opened.payload["session_id"]
+            .as_str()
+            .expect("session id")
+            .to_owned();
+
+        let extracted = execute_browser_tool_with_config(
+            scoped_request(
+                "browser.extract",
+                json!({"session_id": session_id, "mode": "page_text"}),
+                "test-extract-insufficient",
+            ),
+            &config,
+        )
+        .expect("browser.extract page_text should succeed");
+
+        assert_eq!(
+            extracted.payload["continuation"]["state"],
+            "insufficient_page_evidence"
+        );
+        assert_eq!(extracted.payload["continuation"]["recommended_tool"], "web");
+        assert_eq!(
+            extracted.payload["continuation"]["recommended_payload"]["url"],
+            extracted.payload["final_url"]
+        );
         handle.join().expect("server thread");
     }
 
