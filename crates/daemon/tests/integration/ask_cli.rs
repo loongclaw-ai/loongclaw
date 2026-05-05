@@ -1106,6 +1106,174 @@ fn ask_cli_browser_open_extract_click_runs_full_e2e() {
 }
 
 #[test]
+fn ask_cli_browser_continues_after_shell_heavy_page_without_confirmation() {
+    let fixture = LatestSelectorCliFixture::new("ask-browser-shell-heavy-followup-e2e");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind shell-heavy browser listener");
+    let address = listener
+        .local_addr()
+        .expect("shell-heavy browser local address");
+    let browser_join = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        while requests.len() < 2 {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("accept shell-heavy browser request");
+            let request = read_provider_request(&mut stream);
+            let body = if requests.is_empty() {
+                r#"<!doctype html>
+<html>
+  <head>
+    <title>Browser Shell Heavy Fixture</title>
+    <meta name="description" content="Short profile summary for the target page.">
+  </head>
+  <body>
+    <header>Marketing Nav Pricing Docs</header>
+    <nav>Overview Repositories Projects Stars</nav>
+    <footer>Footer policies and links</footer>
+  </body>
+</html>"#
+            } else {
+                r#"<!doctype html>
+<html>
+  <head>
+    <title>Browser Rich Fixture</title>
+    <meta name="description" content="Short profile summary for the target page.">
+  </head>
+  <body>
+    <header>Marketing Nav Pricing Docs</header>
+    <main>
+      <h1 id="headline">Rich Browser Fixture</h1>
+      <p>Main profile content with links and details.</p>
+    </main>
+    <footer>Footer noise</footer>
+  </body>
+</html>"#
+            };
+            let content_type = "text/html; charset=utf-8";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write shell-heavy browser fixture response");
+            requests.push(request);
+        }
+        requests
+    });
+    let browser_base_url = format!("http://{address}");
+    let permission_reply = "I still need a narrower browser extract because the page looks like shell-heavy navigation.";
+    let final_reply = "E2E PASS shell-heavy browser continuation.";
+    let provider_server = DynamicMockProviderServer::spawn(4, move |request_index, request| {
+        match request_index {
+            0 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Open the browser fixture",
+                    "initial shell-heavy browser provider request",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "I will open the fixture page first.",
+                    "call-browser-open-shell",
+                    "browser",
+                    json!({
+                        "url": browser_base_url,
+                    }),
+                ))
+            }
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "insufficient_page_evidence",
+                    "shell-heavy browser follow-up request should include continuation state",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "continue with `web`",
+                    "shell-heavy browser follow-up request should recommend a fuller web fetch",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(permission_reply))
+            }
+            2 => {
+                assert_provider_request_contains_text(
+                    request,
+                    permission_reply,
+                    "runtime should preserve the shell-heavy browser permission reply inside the forced follow-up context",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "",
+                    "call-web-refetch-from-browser-shell",
+                    "web",
+                    json!({
+                        "url": browser_base_url,
+                    }),
+                ))
+            }
+            3 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Main profile content with links and details.",
+                    "follow-up after shell-heavy browser permission reply should include actual page content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(final_reply))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.browser.enabled = true;
+        config.tools.browser.max_sessions = 4;
+        config.tools.web.allow_private_hosts = true;
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--message",
+            "Open the browser fixture and summarize what the page says without asking for confirmation.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+    let browser_requests = browser_join
+        .join()
+        .expect("join shell-heavy browser fixture");
+
+    assert!(
+        output.status.success(),
+        "ask shell-heavy browser continuation e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the terminal browser answer after continuing: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains(permission_reply),
+        "stdout should not stop at the shell-heavy browser permission reply: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        4,
+        "ask should continue after the shell-heavy browser permission reply: {provider_requests:#?}"
+    );
+    assert_eq!(
+        browser_requests.len(),
+        2,
+        "shell-heavy browser fixture should receive the initial open and follow-up extract requests: {browser_requests:#?}"
+    );
+}
+
+#[test]
 fn ask_cli_web_summary_uses_page_metadata_and_hides_tool_markup() {
     let fixture = LatestSelectorCliFixture::new("ask-web-summary-e2e");
     let web_server = WebSummaryFixtureServer::spawn(1);

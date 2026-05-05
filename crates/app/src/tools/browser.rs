@@ -568,12 +568,12 @@ fn browser_page_payload(
         Some(json!({
             "state": "insufficient_page_evidence",
             "is_terminal": false,
-            "recommended_tool": "browse",
+            "recommended_tool": "web",
             "recommended_payload": {
-                "session_id": session_id,
-                "mode": "page_text",
+                "url": page.final_url,
+                "mode": "raw_text",
             },
-            "note": "The opened page still looks like shell or navigation content. Continue with a narrower browser extract before finalizing."
+            "note": "The opened page still looks like shell or navigation content. Continue with a fuller web fetch before finalizing."
         }))
     } else {
         None
@@ -1081,13 +1081,10 @@ mod tests {
             "insufficient_page_evidence"
         );
         assert_eq!(outcome.payload["continuation"]["is_terminal"], json!(false));
+        assert_eq!(outcome.payload["continuation"]["recommended_tool"], "web");
         assert_eq!(
-            outcome.payload["continuation"]["recommended_tool"],
-            "browse"
-        );
-        assert_eq!(
-            outcome.payload["continuation"]["recommended_payload"]["session_id"],
-            outcome.payload["session_id"]
+            outcome.payload["continuation"]["recommended_payload"]["url"],
+            outcome.payload["final_url"]
         );
         handle.join().expect("server thread");
     }
