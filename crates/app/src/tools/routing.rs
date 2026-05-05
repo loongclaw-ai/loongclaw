@@ -738,7 +738,15 @@ pub(crate) fn hidden_operation_for_tool_name(raw: &str) -> Option<String> {
 pub(super) fn payload_has_non_null_field(payload: &Value, field_name: &str) -> bool {
     payload
         .get(field_name)
-        .filter(|value| !value.is_null())
+        .filter(|value| {
+            if value.is_null() {
+                return false;
+            }
+            value
+                .as_str()
+                .map(|text| !text.trim().is_empty())
+                .unwrap_or(true)
+        })
         .is_some()
 }
 
@@ -904,6 +912,20 @@ mod tests {
         }))
         .expect("browse click should route");
         assert_eq!(click, "browser.click");
+    }
+
+    #[test]
+    fn direct_browse_ignores_empty_optional_fields_when_routing_open() {
+        let open = route_direct_browser_tool_name(&json!({
+            "action": "open",
+            "url": "https://example.com",
+            "session_id": "",
+            "mode": "",
+            "selector": "",
+            "link_id": "",
+        }))
+        .expect("browse open should ignore empty optional fields");
+        assert_eq!(open, "browser.open");
     }
 
     #[test]

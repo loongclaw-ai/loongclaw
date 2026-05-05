@@ -660,7 +660,7 @@ fn reject_caller_supplied_session_id(
     payload: &Map<String, Value>,
     tool_name: &str,
 ) -> Result<(), String> {
-    if payload.contains_key("session_id") {
+    if parse_optional_string(payload, "session_id").is_some() {
         return Err(format!(
             "{tool_name} does not accept payload.session_id; use the opaque session_id returned by browser.open"
         ));
