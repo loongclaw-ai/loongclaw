@@ -2,43 +2,6 @@ use serde_json::{Value, json};
 
 use super::ToolDescriptor;
 
-pub(super) fn file_read_definition(descriptor: &ToolDescriptor) -> Value {
-    json!({
-        "type": "function",
-        "function": {
-            "name": descriptor.provider_name,
-            "description": descriptor.description,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to read (absolute or relative to configured file root)."
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Optional 1-indexed line number to start from."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Optional maximum number of lines to return."
-                    },
-                    "max_bytes": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 8_388_608,
-                        "description": "Optional read limit in bytes. Defaults to 1048576."
-                    }
-                },
-                "required": ["path"],
-                "additionalProperties": false
-            }
-        }
-    })
-}
-
 pub(super) fn glob_search_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",

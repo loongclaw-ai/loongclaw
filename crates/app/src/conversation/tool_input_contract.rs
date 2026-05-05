@@ -52,6 +52,9 @@ pub(crate) fn detect_repairable_tool_request_issue(
     }
 
     let effective_payload = effective_payload_for_descriptor(descriptor, request)?;
+    if descriptor.name == "read" && request_uses_legacy_file_read_alias(request) {
+        return detect_legacy_file_read_issue(&effective_payload);
+    }
     detect_tool_input_contract_issue(descriptor, &effective_payload)
 }
 
@@ -62,6 +65,12 @@ pub(crate) fn render_tool_input_repair_guidance(
     let catalog = tools::tool_catalog();
     let descriptor = catalog.resolve(tool_name)?;
     let request_value = request_summary?;
+    if descriptor.name == "read" && uses_legacy_file_read_alias(tool_name) {
+        let issue = detect_legacy_file_read_issue(request_value)?;
+        return Some(render_tool_input_repair_guidance_for_issue(
+            tool_name, descriptor, &issue,
+        ));
+    }
     let issue = detect_tool_input_contract_issue(descriptor, request_value)?;
     Some(render_tool_input_repair_guidance_for_issue(
         tool_name, descriptor, &issue,
@@ -83,6 +92,12 @@ pub(crate) fn render_tool_input_repair_guidance_from_reason(
 
     let catalog = tools::tool_catalog();
     let descriptor = catalog.resolve(tool_name)?;
+    if descriptor.name == "read" && uses_legacy_file_read_alias(tool_name) {
+        let issue = parse_legacy_file_read_issue_from_reason(tool_failure_reason)?;
+        return Some(render_tool_input_repair_guidance_for_issue(
+            tool_name, descriptor, &issue,
+        ));
+    }
     render_tool_input_repair_guidance_from_reason_with_descriptor(
         tool_name,
         descriptor,
@@ -186,6 +201,79 @@ fn strip_tool_input_reason_prefix(reason: &str) -> &str {
     let followup_prefix = "tool input needs repair: ";
     let stripped_followup_reason = trimmed_reason.strip_prefix(followup_prefix);
     stripped_followup_reason.unwrap_or(trimmed_reason)
+}
+
+fn uses_legacy_file_read_alias(tool_name: &str) -> bool {
+    matches!(tool_name, "file.read" | "file_read")
+}
+
+fn legacy_file_read_argument_hint() -> &'static str {
+    "path:string,offset?:integer,limit?:integer,max_bytes?:integer"
+}
+
+fn request_uses_legacy_file_read_alias(request: &ToolCoreRequest) -> bool {
+    if uses_legacy_file_read_alias(request.tool_name.as_str()) {
+        return true;
+    }
+    request
+        .payload
+        .get("tool_id")
+        .and_then(Value::as_str)
+        .is_some_and(uses_legacy_file_read_alias)
+}
+
+fn detect_legacy_file_read_issue(request_value: &Value) -> Option<ToolInputContractIssue> {
+    let request_object = match request_value.as_object() {
+        Some(request_object) => request_object,
+        None => return Some(ToolInputContractIssue::PayloadMustBeObject),
+    };
+    let path_value = request_object.get("path");
+    match path_value {
+        None => Some(ToolInputContractIssue::MissingRequiredField {
+            field: "path",
+            expected_type: Some("string"),
+        }),
+        Some(Value::String(path)) if path.trim().is_empty() => {
+            Some(ToolInputContractIssue::MissingRequiredField {
+                field: "path",
+                expected_type: Some("string"),
+            })
+        }
+        Some(Value::String(_)) => None,
+        Some(_) => Some(ToolInputContractIssue::InvalidFieldType {
+            field: "path",
+            expected_type: "string",
+        }),
+    }
+}
+
+fn parse_legacy_file_read_issue_from_reason(
+    tool_failure_reason: &str,
+) -> Option<ToolInputContractIssue> {
+    let reason = strip_tool_input_reason_prefix(tool_failure_reason);
+    let file_read_reason = reason
+        .strip_prefix("file.read ")
+        .or_else(|| reason.strip_prefix("file_read "))
+        .map(|suffix| format!("read {suffix}"))
+        .unwrap_or_else(|| reason.to_owned());
+    if file_read_reason == "read payload must be an object" {
+        return Some(ToolInputContractIssue::PayloadMustBeObject);
+    }
+    if file_read_reason == "read payload.path is required"
+        || file_read_reason == "read payload.path is required (string)"
+    {
+        return Some(ToolInputContractIssue::MissingRequiredField {
+            field: "path",
+            expected_type: Some("string"),
+        });
+    }
+    if file_read_reason == "read payload.path must be string" {
+        return Some(ToolInputContractIssue::InvalidFieldType {
+            field: "path",
+            expected_type: "string",
+        });
+    }
+    None
 }
 
 fn parse_tool_input_contract_issue_from_reason(
@@ -395,13 +483,19 @@ fn render_repair_guidance_for_issue(
     descriptor: &tools::ToolDescriptor,
     issue: &ToolInputContractIssue,
 ) -> String {
+    let legacy_file_read_alias = uses_legacy_file_read_alias(tool_name);
     let canonical_tool_name = tools::canonical_tool_name(tool_name);
-    let visible_tool_name = repair_guidance_visible_tool_name(canonical_tool_name);
+    let visible_tool_name = repair_guidance_visible_tool_name(tool_name);
     let mut lines = Vec::new();
     let heading = format!("Repair guidance for {visible_tool_name}:");
     lines.push(heading);
 
-    if visible_tool_name != canonical_tool_name {
+    if legacy_file_read_alias {
+        lines.push(
+            "Prefer the direct `read` surface instead of hidden `file.read` when possible."
+                .to_owned(),
+        );
+    } else if visible_tool_name != canonical_tool_name {
         lines.push(format!(
             "Prefer the direct `{visible_tool_name}` surface instead of hidden `{canonical_tool_name}` when possible."
         ));
@@ -437,7 +531,11 @@ fn render_repair_guidance_for_issue(
         }
     }
 
-    let argument_hint = descriptor.argument_hint();
+    let argument_hint = if legacy_file_read_alias {
+        legacy_file_read_argument_hint()
+    } else {
+        descriptor.argument_hint()
+    };
     let trimmed_hint = argument_hint.trim();
     let has_argument_hint = !trimmed_hint.is_empty();
 

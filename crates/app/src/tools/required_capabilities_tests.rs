@@ -344,5 +344,5 @@ fn required_capabilities_follow_effective_tool_request() {
         BTreeSet::from([Capability::InvokeTool])
     );
 
-    assert_eq!(canonical_tool_name("file.read"), "file.read");
+    assert_eq!(canonical_tool_name("file.read"), "read");
 }

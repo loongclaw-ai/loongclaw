@@ -709,7 +709,7 @@ fn provider_exposed_tool_gate_covers_direct_and_gateway_tools() {
     assert!(is_provider_exposed_tool_name("bash"));
     assert!(is_provider_exposed_tool_name("edit"));
     assert!(is_provider_exposed_tool_name("browse"));
-    assert!(!is_provider_exposed_tool_name("file.read"));
+    assert!(is_provider_exposed_tool_name("file.read"));
     assert!(!is_provider_exposed_tool_name("shell.exec"));
 }
 
@@ -1045,7 +1045,7 @@ fn canonical_tool_name_maps_known_aliases() {
     assert_eq!(canonical_tool_name("claw.migrate"), "config.import");
     assert_eq!(canonical_tool_name("claw_migrate"), "config.import");
     assert_eq!(canonical_tool_name("config_import"), "config.import");
-    assert_eq!(canonical_tool_name("file_read"), "file.read");
+    assert_eq!(canonical_tool_name("file_read"), "read");
     assert_eq!(canonical_tool_name("file_write"), "write");
     assert_eq!(canonical_tool_name("provider_switch"), "provider.switch");
     assert_eq!(canonical_tool_name("browser_open"), "browser.open");
@@ -1100,7 +1100,7 @@ fn canonical_tool_name_maps_known_aliases() {
         canonical_tool_name("feishu_calendar_freebusy"),
         "feishu.calendar.freebusy"
     );
-    assert_eq!(canonical_tool_name("file.read"), "file.read");
+    assert_eq!(canonical_tool_name("file.read"), "read");
 }
 
 #[test]

@@ -40,7 +40,7 @@ mod io_definition_support;
 #[cfg(feature = "tool-websearch")]
 use io_definition_support::web_search_definition;
 use io_definition_support::{
-    bash_exec_definition, content_search_definition, file_read_definition, glob_search_definition,
+    bash_exec_definition, content_search_definition, glob_search_definition,
     http_request_definition, memory_get_definition, memory_search_definition,
     shell_exec_definition, web_fetch_definition,
 };
@@ -688,7 +688,7 @@ fn build_tool_catalog() -> ToolCatalog {
         ToolDescriptor {
             name: "read",
             provider_name: "read",
-            aliases: &[],
+            aliases: &["file.read", "file_read"],
             description: "Read accessible files under the current runtime file root, page through large files, search file contents, or list matching paths",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -1576,20 +1576,6 @@ fn build_tool_catalog() -> ToolCatalog {
 
     #[cfg(feature = "tool-file")]
     {
-        descriptors.push(ToolDescriptor {
-            name: "file.read",
-            provider_name: "file_read",
-            aliases: &[],
-            description: "Read file contents",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::Always,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: PARALLEL_SAFE_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: file_read_definition,
-        });
         descriptors.push(ToolDescriptor {
             name: "glob.search",
             provider_name: "glob_search",

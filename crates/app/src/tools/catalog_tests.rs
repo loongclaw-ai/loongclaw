@@ -303,16 +303,16 @@ fn scheduling_class_marks_parallel_safe_subset() {
     let catalog = tool_catalog();
     assert_eq!(
         catalog
-            .descriptor("file.read")
-            .expect("file.read descriptor")
+            .resolve("file.read")
+            .expect("file.read alias")
             .scheduling_class(),
         ToolSchedulingClass::ParallelSafe
     );
     #[cfg(feature = "tool-file")]
     assert_eq!(
         catalog
-            .descriptor("file.read")
-            .expect("file.read descriptor")
+            .resolve("file.read")
+            .expect("file.read alias")
             .scheduling_class(),
         ToolSchedulingClass::ParallelSafe
     );
@@ -433,8 +433,8 @@ fn tool_catalog_resolve_preserves_canonical_provider_and_alias_lookup() {
     let edit_alias = catalog.resolve("file_edit").expect("edit alias");
     let alias = catalog.resolve("shell").expect("alias lookup");
 
-    assert_eq!(canonical.name, "file.read");
-    assert_eq!(provider_name.name, "file.read");
+    assert_eq!(canonical.name, "read");
+    assert_eq!(provider_name.name, "read");
     assert_eq!(write_alias.name, "write");
     assert_eq!(edit_alias.name, "edit");
     assert_eq!(alias.name, "shell.exec");
@@ -905,9 +905,7 @@ fn read_definitions_surface_line_window_fields() {
     assert!(direct_parameter_types.contains(&("offset", "integer")));
     assert!(direct_parameter_types.contains(&("limit", "integer")));
 
-    let file_descriptor = catalog
-        .descriptor("file.read")
-        .expect("file.read descriptor");
+    let file_descriptor = catalog.resolve("file.read").expect("file.read alias");
     let file_definition = file_descriptor.provider_definition();
     let file_properties = &file_definition["function"]["parameters"]["properties"];
     let file_parameter_types = file_descriptor.parameter_types();
