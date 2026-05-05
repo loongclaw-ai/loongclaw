@@ -1364,7 +1364,7 @@ fn ask_cli_web_summary_uses_page_metadata_and_hides_tool_markup() {
 }
 
 #[test]
-fn ask_cli_rejects_pseudo_done_browser_reply_that_still_requests_more_evidence() {
+fn ask_cli_repairs_pseudo_done_browser_reply_before_finishing() {
     let fixture = LatestSelectorCliFixture::new("ask-browser-pseudo-done-followup-e2e");
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind pseudo-done browser listener");
     let address = listener
@@ -1694,7 +1694,7 @@ fn ask_cli_web_summary_continues_after_shell_heavy_page_without_confirmation() {
 }
 
 #[test]
-fn ask_cli_rejects_pseudo_done_reply_that_still_requests_more_evidence() {
+fn ask_cli_repairs_pseudo_done_web_reply_before_finishing() {
     let fixture = LatestSelectorCliFixture::new("ask-web-summary-pseudo-done-followup-e2e");
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind pseudo-done web summary listener");
     let address = listener

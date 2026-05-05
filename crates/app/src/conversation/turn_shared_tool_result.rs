@@ -128,6 +128,45 @@ impl ToolResultContinuation {
             _ => ToolResultContinuationKind::Other,
         }
     }
+
+    pub(crate) fn reply_requests_more_evidence(&self, reply: &str) -> bool {
+        let normalized = reply.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            return false;
+        }
+
+        let mentions_more_work = normalized.contains("still need")
+            || normalized.contains("need one more")
+            || normalized.contains("do not yet have usable")
+            || normalized.contains("not enough evidence")
+            || normalized.contains("gather enough evidence")
+            || normalized.contains("finish the summary")
+            || normalized.contains("ground the summary");
+        let requests_permission_like_followup = normalized.contains("please allow")
+            || normalized.contains("allow another")
+            || normalized.contains("another wait")
+            || normalized.contains("another read")
+            || normalized.contains("another fetch")
+            || normalized.contains("another inspect")
+            || normalized.contains("inspection step");
+
+        let matches_structured_continuation_context = match self.kind() {
+            ToolResultContinuationKind::PathListing => {
+                normalized.contains("ground the summary")
+                    || normalized.contains("top-level docs")
+                    || normalized.contains("actual docs")
+            }
+            ToolResultContinuationKind::InsufficientPageEvidence => {
+                normalized.contains("narrower browser extract")
+                    || normalized.contains("narrower fetch")
+                    || normalized.contains("shell-heavy navigation")
+            }
+            ToolResultContinuationKind::Other => false,
+        };
+
+        mentions_more_work
+            && (requests_permission_like_followup || matches_structured_continuation_context)
+    }
 }
 
 pub(crate) fn parse_tool_result_continuation(

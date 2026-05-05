@@ -3,6 +3,7 @@ use crate::conversation::tool_result_reduction::SHELL_FOLLOWUP_STDIO_PREVIEW_CHA
 use crate::conversation::turn_engine::{
     ApprovalRequirement, ApprovalRequirementKind, TurnFailure, TurnResult,
 };
+use crate::conversation::turn_shared::tool_result::ToolResultContinuationKind;
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -1852,7 +1853,9 @@ fn tool_result_payload_exposes_structured_continuation_kind() {
         ),
     };
     assert_eq!(
-        path_listing_payload.tool_result_continuation_kind(),
+        path_listing_payload
+            .tool_result_continuation()
+            .map(|continuation| continuation.kind()),
         Some(ToolResultContinuationKind::PathListing)
     );
 
@@ -1880,7 +1883,9 @@ fn tool_result_payload_exposes_structured_continuation_kind() {
         ),
     };
     assert_eq!(
-        insufficient_page_payload.tool_result_continuation_kind(),
+        insufficient_page_payload
+            .tool_result_continuation()
+            .map(|continuation| continuation.kind()),
         Some(ToolResultContinuationKind::InsufficientPageEvidence)
     );
 }
