@@ -11183,6 +11183,35 @@ description: "actual description"
     }
 
     #[test]
+    fn width_resize_does_not_surface_internal_tool_result_or_transport_tail_in_plain_reply() {
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list.add_assistant_message(
+            concat!(
+                "我明白你的意思。\n\n",
+                "我已经核到一件关键事实：当前配置里确实存在一个更宽的 file_root。\n\n",
+                "[ok] {\"status\":\"ok\",\"tool\":\"read\",\"tool_call_id\":\"call-1\",\"payload_summary\":\"{\\\"path\\\":\\\"/workspace/demo/crates/daemon/src/lib.rs\\\",\\\"line_start\\\":1,\\\"line_end\\\":50}\",\"payload_chars\":2121,\"payload_truncated\":true}\n",
+                "candidate_index=1 candidate_count=1 profile_index=1 profile_count=1 exhausted=true error=provider request failed for model `gpt-5.4` on attempt 3/3: error sending request for url (https://api.tonsof.blue/v1/chat/completions)"
+            )
+            .to_owned(),
+        );
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        terminal.backend_mut().resize(28, 18);
+        terminal.draw(|f| app.render(f)).expect("draw");
+
+        let lines = buffer_lines(&terminal).join("\n");
+        assert!(
+            !lines.trim().is_empty(),
+            "sanitized plain reply should still leave visible assistant content after resize: {lines}"
+        );
+        assert!(!lines.contains("[ok] {\"status\":\"ok\""));
+        assert!(!lines.contains("provider request failed for model"));
+        assert!(!lines.contains("candidate_index=1"));
+    }
+
+    #[test]
     fn width_resize_keeps_pending_restore_footer_and_previews_visible() {
         let backend = TestBackend::new(72, 18);
         let mut terminal = Terminal::new(backend).expect("terminal");
