@@ -1928,6 +1928,130 @@ fn ask_cli_continues_after_glob_path_listing_instead_of_returning_permission_req
 }
 
 #[test]
+fn ask_cli_repairs_pseudo_done_glob_path_listing_reply_before_finishing() {
+    let fixture = LatestSelectorCliFixture::new("ask-glob-listing-pseudo-done-followup-e2e");
+    std::fs::create_dir_all(fixture.root_path().join("docs")).expect("create docs dir");
+    std::fs::write(
+        fixture.root_path().join("README.md"),
+        "Repository overview for pseudo-done glob continuation.",
+    )
+    .expect("write README fixture");
+    std::fs::write(
+        fixture.root_path().join("ARCHITECTURE.md"),
+        "Architecture notes for pseudo-done glob continuation.",
+    )
+    .expect("write ARCHITECTURE fixture");
+    std::fs::write(
+        fixture.root_path().join("docs/ROADMAP.md"),
+        "Roadmap notes for pseudo-done glob continuation.",
+    )
+    .expect("write ROADMAP fixture");
+
+    let pseudo_done_reply = "[followup_state:done]\nI need one more inspection step to ground the summary in the actual docs. Please allow me to read the top-level docs.";
+    let final_reply = "E2E PASS pseudo-done glob listing continuation.";
+    let provider_server = DynamicMockProviderServer::spawn(4, move |request_index, request| {
+        match request_index {
+            0 => MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                "",
+                "call-glob-pseudo-done",
+                "read",
+                json!({
+                    "glob": "README.md|ARCHITECTURE.md|docs/ROADMAP.md",
+                    "root": ".",
+                    "max_results": 20
+                }),
+            )),
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "path_listing",
+                    "pseudo-done glob listing follow-up should include continuation state",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(pseudo_done_reply))
+            }
+            2 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "I need one more inspection step to ground the summary in the actual docs.",
+                    "runtime should preserve the pseudo-done reply text inside the repair follow-up context",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "Please allow me to read the top-level docs.",
+                    "repair follow-up should preserve the permission-style evidence gap text",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "Continuation guidance:",
+                    "repair follow-up should retain path-listing continuation guidance",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "",
+                    "call-readme-after-pseudo-done",
+                    "read",
+                    json!({
+                        "path": "README.md"
+                    }),
+                ))
+            }
+            3 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Repository overview for pseudo-done glob continuation.",
+                    "follow-up after pseudo-done repair should include actual file content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(&format!(
+                    "[followup_state:done]\n{final_reply}"
+                )))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.file_root = Some(fixture.root_path().display().to_string());
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--session",
+            "fresh-glob-pseudo-done-followup-session",
+            "--message",
+            "Summarize this repository and suggest the best next step.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+
+    assert!(
+        output.status.success(),
+        "ask pseudo-done glob listing continuation e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the final answer after repairing the pseudo-done reply: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains(pseudo_done_reply),
+        "stdout should not stop at the pseudo-done reply: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        4,
+        "ask should request one more provider round after the pseudo-done glob reply: {provider_requests:#?}"
+    );
+}
+
+#[test]
 fn ask_cli_recovers_same_line_tool_request_wrapper_after_leading_preface() {
     let fixture = LatestSelectorCliFixture::new("ask-same-line-tool-request-preface-e2e");
     std::fs::create_dir_all(fixture.root_path().join("docs")).expect("create docs dir");
