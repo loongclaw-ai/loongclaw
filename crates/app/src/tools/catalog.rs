@@ -40,9 +40,9 @@ mod io_definition_support;
 #[cfg(feature = "tool-websearch")]
 use io_definition_support::web_search_definition;
 use io_definition_support::{
-    bash_exec_definition, content_search_definition, file_edit_definition, file_read_definition,
-    file_write_definition, glob_search_definition, http_request_definition, memory_get_definition,
-    memory_search_definition, shell_exec_definition, web_fetch_definition,
+    bash_exec_definition, content_search_definition, file_read_definition, glob_search_definition,
+    http_request_definition, memory_get_definition, memory_search_definition,
+    shell_exec_definition, web_fetch_definition,
 };
 #[path = "catalog_session_definition_support.rs"]
 mod session_definition_support;
@@ -702,7 +702,7 @@ fn build_tool_catalog() -> ToolCatalog {
         ToolDescriptor {
             name: "write",
             provider_name: "write",
-            aliases: &[],
+            aliases: &["file.write", "file_write"],
             description: "Write files under the current runtime file root or replace full file contents",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -716,7 +716,7 @@ fn build_tool_catalog() -> ToolCatalog {
         ToolDescriptor {
             name: "edit",
             provider_name: "edit",
-            aliases: &[],
+            aliases: &["file.edit", "file_edit"],
             description: "Apply one or more exact text edits to a file",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
@@ -1645,34 +1645,6 @@ fn build_tool_catalog() -> ToolCatalog {
             policy: PARALLEL_SAFE_TOOL_POLICY_DESCRIPTOR,
             concurrency_class: ToolConcurrencyClass::Unknown,
             provider_definition_builder: memory_get_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "file.write",
-            provider_name: "file_write",
-            aliases: &[],
-            description: "Write file contents",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::Always,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: file_write_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "file.edit",
-            provider_name: "file_edit",
-            aliases: &[],
-            description: "Apply one or more exact text edits to a file",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::Always,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: file_edit_definition,
         });
     }
 

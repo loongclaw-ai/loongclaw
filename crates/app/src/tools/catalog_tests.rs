@@ -403,11 +403,17 @@ fn tool_catalog_entries_expose_concurrency_class() {
         );
     }
 
-    let file_write = find_tool_catalog_entry("file.write").expect("file.write catalog entry");
-    assert_eq!(file_write.scheduling_class, ToolSchedulingClass::SerialOnly);
-    assert_eq!(file_write.concurrency_class, ToolConcurrencyClass::Mutating);
-    assert_eq!(file_write.surface_id, Some("write"));
-    assert!(file_write.usage_guidance.is_some_and(
+    let write_alias = find_tool_catalog_entry("file.write").expect("file.write catalog entry");
+    assert_eq!(
+        write_alias.scheduling_class,
+        ToolSchedulingClass::SerialOnly
+    );
+    assert_eq!(
+        write_alias.concurrency_class,
+        ToolConcurrencyClass::Mutating
+    );
+    assert_eq!(write_alias.surface_id, Some("write"));
+    assert!(write_alias.usage_guidance.is_some_and(
         |guidance| guidance.contains("whole-file") || guidance.contains("file creation")
     ));
 
@@ -423,10 +429,14 @@ fn tool_catalog_resolve_preserves_canonical_provider_and_alias_lookup() {
 
     let canonical = catalog.resolve("file.read").expect("canonical lookup");
     let provider_name = catalog.resolve("file_read").expect("provider lookup");
+    let write_alias = catalog.resolve("file_write").expect("write alias");
+    let edit_alias = catalog.resolve("file_edit").expect("edit alias");
     let alias = catalog.resolve("shell").expect("alias lookup");
 
     assert_eq!(canonical.name, "file.read");
     assert_eq!(provider_name.name, "file.read");
+    assert_eq!(write_alias.name, "write");
+    assert_eq!(edit_alias.name, "edit");
     assert_eq!(alias.name, "shell.exec");
     assert!(catalog.resolve("tool_search").is_none());
     assert!(catalog.resolve("tool_invoke").is_none());

@@ -321,8 +321,6 @@ fn dispatch_tool_request(
         "memory_search" => memory_tools::execute_memory_search_tool_with_config(request, config),
         #[cfg(feature = "tool-file")]
         "memory_get" => memory_tools::execute_memory_get_tool_with_config(request, config),
-        "file.write" => file::execute_file_write_tool_with_config(request, config),
-        "file.edit" => file::execute_file_edit_tool_with_config(request, config),
         "provider.switch" => {
             provider_switch::execute_provider_switch_tool_with_config(request, config)
         }

@@ -39,39 +39,6 @@ pub(super) fn file_read_definition(descriptor: &ToolDescriptor) -> Value {
     })
 }
 
-pub(super) fn file_write_definition(descriptor: &ToolDescriptor) -> Value {
-    json!({
-        "type": "function",
-        "function": {
-            "name": descriptor.provider_name,
-            "description": descriptor.description,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to write (absolute or relative to configured file root)."
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "File content to write."
-                    },
-                    "create_dirs": {
-                        "type": "boolean",
-                        "description": "Create parent directories when missing. Defaults to true."
-                    },
-                    "overwrite": {
-                        "type": "boolean",
-                        "description": "Allow replacing an existing file. Defaults to false."
-                    }
-                },
-                "required": ["path", "content"],
-                "additionalProperties": false
-            }
-        }
-    })
-}
-
 pub(super) fn glob_search_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -205,52 +172,6 @@ pub(super) fn memory_get_definition(descriptor: &ToolDescriptor) -> Value {
                     }
                 },
                 "required": ["path"],
-                "additionalProperties": false
-            }
-        }
-    })
-}
-
-fn exact_edit_block_definition() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "old_text": {
-                "type": "string",
-                "minLength": 1,
-                "description": "Exact text for one targeted replacement. It must match uniquely in the original file and must not overlap any other edit block."
-            },
-            "new_text": {
-                "type": "string",
-                "description": "Replacement text for this targeted edit block."
-            }
-        },
-        "required": ["old_text", "new_text"],
-        "additionalProperties": false
-    })
-}
-
-pub(super) fn file_edit_definition(descriptor: &ToolDescriptor) -> Value {
-    json!({
-        "type": "function",
-        "function": {
-            "name": descriptor.provider_name,
-            "description": descriptor.description,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to the file (absolute or relative to configured file root)."
-                    },
-                    "edits": {
-                        "type": "array",
-                        "description": "One or more exact text replacement blocks matched against the original file. Each block must match uniquely and must not overlap another block.",
-                        "items": exact_edit_block_definition(),
-                        "minItems": 1
-                    }
-                },
-                "required": ["path", "edits"],
                 "additionalProperties": false
             }
         }

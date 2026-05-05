@@ -784,32 +784,32 @@ fn shell_exec_catalog_exposes_timeout_ms() {
 fn file_write_catalog_exposes_overwrite_flag() {
     let catalog = tool_catalog();
     let descriptor = catalog
-        .descriptor("file.write")
-        .expect("file.write should be in the catalog");
+        .descriptor("write")
+        .expect("write should be in the catalog");
     let definition = descriptor.provider_definition();
     let properties = definition["function"]["parameters"]["properties"]
         .as_object()
-        .expect("file.write parameters");
+        .expect("write parameters");
     let required_fields = definition["function"]["parameters"]["required"].as_array();
 
     assert!(
         properties.contains_key("overwrite"),
-        "file.write schema should expose overwrite parameter"
+        "write schema should expose overwrite parameter"
     );
     assert!(
         required_fields
             .is_none_or(|fields| !fields.contains(&Value::String("overwrite".to_owned()))),
-        "file.write schema should keep overwrite optional"
+        "write schema should keep overwrite optional"
     );
 
     let entry = catalog::find_tool_catalog_entry("file.write")
-        .expect("file.write should be in catalog entries");
+        .expect("file.write alias should resolve in catalog entries");
     assert!(
         entry
             .argument_hint
             .split(',')
             .any(|part| part == "overwrite?:boolean"),
-        "file.write argument hint should expose overwrite"
+        "write argument hint should expose overwrite"
     );
 }
 
@@ -1046,7 +1046,7 @@ fn canonical_tool_name_maps_known_aliases() {
     assert_eq!(canonical_tool_name("claw_migrate"), "config.import");
     assert_eq!(canonical_tool_name("config_import"), "config.import");
     assert_eq!(canonical_tool_name("file_read"), "file.read");
-    assert_eq!(canonical_tool_name("file_write"), "file.write");
+    assert_eq!(canonical_tool_name("file_write"), "write");
     assert_eq!(canonical_tool_name("provider_switch"), "provider.switch");
     assert_eq!(canonical_tool_name("browser_open"), "browser.open");
     assert_eq!(canonical_tool_name("browse.open"), "browser.open");
@@ -1054,7 +1054,7 @@ fn canonical_tool_name_maps_known_aliases() {
     assert_eq!(canonical_tool_name("browse.extract"), "browser.extract");
     assert_eq!(canonical_tool_name("browser_click"), "browser.click");
     assert_eq!(canonical_tool_name("browse.click"), "browser.click");
-    assert_eq!(canonical_tool_name("file_edit"), "file.edit");
+    assert_eq!(canonical_tool_name("file_edit"), "edit");
     assert_eq!(canonical_tool_name("shell_exec"), "shell.exec");
     assert_eq!(canonical_tool_name("shell"), "shell.exec");
     assert_eq!(canonical_tool_name("web_fetch"), "web.fetch");
