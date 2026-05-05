@@ -2400,16 +2400,18 @@ fn build_assistant_contents(text: &str) -> Vec<MessageContent> {
         return vec![parse_compaction_content(text)];
     }
 
-    if !assistant_text_has_explicit_structure(text) {
+    let sanitized_text = sanitize_plain_assistant_text(text);
+
+    if !assistant_text_has_explicit_structure(sanitized_text.as_str()) {
         let mut contents = Vec::new();
-        append_markdown_or_image_contents(text, &mut contents);
+        append_markdown_or_image_contents(sanitized_text.as_str(), &mut contents);
         if contents.is_empty() {
-            contents.push(MessageContent::Markdown(text.to_owned()));
+            contents.push(MessageContent::Markdown(sanitized_text));
         }
         return contents;
     }
 
-    let sections = super::super::parse_cli_chat_markdown_sections(text);
+    let sections = super::super::parse_cli_chat_markdown_sections(sanitized_text.as_str());
     let mut contents = Vec::new();
 
     for section in sections {
@@ -2452,14 +2454,87 @@ fn build_assistant_contents(text: &str) -> Vec<MessageContent> {
     }
 
     if contents.is_empty() {
-        append_markdown_or_image_contents(text, &mut contents);
+        append_markdown_or_image_contents(sanitized_text.as_str(), &mut contents);
     }
 
     if contents.is_empty() {
-        contents.push(MessageContent::Markdown(text.to_owned()));
+        contents.push(MessageContent::Markdown(sanitized_text));
     }
 
     contents
+}
+
+fn sanitize_plain_assistant_text(text: &str) -> String {
+    let mut visible_lines = Vec::new();
+    let mut saw_visible_content = false;
+    let mut internal_tail_started = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let internal_tail_line = looks_like_internal_tool_result_line(trimmed)
+            || looks_like_provider_transport_tail(trimmed);
+
+        if !internal_tail_started && internal_tail_line && saw_visible_content {
+            internal_tail_started = true;
+        }
+
+        if internal_tail_started {
+            continue;
+        }
+
+        if !trimmed.is_empty() {
+            saw_visible_content = true;
+        }
+        visible_lines.push(line);
+    }
+
+    if !internal_tail_started {
+        return text.to_owned();
+    }
+
+    while visible_lines
+        .last()
+        .is_some_and(|line| line.trim().is_empty())
+    {
+        visible_lines.pop();
+    }
+
+    if visible_lines.is_empty() {
+        text.to_owned()
+    } else {
+        visible_lines.join("\n")
+    }
+}
+
+fn looks_like_internal_tool_result_line(line: &str) -> bool {
+    looks_like_status_prefixed_tool_result_envelope(line)
+        || line.starts_with("[tool_result]")
+        || line.starts_with("[tool_failure]")
+}
+
+fn looks_like_provider_transport_tail(line: &str) -> bool {
+    line.contains("provider request failed for model `")
+        || (line.contains("candidate_index=")
+            && line.contains("candidate_count=")
+            && line.contains("profile_index="))
+        || line.contains("transport_failure")
+}
+
+fn looks_like_status_prefixed_tool_result_envelope(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some((prefix, payload)) = trimmed.split_once(' ') else {
+        return false;
+    };
+    let Some(status_marker) = prefix
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+    else {
+        return false;
+    };
+    if status_marker.trim().is_empty() {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(payload).is_ok()
 }
 
 fn assistant_text_has_explicit_structure(text: &str) -> bool {
@@ -5209,8 +5284,8 @@ mod tests {
     use super::{
         MessageContent, MessageList, ReadToolRequest, STARTUP_COMPACT_WORDMARK, STARTUP_EYE_FRAMES,
         STARTUP_TIP_FADE_MS, STARTUP_TIP_HOLD_MS, STARTUP_WORDMARK, ToolStatus,
-        adjust_scroll_start_for_message_boundary, build_assistant_contents, dominant_block_bg,
-        extract_read_tool_request_from_json, format_read_request_display,
+        adjust_scroll_start_for_message_boundary, build_assistant_contents, content_plain_text,
+        dominant_block_bg, extract_read_tool_request_from_json, format_read_request_display,
         startup_logo_eye_frame_index, startup_logo_eye_style, startup_tip_render_state,
         startup_wordmark_eye_frame,
     };
@@ -6495,6 +6570,32 @@ mod tests {
             [MessageContent::Markdown(markdown)]
                 if markdown == text
         ));
+    }
+
+    #[test]
+    fn assistant_reply_does_not_leave_internal_tool_result_and_provider_transport_tail_inline() {
+        let text = concat!(
+            "我明白你的意思。\n\n",
+            "我已经核到一件关键事实：当前配置里确实存在一个更宽的 file_root。\n\n",
+            "[ok] {\"status\":\"ok\",\"tool\":\"read\",\"tool_call_id\":\"call-1\",\"payload_summary\":\"{\\\"path\\\":\\\"/workspace/demo/crates/daemon/src/lib.rs\\\",\\\"line_start\\\":1,\\\"line_end\\\":50}\",\"payload_chars\":2121,\"payload_truncated\":true}\n",
+            "candidate_index=1 candidate_count=1 profile_index=1 profile_count=1 exhausted=true error=provider request failed for model `gpt-5.4` on attempt 3/3: error sending request for url (https://api.tonsof.blue/v1/chat/completions)"
+        );
+
+        let contents = build_assistant_contents(text);
+        let plain_text = contents
+            .iter()
+            .filter_map(content_plain_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            !plain_text.contains("[ok] {\"status\":\"ok\""),
+            "raw tool result envelope should not leak into plain transcript markdown: {plain_text}"
+        );
+        assert!(
+            !plain_text.contains("provider request failed for model"),
+            "provider transport tail should not remain inline in the plain transcript: {plain_text}"
+        );
     }
 
     #[test]
