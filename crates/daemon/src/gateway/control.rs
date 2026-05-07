@@ -297,16 +297,23 @@ impl GatewayControlAppState {
                     active_model: String::new(),
                     reason: "no runtime-visible tools are enabled".to_owned(),
                 },
-                web_access: super::read_models::GatewayWebAccessReadModel {
+                access: super::read_models::GatewayToolAccessReadModel {
                     ordinary_network_access_enabled: false,
                     query_search_enabled: false,
                     query_search_default_provider: "duckduckgo".to_owned(),
+                    query_search_source: "external_provider".to_owned(),
+                    query_search_provider_label: "DuckDuckGo".to_owned(),
                     query_search_credential_ready: true,
-                    separation_note: crate::RUNTIME_WEB_ACCESS_SEPARATION_NOTE.to_owned(),
+                    browser_page_access_enabled: false,
+                    managed_browser_session_enabled: false,
+                    managed_browser_session_ready: false,
+                    consent_mode: "full".to_owned(),
+                    approval_mode: "disabled".to_owned(),
+                    separation_note: crate::RUNTIME_TOOL_ACCESS_SEPARATION_NOTE.to_owned(),
                 },
             },
             runtime_plugins: json!({}),
-            external_skills: json!({}),
+            skills: json!({}),
         };
         Self {
             runtime_dir: PathBuf::from("/tmp/test"),

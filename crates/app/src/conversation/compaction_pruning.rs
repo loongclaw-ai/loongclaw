@@ -32,11 +32,6 @@ pub(super) struct PrunedCompactionWindow {
     pub(super) diagnostics: CompactionPruneDiagnostics,
 }
 
-#[cfg(test)]
-pub(super) fn prune_compaction_window_inputs(turns: &[WindowTurn]) -> Vec<PrunedCompactionTurn> {
-    inspect_compaction_window_inputs(turns).turns
-}
-
 pub(super) fn inspect_compaction_window_inputs(turns: &[WindowTurn]) -> PrunedCompactionWindow {
     let turns = turns.iter().map(prune_compaction_turn).collect::<Vec<_>>();
     let mut diagnostics = CompactionPruneDiagnostics {

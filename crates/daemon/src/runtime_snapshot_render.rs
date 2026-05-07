@@ -6,12 +6,11 @@ use crate::runtime_snapshot_compaction_presentation::{
     build_compaction_hygiene_json, render_runtime_snapshot_compaction_lines,
 };
 use crate::{
-    RuntimeSnapshotCliState, RuntimeSnapshotExternalSkillsState,
-    RuntimeSnapshotProviderProfileState, RuntimeSnapshotProviderState,
-    RuntimeSnapshotRuntimePluginsState, acp_backend_metadata_json, acp_control_plane_json,
-    context_engine_metadata_json, format_capability_names, memory_system_metadata_json,
-    memory_system_policy_json, mvp, push_channel_surface_managed_plugin_bridge_discovery,
-    render_string_list,
+    RuntimeSnapshotCliState, RuntimeSnapshotProviderProfileState, RuntimeSnapshotProviderState,
+    RuntimeSnapshotRuntimePluginsState, RuntimeSnapshotSkillsState, acp_backend_metadata_json,
+    acp_control_plane_json, context_engine_metadata_json, format_capability_names,
+    memory_system_metadata_json, memory_system_policy_json, mvp,
+    push_channel_surface_managed_plugin_bridge_discovery, render_string_list,
 };
 
 pub fn render_runtime_snapshot_text(snapshot: &RuntimeSnapshotCliState) -> String {
@@ -279,26 +278,6 @@ pub fn render_runtime_snapshot_text(snapshot: &RuntimeSnapshotCliState) -> Strin
         snapshot.tool_runtime.browser.max_text_chars
     ));
     lines.push(format!(
-        "tool_runtime browser_companion enabled={} ready={} tier={} command={} expected_version={}",
-        snapshot.tool_runtime.browser_companion.enabled,
-        snapshot.tool_runtime.browser_companion.ready,
-        snapshot
-            .tool_runtime
-            .browser_companion_execution_security_tier(),
-        snapshot
-            .tool_runtime
-            .browser_companion
-            .command
-            .as_deref()
-            .unwrap_or("-"),
-        snapshot
-            .tool_runtime
-            .browser_companion
-            .expected_version
-            .as_deref()
-            .unwrap_or("-")
-    ));
-    lines.push(format!(
         "tool_runtime web_fetch enabled={} allow_private_hosts={} timeout_seconds={} max_bytes={} max_redirects={} allowed_domains={} blocked_domains={}",
         snapshot.tool_runtime.web_fetch.enabled,
         snapshot.tool_runtime.web_fetch.allow_private_hosts,
@@ -308,21 +287,30 @@ pub fn render_runtime_snapshot_text(snapshot: &RuntimeSnapshotCliState) -> Strin
         render_string_list(snapshot.tool_runtime.web_fetch.allowed_domains.iter().map(String::as_str)),
         render_string_list(snapshot.tool_runtime.web_fetch.blocked_domains.iter().map(String::as_str))
     ));
-    let web_access_summary = crate::runtime_web_access_summary(&snapshot.tool_runtime);
+    let tool_access = &snapshot.tool_access;
     lines.push(format!(
-        "tool_runtime web_search enabled={} default_provider={} credential_ready={} separation_note=\"{}\"",
+        "tool_runtime web_search enabled={} default_provider={} source={} provider_label={} credential_ready={} separation_note=\"{}\"",
         snapshot.tool_runtime.web_search.enabled,
         snapshot.tool_runtime.web_search.default_provider,
-        web_access_summary.query_search_credential_ready,
-        web_access_summary.separation_note
+        tool_access.query_search_source,
+        tool_access.query_search_provider_label,
+        tool_access.query_search_credential_ready,
+        tool_access.separation_note
     ));
     lines.push(format!(
-        "tool_runtime web_access ordinary_network_enabled={} query_search_enabled={} query_search_default_provider={} query_search_credential_ready={} separation_note=\"{}\"",
-        web_access_summary.ordinary_network_access_enabled,
-        web_access_summary.query_search_enabled,
-        web_access_summary.query_search_default_provider,
-        web_access_summary.query_search_credential_ready,
-        web_access_summary.separation_note
+        "tool_runtime access ordinary_network_enabled={} query_search_enabled={} query_search_default_provider={} query_search_source={} query_search_provider_label={} query_search_credential_ready={} browser_page_enabled={} managed_browser_enabled={} managed_browser_ready={} consent_mode={} approval_mode={} separation_note=\"{}\"",
+        tool_access.ordinary_network_access_enabled,
+        tool_access.query_search_enabled,
+        tool_access.query_search_default_provider,
+        tool_access.query_search_source,
+        tool_access.query_search_provider_label,
+        tool_access.query_search_credential_ready,
+        tool_access.browser_page_access_enabled,
+        tool_access.managed_browser_session_enabled,
+        tool_access.managed_browser_session_ready,
+        tool_access.consent_mode,
+        tool_access.approval_mode,
+        tool_access.separation_note
     ));
     lines.push(format!(
         "tools visible_count={} hidden_count={} capability_snapshot_sha256={} visible_names={} visible_direct_names={}",
@@ -356,30 +344,30 @@ pub fn render_runtime_snapshot_text(snapshot: &RuntimeSnapshotCliState) -> Strin
     ));
     lines.extend(render_runtime_plugins_lines(&snapshot.runtime_plugins));
     lines.push(format!(
-        "external_skills inventory_status={} override_active={} enabled={} require_download_approval={} auto_expose_installed={} install_root={} resolved_skills={} shadowed_skills={} inventory_error={}",
-        snapshot.external_skills.inventory_status.as_str(),
-        snapshot.external_skills.override_active,
-        snapshot.external_skills.policy.enabled,
-        snapshot.external_skills.policy.require_download_approval,
-        snapshot.external_skills.policy.auto_expose_installed,
+        "skills inventory_status={} override_active={} enabled={} require_download_approval={} auto_expose_installed={} install_root={} resolved_skills={} shadowed_skills={} inventory_error={}",
+        snapshot.skills.inventory_status.as_str(),
+        snapshot.skills.override_active,
+        snapshot.skills.policy.enabled,
+        snapshot.skills.policy.require_download_approval,
+        snapshot.skills.policy.auto_expose_installed,
         snapshot
-            .external_skills
+            .skills
             .policy
             .install_root
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "-".to_owned()),
-        snapshot.external_skills.resolved_skill_count,
-        snapshot.external_skills.shadowed_skill_count,
+        snapshot.skills.resolved_skill_count,
+        snapshot.skills.shadowed_skill_count,
         snapshot
-            .external_skills
+            .skills
             .inventory_error
             .as_deref()
             .unwrap_or("-")
     ));
 
     if let Some(skills) = snapshot
-        .external_skills
+        .skills
         .inventory
         .get("skills")
         .and_then(Value::as_array)
@@ -650,8 +638,8 @@ pub(crate) fn runtime_snapshot_acp_json(snapshot: &mvp::acp::AcpRuntimeSnapshot)
 
 pub(crate) fn runtime_snapshot_tool_runtime_json(
     runtime: &mvp::tools::runtime_config::ToolRuntimeConfig,
+    tool_access: &crate::RuntimeToolAccessSummary,
 ) -> Value {
-    let web_access_summary = crate::runtime_web_access_summary(runtime);
     json!({
         "file_root": runtime
             .file_root
@@ -672,13 +660,6 @@ pub(crate) fn runtime_snapshot_tool_runtime_json(
             "max_links": runtime.browser.max_links,
             "max_text_chars": runtime.browser.max_text_chars,
         },
-        "browser_companion": {
-            "enabled": runtime.browser_companion.enabled,
-            "ready": runtime.browser_companion.ready,
-            "execution_tier": runtime.browser_companion_execution_security_tier().as_str(),
-            "command": runtime.browser_companion.command,
-            "expected_version": runtime.browser_companion.expected_version,
-        },
         "web_fetch": {
             "enabled": runtime.web_fetch.enabled,
             "allow_private_hosts": runtime.web_fetch.allow_private_hosts,
@@ -691,22 +672,35 @@ pub(crate) fn runtime_snapshot_tool_runtime_json(
         "web_search": {
             "enabled": runtime.web_search.enabled,
             "default_provider": runtime.web_search.default_provider,
-            "credential_ready": web_access_summary.query_search_credential_ready,
-            "separation_note": web_access_summary.separation_note,
+            "source": tool_access.query_search_source,
+            "provider_label": tool_access.query_search_provider_label,
+            "credential_ready": tool_access.query_search_credential_ready,
+            "separation_note": tool_access.separation_note,
         },
-        "web_access": {
-            "ordinary_network_access_enabled": web_access_summary.ordinary_network_access_enabled,
-            "query_search_enabled": web_access_summary.query_search_enabled,
-            "query_search_default_provider": web_access_summary.query_search_default_provider,
-            "query_search_credential_ready": web_access_summary.query_search_credential_ready,
-            "separation_note": web_access_summary.separation_note,
+        "consent": {
+            "default_mode": tool_access.consent_mode,
+        },
+        "approval": {
+            "mode": tool_access.approval_mode,
+        },
+        "access": {
+            "ordinary_network_access_enabled": tool_access.ordinary_network_access_enabled,
+            "query_search_enabled": tool_access.query_search_enabled,
+            "query_search_default_provider": tool_access.query_search_default_provider,
+            "query_search_source": tool_access.query_search_source,
+            "query_search_provider_label": tool_access.query_search_provider_label,
+            "query_search_credential_ready": tool_access.query_search_credential_ready,
+            "browser_page_access_enabled": tool_access.browser_page_access_enabled,
+            "managed_browser_session_enabled": tool_access.managed_browser_session_enabled,
+            "managed_browser_session_ready": tool_access.managed_browser_session_ready,
+            "consent_mode": tool_access.consent_mode,
+            "approval_mode": tool_access.approval_mode,
+            "separation_note": tool_access.separation_note,
         },
     })
 }
 
-pub(crate) fn runtime_snapshot_external_skills_json(
-    snapshot: &RuntimeSnapshotExternalSkillsState,
-) -> Value {
+pub(crate) fn runtime_snapshot_skills_json(snapshot: &RuntimeSnapshotSkillsState) -> Value {
     json!({
         "policy": {
             "enabled": snapshot.policy.enabled,

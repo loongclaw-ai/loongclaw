@@ -1801,9 +1801,9 @@ mod tests {
         .expect("approval_request_status outcome");
 
         let request = &outcome.payload["approval_request"];
-        assert_eq!(request["visible_tool_name"], "exec");
+        assert_eq!(request["visible_tool_name"], "bash");
         assert_eq!(request["tool_name"], "shell.exec");
-        assert_eq!(request["request_summary"]["tool"], "exec");
+        assert_eq!(request["request_summary"]["tool"], "bash");
         assert_eq!(request["request_summary"]["request"]["command"], "git");
         assert_eq!(request["request_summary"]["request"]["timeout_ms"], 3000);
         assert_eq!(request["request_summary"]["request"]["args_redacted"], 1);
@@ -2134,11 +2134,11 @@ mod tests {
             session_id: "root-session".to_owned(),
             turn_id: "turn-autonomy-summary".to_owned(),
             tool_call_id: "call-autonomy-summary".to_owned(),
-            tool_name: "external_skills.install".to_owned(),
-            approval_key: "tool:external_skills.install".to_owned(),
+            tool_name: "skills.install".to_owned(),
+            approval_key: "tool:skills.install".to_owned(),
             request_payload_json: json!({
                 "session_id": "root-session",
-                "tool_name": "external_skills.install",
+                "tool_name": "skills.install",
                 "args_json": {
                     "path": "source/demo-skill"
                 },
@@ -2150,7 +2150,7 @@ mod tests {
                 "decision_kind": "approval_required",
                 "rule_id": "autonomy_policy_capability_acquisition_requires_approval",
                 "reason_code": "autonomy_policy_capability_acquisition_requires_approval",
-                "reason": "operator approval required before running `external_skills.install` under `guided_acquisition` product mode",
+                "reason": "operator approval required before running `skills.install` under `guided_acquisition` product mode",
             }),
         })
         .expect("seed approval request");
@@ -2175,11 +2175,8 @@ mod tests {
         assert_eq!(request["policy_source"], "autonomy_policy");
         assert_eq!(request["autonomy_profile"], "guided_acquisition");
         assert_eq!(request["capability_action_class"], "capability_install");
-        assert_eq!(request["visible_tool_name"], "external_skills.install");
-        assert_eq!(
-            request["request_summary"]["tool"],
-            "external_skills.install"
-        );
+        assert_eq!(request["visible_tool_name"], "skills.install");
+        assert_eq!(request["request_summary"]["tool"], "skills.install");
         assert_eq!(request["decision_kind"], "approval_required");
         assert_eq!(
             request["rule_id"],
@@ -2191,7 +2188,7 @@ mod tests {
         );
         assert_eq!(
             request["reason"],
-            "operator approval required before running `external_skills.install` under `guided_acquisition` product mode"
+            "operator approval required before running `skills.install` under `guided_acquisition` product mode"
         );
     }
 

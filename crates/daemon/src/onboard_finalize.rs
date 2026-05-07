@@ -96,7 +96,6 @@ pub enum OnboardingActionKind {
     Chat,
     Personalize,
     Channel,
-    BrowserPreview,
     Doctor,
 }
 
@@ -134,9 +133,6 @@ pub(crate) fn build_onboarding_success_summary_with_memory(
                     OnboardingActionKind::Personalize
                 }
                 crate::next_actions::SetupNextActionKind::Channel => OnboardingActionKind::Channel,
-                crate::next_actions::SetupNextActionKind::BrowserPreview => {
-                    OnboardingActionKind::BrowserPreview
-                }
                 crate::next_actions::SetupNextActionKind::Doctor => OnboardingActionKind::Doctor,
             };
 
@@ -157,13 +153,19 @@ pub(crate) fn build_onboarding_success_summary_with_memory(
     let prompt_mode = crate::onboard_cli::summarize_prompt_mode(config);
     let prompt_addendum = crate::onboard_cli::summarize_prompt_addendum(config);
     let credential = crate::onboard_cli::summarize_provider_credential(&config.provider);
-    let web_search_provider = crate::onboard_web_search::web_search_provider_display_name(
-        config.tools.web_search.default_provider.as_str(),
-    );
-    let web_search_credential = crate::onboard_web_search::summarize_web_search_provider_credential(
-        config,
-        config.tools.web_search.default_provider.as_str(),
-    );
+    let web_search_status = crate::query_search_guidance::query_search_provider_status(config);
+    let web_search_provider = web_search_status.provider_label.clone();
+    let web_search_credential = if web_search_status.provider_native {
+        Some(OnboardingCredentialSummary {
+            label: crate::access_terms::QUERY_SEARCH_CREDENTIAL_LABEL,
+            value: "provided by active provider".to_owned(),
+        })
+    } else {
+        crate::query_search_guidance::summarize_query_search_credential(
+            config,
+            config.tools.web_search.default_provider.as_str(),
+        )
+    };
     let domain_outcomes = collect_onboarding_domain_outcomes(review_candidate);
     let channel_surface_summary = collect_onboarding_channel_surface_summary(config);
     let channels = config.enabled_channel_ids();
@@ -755,11 +757,6 @@ mod tests {
                     label: "channels".to_owned(),
                     command: "loong channels --config '/tmp/loong.toml'".to_owned(),
                 },
-                OnboardingAction {
-                    kind: OnboardingActionKind::BrowserPreview,
-                    label: "browser preview".to_owned(),
-                    command: "loong browser preview --config '/tmp/loong.toml'".to_owned(),
-                },
             ],
         }
     }
@@ -785,7 +782,7 @@ mod tests {
                 section,
                 TuiSectionSpec::ActionGroup { title: Some(title), items, .. }
                     if title == "also available"
-                        && items.iter().all(|item| item.label != "channels" && item.label != "browser preview")
+                        && items.iter().all(|item| item.label != "channels")
                         && items.iter().any(|item| item.label == "chat")
                         && items.iter().any(|item| item.label == personalize_action_label())
             )),
@@ -797,7 +794,7 @@ mod tests {
                 TuiSectionSpec::ActionGroup { title: Some(title), items, .. }
                     if title == "continue setup"
                         && items.iter().any(|item| item.label == "channels")
-                        && items.iter().any(|item| item.label == "browser preview")
+                        && items.iter().any(|item| item.label == "channels")
             )),
             "expected setup-surface actions to be grouped under continue setup: {spec:#?}"
         );

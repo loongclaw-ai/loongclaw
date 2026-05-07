@@ -1,11 +1,9 @@
 use std::env;
 
 use loong_app as mvp;
-use loong_contracts::SecretRef;
 use loong_spec::CliResult;
 
 use crate::onboard_cli::OnboardCommandOptions;
-use crate::onboard_types::OnboardingCredentialSummary;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WebSearchProviderRecommendation {
@@ -127,7 +125,7 @@ pub(crate) fn resolve_effective_web_search_default_provider(
     }
 
     let has_available_credential =
-        web_search_provider_has_available_credential(config, descriptor.id);
+        crate::query_search_guidance::query_search_has_available_credential(config, descriptor.id);
     if has_available_credential {
         return descriptor.id;
     }
@@ -198,21 +196,27 @@ pub(crate) fn recommend_web_search_provider_from_available_credentials(
     let mut ready_providers = mvp::config::web_search_provider_descriptors()
         .iter()
         .filter(|descriptor| descriptor.requires_api_key)
-        .filter(|descriptor| web_search_provider_has_available_credential(config, descriptor.id));
+        .filter(|descriptor| {
+            crate::query_search_guidance::query_search_has_available_credential(
+                config,
+                descriptor.id,
+            )
+        });
     let descriptor = ready_providers.next()?;
     if ready_providers.next().is_some() {
         return None;
     }
 
-    let credential_summary = summarize_web_search_provider_credential(config, descriptor.id);
+    let credential_summary =
+        crate::query_search_guidance::summarize_query_search_credential(config, descriptor.id);
     let reason = if let Some(summary) = credential_summary {
         format!(
-            "found exactly one ready web search credential for {} ({})",
+            "found exactly one ready query-search credential for {} ({})",
             descriptor.display_name, summary.value
         )
     } else {
         format!(
-            "found exactly one ready web search provider with credentials: {}",
+            "found exactly one ready query-search provider with credentials: {}",
             descriptor.display_name
         )
     };
@@ -361,188 +365,6 @@ fn build_onboard_probe_client_with_user_agent(user_agent: &str) -> Option<reqwes
     client.ok()
 }
 
-pub(crate) fn web_search_provider_display_name(provider: &str) -> String {
-    let descriptor = mvp::config::web_search_provider_descriptor(provider);
-    descriptor
-        .map(|descriptor| descriptor.display_name.to_owned())
-        .unwrap_or_else(|| provider.to_owned())
-}
-
-fn render_web_search_credential_source_value(raw: Option<&str>) -> Option<String> {
-    let trimmed = raw?.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let secret_ref = SecretRef::Inline(trimmed.to_owned());
-    if let Some(env_name) = secret_ref.explicit_env_name() {
-        return Some(env_name);
-    }
-    if secret_ref.inline_literal_value().is_some() {
-        return Some("inline api key".to_owned());
-    }
-
-    Some("configured credential".to_owned())
-}
-
-pub(crate) fn configured_web_search_provider_credential_source_value(
-    config: &mvp::config::LoongConfig,
-    provider: &str,
-) -> Option<String> {
-    let configured_secret = configured_web_search_provider_secret(config, provider);
-    configured_secret.and_then(|value| render_web_search_credential_source_value(Some(value)))
-}
-
-pub(crate) fn configured_web_search_provider_env_name(
-    config: &mvp::config::LoongConfig,
-    provider: &str,
-) -> Option<String> {
-    let raw = configured_web_search_provider_secret(config, provider)?;
-    let secret_ref = SecretRef::Inline(raw.trim().to_owned());
-    secret_ref.explicit_env_name()
-}
-
-pub(crate) fn web_search_provider_has_inline_credential(
-    config: &mvp::config::LoongConfig,
-    provider: &str,
-) -> bool {
-    let configured_secret = configured_web_search_provider_secret(config, provider);
-    configured_secret.is_some_and(|value| {
-        let trimmed = value.trim().to_owned();
-        let secret_ref = SecretRef::Inline(trimmed);
-        secret_ref.inline_literal_value().is_some()
-    })
-}
-
-pub(crate) fn preferred_web_search_credential_env_default(
-    config: &mvp::config::LoongConfig,
-    provider: &str,
-) -> String {
-    if let Some(env_name) = configured_web_search_provider_env_name(config, provider) {
-        return env_name;
-    }
-    if web_search_provider_has_inline_credential(config, provider) {
-        return String::new();
-    }
-
-    let descriptor = mvp::config::web_search_provider_descriptor(provider);
-    let Some(descriptor) = descriptor else {
-        return String::new();
-    };
-    if let Some(env_name) = descriptor
-        .api_key_env_names
-        .iter()
-        .find(|env_name| env_var_has_non_empty_value(env_name))
-    {
-        return (*env_name).to_owned();
-    }
-
-    descriptor
-        .default_api_key_env
-        .unwrap_or_default()
-        .to_owned()
-}
-
-pub(crate) fn summarize_web_search_provider_credential(
-    config: &mvp::config::LoongConfig,
-    provider: &str,
-) -> Option<OnboardingCredentialSummary> {
-    let descriptor = mvp::config::web_search_provider_descriptor(provider)?;
-    if !descriptor.requires_api_key {
-        return Some(OnboardingCredentialSummary {
-            label: "web search credential",
-            value: "not required".to_owned(),
-        });
-    }
-
-    if let Some(configured_value) = configured_web_search_provider_secret(config, descriptor.id) {
-        let trimmed = configured_value.trim();
-        if !trimmed.is_empty() {
-            let secret_ref = SecretRef::Inline(trimmed.to_owned());
-            if let Some(env_name) = secret_ref.explicit_env_name() {
-                let env_present = env_var_has_non_empty_value(env_name.as_str());
-                let suffix = if env_present { "" } else { " (missing in env)" };
-                return Some(OnboardingCredentialSummary {
-                    label: "web search credential source",
-                    value: format!("{env_name}{suffix}"),
-                });
-            }
-            if secret_ref.inline_literal_value().is_some() {
-                return Some(OnboardingCredentialSummary {
-                    label: "web search credential",
-                    value: "inline api key".to_owned(),
-                });
-            }
-        }
-    }
-
-    if let Some(env_name) = descriptor
-        .api_key_env_names
-        .iter()
-        .find(|env_name| env_var_has_non_empty_value(env_name))
-    {
-        return Some(OnboardingCredentialSummary {
-            label: "web search credential source",
-            value: (*env_name).to_owned(),
-        });
-    }
-
-    descriptor
-        .default_api_key_env
-        .map(|env_name| OnboardingCredentialSummary {
-            label: "web search credential source",
-            value: format!("{env_name} (expected)"),
-        })
-}
-
-pub(crate) fn web_search_provider_has_available_credential(
-    config: &mvp::config::LoongConfig,
-    provider: &str,
-) -> bool {
-    let descriptor = mvp::config::web_search_provider_descriptor(provider);
-    let Some(descriptor) = descriptor else {
-        return false;
-    };
-    if !descriptor.requires_api_key {
-        return true;
-    }
-
-    if let Some(configured_value) = configured_web_search_provider_secret(config, descriptor.id) {
-        let trimmed = configured_value.trim();
-        if !trimmed.is_empty() {
-            let secret_ref = SecretRef::Inline(trimmed.to_owned());
-            if let Some(env_name) = secret_ref.explicit_env_name() {
-                return env_var_has_non_empty_value(env_name.as_str());
-            }
-            if secret_ref.inline_literal_value().is_some() {
-                return true;
-            }
-        }
-    }
-
-    descriptor
-        .api_key_env_names
-        .iter()
-        .any(|env_name| env_var_has_non_empty_value(env_name))
-}
-
-pub(crate) fn configured_web_search_provider_secret<'a>(
-    config: &'a mvp::config::LoongConfig,
-    provider: &str,
-) -> Option<&'a str> {
-    config
-        .tools
-        .web_search
-        .configured_api_key_for_provider(provider)
-}
-
-fn env_var_has_non_empty_value(env_name: &str) -> bool {
-    env::var(env_name)
-        .ok()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,6 +372,8 @@ mod tests {
     use crate::test_support::ScopedEnv;
 
     fn clear_web_search_credential_envs(env: &mut ScopedEnv) {
+        env.remove("LOONG_WEB_SEARCH_PROVIDER");
+        env.remove("LOONGCLAW_WEB_SEARCH_PROVIDER");
         for descriptor in mvp::config::web_search_provider_descriptors() {
             for env_name in descriptor.api_key_env_names {
                 env.remove(*env_name);
@@ -628,13 +452,13 @@ mod tests {
     }
 
     #[test]
-    fn configured_web_search_provider_secret_reads_firecrawl_field() {
+    fn configured_query_search_secret_reads_firecrawl_field() {
         let mut config = mvp::config::LoongConfig::default();
         let secret_value = "${FIRECRAWL_API_KEY}".to_owned();
 
         config.tools.web_search.firecrawl_api_key = Some(secret_value);
 
-        let configured_secret = configured_web_search_provider_secret(
+        let configured_secret = crate::query_search_guidance::configured_query_search_secret(
             &config,
             mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL,
         );

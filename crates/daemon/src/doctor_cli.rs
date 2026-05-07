@@ -12,7 +12,6 @@ use loong_spec::CliResult;
 use serde::Serialize;
 use serde_json::json;
 
-use crate::personalize_presentation::personalize_action_title;
 use crate::plugin_bridge_account_summary::plugin_bridge_account_summary;
 use crate::provider_credential_policy;
 use crate::provider_model_probe_policy;
@@ -55,76 +54,6 @@ struct DoctorCliJsonSchema {
     purpose: &'static str,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct DoctorSummary {
-    pass: usize,
-    warn: usize,
-    fail: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DoctorNextStepAction {
-    pub label: String,
-    pub command: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DoctorNextStep {
-    Action(DoctorNextStepAction),
-    Guidance(String),
-}
-
-impl DoctorNextStep {
-    fn action(label: impl Into<String>, command: impl Into<String>) -> Self {
-        Self::Action(DoctorNextStepAction {
-            label: label.into(),
-            command: command.into(),
-        })
-    }
-
-    fn guidance(text: impl Into<String>) -> Self {
-        Self::Guidance(text.into())
-    }
-
-    fn render(&self) -> String {
-        match self {
-            DoctorNextStep::Action(action) => format!("{}: {}", action.label, action.command),
-            DoctorNextStep::Guidance(text) => text.clone(),
-        }
-    }
-
-    fn as_action_spec(&self) -> Option<mvp::tui_surface::TuiActionSpec> {
-        let DoctorNextStep::Action(action) = self else {
-            return None;
-        };
-
-        Some(mvp::tui_surface::TuiActionSpec {
-            label: action.label.clone(),
-            command: action.command.clone(),
-        })
-    }
-
-    fn as_action(&self) -> Option<&DoctorNextStepAction> {
-        let DoctorNextStep::Action(action) = self else {
-            return None;
-        };
-
-        Some(action)
-    }
-}
-
-impl From<String> for DoctorNextStep {
-    fn from(value: String) -> Self {
-        DoctorNextStep::guidance(value)
-    }
-}
-
-impl From<&str> for DoctorNextStep {
-    fn from(value: &str) -> Self {
-        DoctorNextStep::guidance(value)
-    }
-}
-
 pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
     if let Some(command) = options.command.clone() {
         return match command {
@@ -143,6 +72,7 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
     }
 
     let (config_path, mut config) = mvp::config::load(options.config.as_deref())?;
+    mvp::runtime_env::initialize_runtime_environment(&config, Some(config_path.as_path()));
     let mut checks = Vec::new();
     let mut fixes = Vec::new();
     let mut config_mutated = false;
@@ -262,7 +192,6 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
         &mut fixes,
         "create tool file root",
     ));
-    checks.extend(collect_browser_companion_doctor_checks(&config).await);
     checks.extend(collect_runtime_plugins_doctor_checks(&config));
 
     checks.extend(check_feishu_integration(&config, options.fix, &mut fixes));
@@ -270,10 +199,6 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
     let channel_surface_checks = collect_channel_surface_checks(&channel_inventory);
     checks.extend(channel_surface_checks);
     let path_env = env::var_os("PATH");
-    checks.extend(crate::browser_preview::browser_preview_check(
-        &config,
-        path_env.as_deref(),
-    ));
 
     if options.fix && config_mutated {
         let path = config_path
@@ -282,14 +207,8 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
         mvp::config::write(Some(path), &config, true)?;
     }
 
-    let compaction_hygiene_signal =
-        crate::doctor_compaction_hygiene::collect_doctor_compaction_hygiene_signal(
-            config_path.as_path(),
-            &config,
-        );
-    checks.push(compaction_hygiene_signal.check.clone());
-    let summary = summarize_checks(&checks);
-    let mut next_steps = build_doctor_next_step_items_with_channel_surfaces_and_path_env(
+    let summary = crate::doctor_presentation::summarize_checks(&checks);
+    let next_steps = build_doctor_next_steps_with_channel_surfaces_and_path_env(
         &checks,
         &config_path,
         &config,
@@ -297,25 +216,22 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
         options.fix,
         path_env.as_deref(),
     );
-    for step in compaction_hygiene_signal.next_steps.clone() {
-        push_unique_step(&mut next_steps, step);
-    }
-    let next_step_lines = doctor_next_step_lines(&next_steps);
-    let next_step_actions = doctor_next_step_actions(&next_steps);
     if options.json {
         let checks = doctor_checks_json_payload(&checks, &channel_inventory.channel_surfaces);
-        let payload = build_doctor_json_payload(
-            &summary,
-            &config_path.display().to_string(),
-            checks,
-            crate::doctor_compaction_hygiene::doctor_compaction_hygiene_json_payload(
-                &compaction_hygiene_signal,
-            ),
-            options.fix,
-            fixes,
-            next_step_lines,
-            next_step_actions,
-        );
+        let payload = json!({
+            "schema": doctor_cli_json_schema(),
+            "ok": summary.fail == 0,
+            "config": config_path.display().to_string(),
+            "summary": {
+                "ok": summary.pass,
+                "warn": summary.warn,
+                "fail": summary.fail
+            },
+            "checks": checks,
+            "fix_requested": options.fix,
+            "applied_fixes": fixes,
+            "next_steps": next_steps,
+        });
         let encoded = serde_json::to_string_pretty(&payload)
             .map_err(|error| format!("serialize doctor output failed: {error}"))?;
         println!("{encoded}");
@@ -324,7 +240,7 @@ pub async fn run_doctor_cli(options: DoctorCommandOptions) -> CliResult<()> {
 
     println!(
         "{}",
-        render_doctor_text(
+        crate::doctor_presentation::render_doctor_text(
             &checks,
             summary,
             &fixes,
@@ -346,34 +262,6 @@ fn doctor_cli_json_schema() -> DoctorCliJsonSchema {
         surface: "doctor",
         purpose: "runtime_health_diagnostics",
     }
-}
-
-fn build_doctor_json_payload(
-    summary: &DoctorSummary,
-    config_path: &str,
-    checks: Vec<serde_json::Value>,
-    compaction_hygiene: serde_json::Value,
-    fix_requested: bool,
-    applied_fixes: Vec<String>,
-    next_steps: Vec<String>,
-    next_step_actions: Vec<DoctorNextStepAction>,
-) -> serde_json::Value {
-    json!({
-        "schema": doctor_cli_json_schema(),
-        "ok": summary.fail == 0,
-        "config": config_path,
-        "summary": {
-            "ok": summary.pass,
-            "warn": summary.warn,
-            "fail": summary.fail
-        },
-        "checks": checks,
-        "compaction_hygiene": compaction_hygiene,
-        "fix_requested": fix_requested,
-        "applied_fixes": applied_fixes,
-        "next_steps": next_steps,
-        "next_step_actions": next_step_actions,
-    })
 }
 
 fn check_directory_ready(
@@ -1406,7 +1294,8 @@ fn managed_plugin_bridge_discovery_check_detail(
 
     match discovery.status {
         mvp::channel::ChannelPluginBridgeDiscoveryStatus::NotConfigured => {
-            "managed bridge discovery is unavailable because external_skills.install_root is not configured".to_owned()
+            "managed bridge discovery is unavailable because skills.install_root is not configured"
+                .to_owned()
         }
         mvp::channel::ChannelPluginBridgeDiscoveryStatus::ScanFailed => {
             let scan_issue = discovery
@@ -1414,8 +1303,9 @@ fn managed_plugin_bridge_discovery_check_detail(
                 .as_deref()
                 .map(crate::render_line_safe_text_value)
                 .unwrap_or_else(|| "unknown scan failure".to_owned());
-            let detail =
-                format!("managed bridge discovery failed under {managed_install_root}: {scan_issue}");
+            let detail = format!(
+                "managed bridge discovery failed under {managed_install_root}: {scan_issue}"
+            );
 
             detail
         }
@@ -1436,15 +1326,17 @@ fn managed_plugin_bridge_discovery_check_detail(
         }
         mvp::channel::ChannelPluginBridgeDiscoveryStatus::MatchesFound => {
             let compatible_plugins = discovery.compatible_plugins;
-            let compatible_plugin_ids =
-                render_managed_plugin_bridge_compatible_plugin_ids(&discovery.compatible_plugin_ids);
+            let compatible_plugin_ids = render_managed_plugin_bridge_compatible_plugin_ids(
+                &discovery.compatible_plugin_ids,
+            );
             let ambiguity_status = discovery
                 .ambiguity_status
                 .map(|status| status.as_str())
                 .unwrap_or("-");
             let incomplete_plugins = discovery.incomplete_plugins;
             let incompatible_plugins = discovery.incompatible_plugins;
-            let rendered_plugins = render_managed_plugin_bridge_discovery_plugins(&discovery.plugins);
+            let rendered_plugins =
+                render_managed_plugin_bridge_discovery_plugins(&discovery.plugins);
             let mut detail = format!(
                 "managed bridge discovery root={managed_install_root} configured_plugin_id={configured_plugin_id} selected_plugin_id={selected_plugin_id} selection_status={selection_status} compatible={compatible_plugins} compatible_plugin_ids={compatible_plugin_ids} ambiguity_status={ambiguity_status} incomplete={incomplete_plugins} incompatible={incompatible_plugins} plugins={rendered_plugins}"
             );
@@ -2205,77 +2097,45 @@ fn provider_credentials_doctor_check(
     has_provider_credentials: bool,
 ) -> DoctorCheck {
     let provider_label = crate::provider_presentation::active_provider_detail_label(config);
-    let support_facts = config.provider.support_facts();
-    let auth_support = support_facts.auth;
-    if has_provider_credentials {
-        return DoctorCheck {
-            name: "provider credentials".to_owned(),
-            level: DoctorCheckLevel::Pass,
-            detail: format!("{provider_label}: provider credentials are available"),
-        };
-    }
+    let status = crate::provider_credentials_guidance::provider_credential_status(
+        &config.provider,
+        has_provider_credentials,
+    );
 
-    if !auth_support.requires_explicit_configuration {
-        return DoctorCheck {
-            name: "provider credentials".to_owned(),
-            level: DoctorCheckLevel::Pass,
-            detail: format!(
-                "{provider_label}: provider credentials are optional for this provider"
-            ),
-        };
-    }
-
-    let detail = auth_support.missing_configuration_message;
     DoctorCheck {
-        name: "provider credentials".to_owned(),
-        level: DoctorCheckLevel::Warn,
-        detail: format!("{provider_label}: {detail}"),
+        name: crate::provider_credentials_guidance::PROVIDER_CREDENTIALS_LABEL.to_owned(),
+        level: if status.is_ready() {
+            DoctorCheckLevel::Pass
+        } else {
+            DoctorCheckLevel::Warn
+        },
+        detail: format!("{provider_label}: {}", status.detail),
     }
 }
 
 fn web_search_provider_doctor_check(config: &mvp::config::LoongConfig) -> DoctorCheck {
     if !config.tools.web_search.enabled {
         return DoctorCheck {
-            name: "web search provider".to_owned(),
+            name: crate::access_terms::QUERY_SEARCH_PROVIDER_LABEL.to_owned(),
             level: DoctorCheckLevel::Pass,
             detail: "tools.web_search.enabled=false".to_owned(),
         };
     }
 
-    let configured_provider = config.tools.web_search.default_provider.as_str();
-    let normalized_provider = mvp::config::normalize_web_search_provider(configured_provider);
-    let provider = normalized_provider.unwrap_or(mvp::config::DEFAULT_WEB_SEARCH_PROVIDER);
-    let provider_label = crate::onboard_web_search::web_search_provider_display_name(provider);
-    let credential_summary =
-        crate::onboard_web_search::summarize_web_search_provider_credential(config, provider);
-    let credential_available =
-        crate::onboard_web_search::web_search_provider_has_available_credential(config, provider);
+    let provider_status = crate::query_search_guidance::query_search_provider_status(config);
 
-    if credential_available {
-        let detail = credential_summary
-            .map(|summary| format!("{provider_label}: {}", summary.value))
-            .unwrap_or_else(|| provider_label.clone());
-
+    if provider_status.credential_available {
         return DoctorCheck {
-            name: "web search provider".to_owned(),
+            name: crate::access_terms::QUERY_SEARCH_PROVIDER_LABEL.to_owned(),
             level: DoctorCheckLevel::Pass,
-            detail,
+            detail: provider_status.ready_detail(),
         };
     }
 
-    let detail = credential_summary
-        .map(|summary| {
-            format!(
-                "{provider_label}: {}. web.search will stay unavailable until the provider credential is supplied",
-                summary.value
-            )
-        })
-        .unwrap_or_else(|| provider_label.clone());
-
     DoctorCheck {
-        name: "web search provider".to_owned(),
+        name: crate::access_terms::QUERY_SEARCH_PROVIDER_LABEL.to_owned(),
         level: DoctorCheckLevel::Warn,
-        detail,
+        detail: provider_status.blocked_detail(false),
     }
 }
 
@@ -2327,42 +2187,6 @@ fn provider_model_probe_recovery_advice_for_checks(
     Some(recovery_advice)
 }
 
-async fn collect_browser_companion_doctor_checks(
-    config: &mvp::config::LoongConfig,
-) -> Vec<DoctorCheck> {
-    let Some(diagnostics) =
-        crate::browser_companion_diagnostics::collect_browser_companion_diagnostics(config).await
-    else {
-        return Vec::new();
-    };
-
-    let install_level = if diagnostics.install_ready() {
-        DoctorCheckLevel::Pass
-    } else {
-        DoctorCheckLevel::Warn
-    };
-    let mut checks = vec![DoctorCheck {
-        name: crate::browser_companion_diagnostics::BROWSER_COMPANION_INSTALL_CHECK_NAME.to_owned(),
-        level: install_level,
-        detail: diagnostics.install_detail(),
-    }];
-
-    if let Some(detail) = diagnostics.runtime_gate_detail() {
-        checks.push(DoctorCheck {
-            name: crate::browser_companion_diagnostics::BROWSER_COMPANION_RUNTIME_GATE_CHECK_NAME
-                .to_owned(),
-            level: if diagnostics.runtime_ready {
-                DoctorCheckLevel::Pass
-            } else {
-                DoctorCheckLevel::Warn
-            },
-            detail,
-        });
-    }
-
-    checks
-}
-
 pub fn resolve_secret_value(inline: Option<&str>, env_key: Option<&str>) -> Option<String> {
     if let Some(value) = inline.map(str::trim).filter(|value| !value.is_empty()) {
         return Some(value.to_owned());
@@ -2374,147 +2198,6 @@ pub fn resolve_secret_value(inline: Option<&str>, env_key: Option<&str>) -> Opti
         return None;
     }
     Some(trimmed.to_owned())
-}
-
-fn summarize_checks(checks: &[DoctorCheck]) -> DoctorSummary {
-    let mut pass = 0_usize;
-    let mut warn = 0_usize;
-    let mut fail = 0_usize;
-    for check in checks {
-        match check.level {
-            DoctorCheckLevel::Pass => pass += 1,
-            DoctorCheckLevel::Warn => warn += 1,
-            DoctorCheckLevel::Fail => fail += 1,
-        }
-    }
-    DoctorSummary { pass, warn, fail }
-}
-
-fn doctor_next_step_lines(next_steps: &[DoctorNextStep]) -> Vec<String> {
-    next_steps.iter().map(DoctorNextStep::render).collect()
-}
-
-fn doctor_next_step_actions(next_steps: &[DoctorNextStep]) -> Vec<DoctorNextStepAction> {
-    next_steps
-        .iter()
-        .filter_map(DoctorNextStep::as_action)
-        .cloned()
-        .collect()
-}
-
-fn doctor_primary_action_items(
-    next_steps: &[DoctorNextStep],
-    limit: usize,
-) -> Vec<mvp::tui_surface::TuiActionSpec> {
-    next_steps
-        .iter()
-        .filter_map(DoctorNextStep::as_action_spec)
-        .take(limit)
-        .collect()
-}
-
-fn doctor_followup_narrative_lines(
-    next_steps: &[DoctorNextStep],
-    primary_action_limit: usize,
-) -> Vec<String> {
-    let mut remaining_primary_actions = primary_action_limit;
-    let mut lines = Vec::new();
-
-    for step in next_steps {
-        if step.as_action().is_some() && remaining_primary_actions > 0 {
-            remaining_primary_actions -= 1;
-            continue;
-        }
-
-        lines.push(format!("- {}", step.render()));
-    }
-
-    lines
-}
-
-fn render_doctor_text(
-    checks: &[DoctorCheck],
-    summary: DoctorSummary,
-    fixes: &[String],
-    next_steps: &[DoctorNextStep],
-    config_path: &Path,
-    fix_requested: bool,
-) -> String {
-    let mut sections = Vec::new();
-    sections.push(mvp::tui_surface::TuiSectionSpec::Callout {
-        tone: if summary.fail == 0 {
-            mvp::tui_surface::TuiCalloutTone::Success
-        } else {
-            mvp::tui_surface::TuiCalloutTone::Warning
-        },
-        title: Some("summary".to_owned()),
-        lines: vec![format!(
-            "{} ok · {} warn · {} fail",
-            summary.pass, summary.warn, summary.fail
-        )],
-    });
-    sections.push(mvp::tui_surface::TuiSectionSpec::Checklist {
-        title: Some("checks".to_owned()),
-        items: checks
-            .iter()
-            .map(|check| mvp::tui_surface::TuiChecklistItemSpec {
-                status: match check.level {
-                    DoctorCheckLevel::Pass => mvp::tui_surface::TuiChecklistStatus::Pass,
-                    DoctorCheckLevel::Warn => mvp::tui_surface::TuiChecklistStatus::Warn,
-                    DoctorCheckLevel::Fail => mvp::tui_surface::TuiChecklistStatus::Fail,
-                },
-                label: check.name.clone(),
-                detail: check.detail.clone(),
-            })
-            .collect(),
-    });
-
-    let action_items = doctor_primary_action_items(next_steps, 3);
-    if !action_items.is_empty() {
-        sections.push(mvp::tui_surface::TuiSectionSpec::ActionGroup {
-            title: Some("start here".to_owned()),
-            inline_title_when_wide: false,
-            items: action_items,
-        });
-    }
-    if fix_requested {
-        let fix_lines = if fixes.is_empty() {
-            vec!["applied fixes: none".to_owned()]
-        } else {
-            fixes.iter().map(|fix| format!("- {fix}")).collect()
-        };
-        sections.push(mvp::tui_surface::TuiSectionSpec::Narrative {
-            title: Some("applied fixes".to_owned()),
-            lines: fix_lines,
-        });
-    }
-    let followup_lines = doctor_followup_narrative_lines(next_steps, 3);
-    if !followup_lines.is_empty() {
-        sections.push(mvp::tui_surface::TuiSectionSpec::Narrative {
-            title: Some("next actions".to_owned()),
-            lines: followup_lines,
-        });
-    }
-
-    let screen = mvp::tui_surface::TuiScreenSpec {
-        header_style: mvp::tui_surface::TuiHeaderStyle::Compact,
-        subtitle: Some("runtime health".to_owned()),
-        title: Some("doctor".to_owned()),
-        progress_line: None,
-        intro_lines: vec![format!("config={}", config_path.display())],
-        sections,
-        choices: Vec::new(),
-        footer_lines: vec![
-            "Use `loong doctor --json` for machine-readable diagnostics.".to_owned(),
-        ],
-    };
-
-    mvp::tui_surface::render_tui_screen_spec_ratatui(
-        &screen,
-        mvp::presentation::detect_render_width(),
-        false,
-    )
-    .join("\n")
 }
 
 fn check_level_json(level: DoctorCheckLevel) -> &'static str {
@@ -2746,16 +2429,13 @@ fn build_doctor_next_steps(
     fix_requested: bool,
 ) -> Vec<String> {
     let path_env = env::var_os("PATH");
-    build_doctor_next_step_items_with_path_env(
+    build_doctor_next_steps_with_path_env(
         checks,
         config_path,
         config,
         fix_requested,
         path_env.as_deref(),
     )
-    .iter()
-    .map(DoctorNextStep::render)
-    .collect()
 }
 
 #[cfg(test)]
@@ -2767,29 +2447,7 @@ fn build_doctor_next_steps_with_path_env(
     path_env: Option<&OsStr>,
 ) -> Vec<String> {
     let inventory = mvp::channel::channel_inventory(config);
-    build_doctor_next_step_items_with_channel_surfaces_and_path_env(
-        checks,
-        config_path,
-        config,
-        &inventory.channel_surfaces,
-        fix_requested,
-        path_env,
-    )
-    .iter()
-    .map(DoctorNextStep::render)
-    .collect()
-}
-
-#[cfg(test)]
-fn build_doctor_next_step_items_with_path_env(
-    checks: &[DoctorCheck],
-    config_path: &Path,
-    config: &mvp::config::LoongConfig,
-    fix_requested: bool,
-    path_env: Option<&OsStr>,
-) -> Vec<DoctorNextStep> {
-    let inventory = mvp::channel::channel_inventory(config);
-    build_doctor_next_step_items_with_channel_surfaces_and_path_env(
+    build_doctor_next_steps_with_channel_surfaces_and_path_env(
         checks,
         config_path,
         config,
@@ -2799,7 +2457,6 @@ fn build_doctor_next_step_items_with_path_env(
     )
 }
 
-#[cfg(test)]
 fn build_doctor_next_steps_with_channel_surfaces_and_path_env(
     checks: &[DoctorCheck],
     config_path: &Path,
@@ -2808,28 +2465,7 @@ fn build_doctor_next_steps_with_channel_surfaces_and_path_env(
     fix_requested: bool,
     path_env: Option<&OsStr>,
 ) -> Vec<String> {
-    build_doctor_next_step_items_with_channel_surfaces_and_path_env(
-        checks,
-        config_path,
-        config,
-        channel_surfaces,
-        fix_requested,
-        path_env,
-    )
-    .iter()
-    .map(DoctorNextStep::render)
-    .collect()
-}
-
-fn build_doctor_next_step_items_with_channel_surfaces_and_path_env(
-    checks: &[DoctorCheck],
-    config_path: &Path,
-    config: &mvp::config::LoongConfig,
-    channel_surfaces: &[mvp::channel::ChannelSurface],
-    fix_requested: bool,
-    path_env: Option<&OsStr>,
-) -> Vec<DoctorNextStep> {
-    let mut steps: Vec<DoctorNextStep> = Vec::new();
+    let mut steps = Vec::new();
     let config_path_display = config_path.display().to_string();
     let rerun_command =
         crate::cli_handoff::format_subcommand_with_config("doctor", &config_path_display);
@@ -2846,10 +2482,9 @@ fn build_doctor_next_step_items_with_channel_surfaces_and_path_env(
                 || check.name.ends_with("policy")
         })
     {
-        push_unique_action_step(
+        push_unique_step(
             &mut steps,
-            "Apply safe local repairs",
-            format!("{rerun_command} --fix"),
+            format!("Apply safe local repairs: {rerun_command} --fix"),
         );
     }
 
@@ -2955,29 +2590,16 @@ fn build_doctor_next_step_items_with_channel_surfaces_and_path_env(
         }
     }
 
-    if checks
-        .iter()
-        .any(|check| check.name == "web search provider" && check.level != DoctorCheckLevel::Pass)
-    {
-        let configured_provider = config.tools.web_search.default_provider.as_str();
-        let normalized_provider = mvp::config::normalize_web_search_provider(configured_provider);
-        let provider = normalized_provider.unwrap_or(mvp::config::DEFAULT_WEB_SEARCH_PROVIDER);
-        let descriptor = mvp::config::web_search_provider_descriptor(provider);
-        let default_env_name = descriptor.and_then(|value| value.default_api_key_env);
-
-        if let Some(default_env_name) = default_env_name {
-            push_unique_step(
-                &mut steps,
-                format!("Set web search credential in env: {default_env_name}"),
-            );
+    if checks.iter().any(|check| {
+        check.name == crate::access_terms::QUERY_SEARCH_PROVIDER_LABEL
+            && check.level != DoctorCheckLevel::Pass
+    }) {
+        for step in crate::query_search_guidance::query_search_repair_steps(
+            config,
+            rerun_onboard_command.as_str(),
+        ) {
+            push_unique_step(&mut steps, step);
         }
-
-        push_unique_step(
-            &mut steps,
-            format!(
-                "Or rerun onboarding to review the web search provider choice: {rerun_onboard_command}"
-            ),
-        );
     }
 
     let provider_model_probe_recovery =
@@ -3025,10 +2647,11 @@ fn build_doctor_next_step_items_with_channel_surfaces_and_path_env(
                 provider_model_probe_policy::ProviderModelProbeFailureKind::RequiresExplicitModel {
                     recommended_onboarding_model: Some(model),
                 } => {
-                    push_unique_action_step(
+                    push_unique_step(
                         &mut steps,
-                        format!("Rerun onboarding and accept reviewed model `{model}`"),
-                        &rerun_onboard_command,
+                        format!(
+                            "Rerun onboarding and accept reviewed model `{model}`: {rerun_onboard_command}"
+                        ),
                     );
                     push_unique_step(
                         &mut steps,
@@ -3093,41 +2716,6 @@ fn build_doctor_next_step_items_with_channel_surfaces_and_path_env(
         );
     }
 
-    if checks.iter().any(|check| {
-        check.name == crate::browser_companion_diagnostics::BROWSER_COMPANION_INSTALL_CHECK_NAME
-            && check.level != DoctorCheckLevel::Pass
-    }) {
-        push_unique_step(
-            &mut steps,
-            format!(
-                "Install or expose the browser companion command on PATH, then re-run: {rerun_command}"
-            ),
-        );
-        if checks.iter().any(|check| {
-            check.name == crate::browser_companion_diagnostics::BROWSER_COMPANION_INSTALL_CHECK_NAME
-                && check.detail.contains("expected_version=")
-        }) {
-            push_unique_step(
-                &mut steps,
-                "Align `tools.browser_companion.expected_version` with the installed companion build before retrying."
-                    .to_owned(),
-            );
-        }
-    }
-
-    if checks.iter().any(|check| {
-        check.name
-            == crate::browser_companion_diagnostics::BROWSER_COMPANION_RUNTIME_GATE_CHECK_NAME
-            && check.level != DoctorCheckLevel::Pass
-    }) {
-        push_unique_step(
-            &mut steps,
-            format!(
-                "Keep using the built-in browser lane, or disable `tools.browser_companion.enabled` until the managed companion runtime is ready, then re-run: {rerun_command}"
-            ),
-        );
-    }
-
     let runtime_snapshot_json_command = format!(
         "{} runtime snapshot --json --config {}",
         mvp::config::CLI_COMMAND_NAME,
@@ -3160,10 +2748,9 @@ fn build_doctor_next_step_items_with_channel_surfaces_and_path_env(
     if checks.iter().any(|check| {
         check.name == "runtime plugins inventory" && check.level != DoctorCheckLevel::Pass
     }) {
-        push_unique_action_step(
+        push_unique_step(
             &mut steps,
-            "Inspect runtime plugin inventory",
-            &runtime_snapshot_json_command,
+            format!("Inspect runtime plugin inventory: {runtime_snapshot_json_command}"),
         );
         push_unique_step(
             &mut steps,
@@ -3186,16 +2773,14 @@ fn build_doctor_next_step_items_with_channel_surfaces_and_path_env(
                     .any(|action| check.name.to_ascii_lowercase().contains(action.id)))
     }) {
         for action in &channel_actions {
-            push_unique_action_step(
+            push_unique_step(
                 &mut steps,
-                format!("Bring {} online", action.label),
-                action.command.clone(),
+                format!("Bring {} online: {}", action.label, action.command),
             );
         }
     }
 
     if doctor_ready_for_first_turn(checks) {
-        let mut browser_preview_needs_runtime_verify = false;
         for action in select_doctor_first_turn_actions(
             crate::next_actions::collect_setup_next_actions_with_path_env(
                 config,
@@ -3206,39 +2791,13 @@ fn build_doctor_next_step_items_with_channel_surfaces_and_path_env(
             let prefix = match action.kind {
                 crate::next_actions::SetupNextActionKind::Ask => "Get a first answer",
                 crate::next_actions::SetupNextActionKind::Chat => "Continue in chat",
-                crate::next_actions::SetupNextActionKind::Personalize => personalize_action_title(),
-                crate::next_actions::SetupNextActionKind::Channel => "Open a channel",
-                crate::next_actions::SetupNextActionKind::BrowserPreview => {
-                    match action.browser_preview_phase {
-                        Some(crate::next_actions::BrowserPreviewActionPhase::Enable) => {
-                            "Optional browser preview"
-                        }
-                        Some(crate::next_actions::BrowserPreviewActionPhase::Unblock) => {
-                            "Unblock browser preview"
-                        }
-                        Some(crate::next_actions::BrowserPreviewActionPhase::InstallRuntime) => {
-                            "Install browser preview runtime"
-                        }
-                        Some(crate::next_actions::BrowserPreviewActionPhase::Ready) | None => {
-                            "Try browser companion preview"
-                        }
-                    }
+                crate::next_actions::SetupNextActionKind::Personalize => {
+                    "Set your working preferences"
                 }
+                crate::next_actions::SetupNextActionKind::Channel => "Open a channel",
                 crate::next_actions::SetupNextActionKind::Doctor => "Run diagnostics",
             };
-            if action.kind == crate::next_actions::SetupNextActionKind::BrowserPreview
-                && action.browser_preview_phase
-                    == Some(crate::next_actions::BrowserPreviewActionPhase::InstallRuntime)
-            {
-                browser_preview_needs_runtime_verify = true;
-            }
-            push_unique_action_step(&mut steps, prefix, action.command);
-        }
-        if browser_preview_needs_runtime_verify {
-            push_unique_step(
-                &mut steps,
-                crate::browser_preview::browser_preview_verify_step(),
-            );
+            push_unique_step(&mut steps, format!("{prefix}: {}", action.command));
         }
     }
 
@@ -3247,14 +2806,14 @@ fn build_doctor_next_step_items_with_channel_surfaces_and_path_env(
             .iter()
             .any(|check| check.level != DoctorCheckLevel::Pass)
     {
-        push_unique_action_step(&mut steps, "Re-run diagnostics", rerun_command);
+        push_unique_step(&mut steps, format!("Re-run diagnostics: {rerun_command}"));
     }
 
     steps
 }
 
 fn push_managed_bridge_discovery_next_steps(
-    steps: &mut Vec<DoctorNextStep>,
+    steps: &mut Vec<String>,
     channel_surfaces: &[mvp::channel::ChannelSurface],
     rerun_command: &str,
 ) {
@@ -3284,19 +2843,18 @@ fn push_managed_bridge_discovery_next_steps(
     }
 
     let has_managed_bridge_guidance = steps.iter().any(|step| {
-        let rendered = step.render();
-        rendered.contains("Resolve managed bridge ambiguity")
-            || rendered.contains("Fix managed bridge selection")
-            || rendered.contains("Complete managed bridge setup")
+        step.contains("Resolve managed bridge ambiguity")
+            || step.contains("Fix managed bridge selection")
+            || step.contains("Complete managed bridge setup")
     });
 
     if has_managed_bridge_guidance {
-        push_unique_action_step(steps, "Re-run diagnostics", rerun_command);
+        push_unique_step(steps, format!("Re-run diagnostics: {rerun_command}"));
     }
 }
 
 fn push_managed_bridge_selection_next_step(
-    steps: &mut Vec<DoctorNextStep>,
+    steps: &mut Vec<String>,
     surface: &mvp::channel::ChannelSurface,
     discovery: &mvp::channel::ChannelPluginBridgeDiscovery,
 ) {
@@ -3349,7 +2907,7 @@ fn push_managed_bridge_selection_next_step(
 }
 
 fn push_managed_bridge_ambiguity_next_step(
-    steps: &mut Vec<DoctorNextStep>,
+    steps: &mut Vec<String>,
     surface: &mvp::channel::ChannelSurface,
     discovery: &mvp::channel::ChannelPluginBridgeDiscovery,
 ) {
@@ -3381,7 +2939,7 @@ fn push_managed_bridge_ambiguity_next_step(
 }
 
 fn push_managed_bridge_incomplete_setup_next_steps(
-    steps: &mut Vec<DoctorNextStep>,
+    steps: &mut Vec<String>,
     surface: &mvp::channel::ChannelSurface,
     discovery: &mvp::channel::ChannelPluginBridgeDiscovery,
 ) {
@@ -3571,16 +3129,10 @@ fn select_doctor_first_turn_actions(
         action.kind == crate::next_actions::SetupNextActionKind::Chat
     });
     push_first_matching_action(&mut prioritized, &actions, |action| {
-        is_repair_priority_browser_preview_action(action)
-    });
-    push_first_matching_action(&mut prioritized, &actions, |action| {
         action.kind == crate::next_actions::SetupNextActionKind::Personalize
     });
     push_first_matching_action(&mut prioritized, &actions, |action| {
         is_channel_catalog_action(action)
-    });
-    push_first_matching_action(&mut prioritized, &actions, |action| {
-        is_general_browser_preview_action(action)
     });
 
     for action in actions {
@@ -3603,31 +3155,6 @@ fn is_channel_catalog_action(action: &crate::next_actions::SetupNextAction) -> b
     let channel_action_id = action.channel_action_id;
     *kind == crate::next_actions::SetupNextActionKind::Channel
         && channel_action_id == Some(crate::migration::channels::CHANNEL_CATALOG_ACTION_ID)
-}
-
-fn is_repair_priority_browser_preview_action(
-    action: &crate::next_actions::SetupNextAction,
-) -> bool {
-    let kind = &action.kind;
-    let phase = action.browser_preview_phase;
-    *kind == crate::next_actions::SetupNextActionKind::BrowserPreview
-        && matches!(
-            phase,
-            Some(crate::next_actions::BrowserPreviewActionPhase::Unblock)
-                | Some(crate::next_actions::BrowserPreviewActionPhase::InstallRuntime)
-        )
-}
-
-fn is_general_browser_preview_action(action: &crate::next_actions::SetupNextAction) -> bool {
-    let kind = &action.kind;
-    let phase = action.browser_preview_phase;
-    let is_browser_preview = *kind == crate::next_actions::SetupNextActionKind::BrowserPreview;
-    let is_general_phase = matches!(
-        phase,
-        Some(crate::next_actions::BrowserPreviewActionPhase::Ready)
-            | Some(crate::next_actions::BrowserPreviewActionPhase::Enable)
-    );
-    is_browser_preview && is_general_phase
 }
 
 fn push_first_matching_action<F>(
@@ -3654,45 +3181,18 @@ fn push_unique_action(
     }
 }
 
-fn push_unique_step(steps: &mut Vec<DoctorNextStep>, step: impl Into<DoctorNextStep>) {
-    let step = step.into();
-    let rendered = step.render();
-    if !steps.iter().any(|existing| existing.render() == rendered) {
+fn push_unique_step(steps: &mut Vec<String>, step: String) {
+    if !steps.iter().any(|existing| existing == &step) {
         steps.push(step);
     }
 }
 
 #[cfg(test)]
-fn merge_doctor_next_steps<I>(mut steps: Vec<String>, supplemental_steps: I) -> Vec<String>
-where
-    I: IntoIterator<Item = String>,
-{
-    for step in supplemental_steps {
-        if !steps.iter().any(|existing| existing == &step) {
-            steps.push(step);
-        }
-    }
-    steps
-}
-
-fn push_unique_action_step(
-    steps: &mut Vec<DoctorNextStep>,
-    label: impl Into<String>,
-    command: impl Into<String>,
-) {
-    push_unique_step(steps, DoctorNextStep::action(label, command));
-}
-
-#[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
-    #[cfg(unix)]
-    use std::ffi::OsString;
     use std::fs::Permissions;
     #[cfg(unix)]
     use std::path::{Path, PathBuf};
-    #[cfg(unix)]
-    use std::sync::MutexGuard;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -3706,14 +3206,14 @@ mod tests {
         ChannelStatusSnapshot,
     };
 
-    fn browser_companion_temp_dir(label: &str) -> PathBuf {
+    fn runtime_plugin_temp_dir(label: &str) -> PathBuf {
         static NEXT_TEMP_DIR_SEED: AtomicU64 = AtomicU64::new(1);
         let seed = NEXT_TEMP_DIR_SEED.fetch_add(1, Ordering::Relaxed);
         let temp_dir = std::env::temp_dir().join(format!(
-            "loong-browser-companion-doctor-{label}-{}-{seed}",
+            "loong-runtime-plugin-doctor-{label}-{}-{seed}",
             std::process::id()
         ));
-        std::fs::create_dir_all(&temp_dir).expect("create browser companion temp dir");
+        std::fs::create_dir_all(&temp_dir).expect("create runtime plugin temp dir");
         temp_dir
     }
 
@@ -3816,14 +3316,12 @@ mod tests {
             crate::next_actions::SetupNextAction {
                 kind: crate::next_actions::SetupNextActionKind::Doctor,
                 channel_action_id: None,
-                browser_preview_phase: None,
                 label: "verify managed bridges".to_owned(),
                 command: "loong doctor --config '/tmp/loong-config.toml'".to_owned(),
             },
             crate::next_actions::SetupNextAction {
                 kind: crate::next_actions::SetupNextActionKind::Channel,
                 channel_action_id: Some(crate::migration::channels::CHANNEL_CATALOG_ACTION_ID),
-                browser_preview_phase: None,
                 label: "channels".to_owned(),
                 command: "loong channels --config '/tmp/loong-config.toml'".to_owned(),
             },
@@ -3916,12 +3414,6 @@ mod tests {
             .expect("write managed bridge plugin manifest");
     }
 
-    #[cfg(unix)]
-    struct BrowserCompanionEnvGuard {
-        _lock: MutexGuard<'static, ()>,
-        saved_ready: Option<OsString>,
-    }
-
     struct PermissionRestore {
         path: PathBuf,
         permissions: Permissions,
@@ -3937,87 +3429,6 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::set_permissions(&self.path, self.permissions.clone());
         }
-    }
-
-    fn set_browser_companion_env_var(key: &str, value: &str) {
-        // SAFETY: daemon tests serialize process env mutations behind
-        // `lock_daemon_test_environment`, so no concurrent env readers/writers
-        // observe racy updates while these tests run.
-        #[allow(unsafe_code, clippy::disallowed_methods)]
-        unsafe {
-            std::env::set_var(key, value);
-        }
-    }
-
-    #[cfg(unix)]
-    fn remove_browser_companion_env_var(key: &str) {
-        // SAFETY: daemon tests serialize process env mutations behind
-        // `lock_daemon_test_environment`, so removing the variable here is
-        // coordinated with all other env-mutating daemon tests.
-        #[allow(unsafe_code, clippy::disallowed_methods)]
-        unsafe {
-            std::env::remove_var(key);
-        }
-    }
-
-    #[cfg(unix)]
-    impl BrowserCompanionEnvGuard {
-        fn runtime_gate_closed() -> Self {
-            Self::set_ready(None)
-        }
-
-        fn runtime_gate_open() -> Self {
-            Self::set_ready(Some("true"))
-        }
-
-        fn set_ready(value: Option<&str>) -> Self {
-            let lock = crate::test_support::lock_daemon_test_environment();
-            let key = "LOONG_BROWSER_COMPANION_READY";
-            let saved_ready = std::env::var_os(key);
-            match value {
-                Some(value) => set_browser_companion_env_var(key, value),
-                None => remove_browser_companion_env_var(key),
-            }
-            Self {
-                _lock: lock,
-                saved_ready,
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for BrowserCompanionEnvGuard {
-        fn drop(&mut self) {
-            let key = "LOONG_BROWSER_COMPANION_READY";
-            match self.saved_ready.take() {
-                Some(value) => set_browser_companion_env_var(key, &value.to_string_lossy()),
-                None => remove_browser_companion_env_var(key),
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    fn rustc_version_probe() -> (String, String, String, String) {
-        let output = std::process::Command::new("rustc")
-            .arg("--version")
-            .output()
-            .expect("run rustc --version");
-        let observed_version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        let exact_version = observed_version
-            .split_whitespace()
-            .nth(1)
-            .expect("rustc --version should include a semantic version")
-            .to_owned();
-        let version_components = exact_version.split('.').collect::<Vec<_>>();
-        let partial_version =
-            version_components[..version_components.len().saturating_sub(1)].join(".");
-
-        (
-            "rustc".to_owned(),
-            observed_version,
-            exact_version,
-            partial_version,
-        )
     }
 
     #[test]
@@ -4133,7 +3544,7 @@ mod tests {
 
     #[test]
     fn check_channel_surfaces_reports_managed_bridge_discovery_for_compatible_plugins() {
-        let install_root = browser_companion_temp_dir("managed-bridge-compatible");
+        let install_root = runtime_plugin_temp_dir("managed-bridge-compatible");
         let manifest = managed_bridge_manifest(
             "weixin",
             Some("channel"),
@@ -4151,7 +3562,7 @@ mod tests {
 
         write_managed_bridge_manifest(install_root.as_path(), "weixin-managed-bridge", &manifest);
 
-        config.external_skills.install_root = Some(install_root.display().to_string());
+        config.skills.install_root = Some(install_root.display().to_string());
 
         let checks = check_channel_surfaces(&config);
 
@@ -4168,7 +3579,7 @@ mod tests {
 
     #[test]
     fn check_channel_surfaces_warns_when_managed_bridge_discovery_is_ambiguous() {
-        let install_root = browser_companion_temp_dir("managed-bridge-ambiguous");
+        let install_root = runtime_plugin_temp_dir("managed-bridge-ambiguous");
         let first_plugin_directory = "weixin-bridge-a";
         let second_plugin_directory = "weixin-bridge-b";
         let mut first_manifest = managed_bridge_manifest(
@@ -4205,7 +3616,7 @@ mod tests {
             &second_manifest,
         );
 
-        config.external_skills.install_root = Some(install_root.display().to_string());
+        config.skills.install_root = Some(install_root.display().to_string());
 
         let checks = check_channel_surfaces(&config);
 
@@ -4226,7 +3637,7 @@ mod tests {
 
     #[test]
     fn check_channel_surfaces_warns_when_configured_managed_bridge_plugin_id_is_duplicated() {
-        let install_root = browser_companion_temp_dir("managed-bridge-selection-duplicated");
+        let install_root = runtime_plugin_temp_dir("managed-bridge-selection-duplicated");
         let mut first_manifest = managed_bridge_manifest(
             "weixin",
             Some("channel"),
@@ -4253,7 +3664,7 @@ mod tests {
 
         write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-a", &first_manifest);
         write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-b", &second_manifest);
-        config.external_skills.install_root = Some(install_root.display().to_string());
+        config.skills.install_root = Some(install_root.display().to_string());
 
         let checks = check_channel_surfaces(&config);
 
@@ -4271,7 +3682,7 @@ mod tests {
 
     #[test]
     fn check_channel_surfaces_warns_when_managed_bridge_discovery_only_finds_incomplete_plugins() {
-        let install_root = browser_companion_temp_dir("managed-bridge-incomplete");
+        let install_root = runtime_plugin_temp_dir("managed-bridge-incomplete");
         let mut metadata = compatible_managed_bridge_metadata(
             "qq_official_bot_gateway_or_plugin_bridge",
             "qqbot_reply_loop",
@@ -4295,14 +3706,14 @@ mod tests {
 
         write_managed_bridge_manifest(install_root.as_path(), "qqbot-incomplete-bridge", &manifest);
 
-        config.external_skills.install_root = Some(install_root.display().to_string());
+        config.skills.install_root = Some(install_root.display().to_string());
 
         let _ = check_channel_surfaces(&config);
     }
 
     #[test]
     fn check_channel_surfaces_detail_includes_managed_bridge_setup_guidance() {
-        let install_root = browser_companion_temp_dir("managed-bridge-setup-guidance");
+        let install_root = runtime_plugin_temp_dir("managed-bridge-setup-guidance");
         let mut metadata = compatible_managed_bridge_metadata(
             "qq_official_bot_gateway_or_plugin_bridge",
             "qqbot_reply_loop",
@@ -4335,7 +3746,7 @@ mod tests {
         );
 
         write_managed_bridge_manifest(install_root.as_path(), "qqbot-bridge-guided", &manifest);
-        config.external_skills.install_root = Some(install_root.display().to_string());
+        config.skills.install_root = Some(install_root.display().to_string());
 
         let _ = check_channel_surfaces(&config);
     }
@@ -4990,7 +4401,7 @@ mod tests {
 
     #[test]
     fn audit_integrity_doctor_check_passes_for_valid_chain() {
-        let temp_dir = browser_companion_temp_dir("audit-integrity-valid");
+        let temp_dir = runtime_plugin_temp_dir("audit-integrity-valid");
         let journal_path = temp_dir.join("events.jsonl");
         let sink = kernel::JsonlAuditSink::new(journal_path.clone()).expect("create jsonl sink");
 
@@ -5017,7 +4428,7 @@ mod tests {
 
     #[test]
     fn audit_integrity_doctor_check_fails_for_tampered_chain() {
-        let temp_dir = browser_companion_temp_dir("audit-integrity-tampered");
+        let temp_dir = runtime_plugin_temp_dir("audit-integrity-tampered");
         let journal_path = temp_dir.join("events.jsonl");
         let sink = kernel::JsonlAuditSink::new(journal_path.clone()).expect("create jsonl sink");
 
@@ -5121,7 +4532,7 @@ mod tests {
 
     #[test]
     fn audit_retention_doctor_check_fails_when_durable_path_is_directory() {
-        let temp_dir = browser_companion_temp_dir("audit-target-directory");
+        let temp_dir = runtime_plugin_temp_dir("audit-target-directory");
         let check = audit_retention_doctor_check(&mvp::config::AuditConfig {
             mode: mvp::config::AuditMode::Fanout,
             path: temp_dir.display().to_string(),
@@ -5135,7 +4546,7 @@ mod tests {
 
     #[test]
     fn audit_retention_doctor_check_fails_when_durable_path_is_readonly_file() {
-        let temp_dir = browser_companion_temp_dir("audit-target-readonly");
+        let temp_dir = runtime_plugin_temp_dir("audit-target-readonly");
         let journal_path = temp_dir.join("events.jsonl");
         std::fs::write(&journal_path, b"{}\n").expect("write audit journal fixture");
         let original_permissions = std::fs::metadata(&journal_path)
@@ -5161,7 +4572,7 @@ mod tests {
 
     #[test]
     fn audit_retention_doctor_check_fails_when_parent_path_is_not_a_directory() {
-        let temp_dir = browser_companion_temp_dir("audit-target-parent-not-directory");
+        let temp_dir = runtime_plugin_temp_dir("audit-target-parent-not-directory");
         let blocked_parent = temp_dir.join("readonly-audit");
         std::fs::write(&blocked_parent, b"not a directory").expect("create blocking parent file");
 
@@ -5185,7 +4596,7 @@ mod tests {
 
     #[test]
     fn audit_retention_doctor_check_fails_when_missing_parent_chain_runs_into_file_boundary() {
-        let temp_dir = browser_companion_temp_dir("audit-target-missing-parent-chain");
+        let temp_dir = runtime_plugin_temp_dir("audit-target-missing-parent-chain");
         let blocked_parent = temp_dir.join("readonly-audit");
         std::fs::write(&blocked_parent, b"not a directory").expect("create blocking parent file");
 
@@ -5209,7 +4620,7 @@ mod tests {
 
     #[test]
     fn audit_retention_doctor_check_cleans_up_probe_artifacts_for_creatable_missing_path() {
-        let temp_dir = browser_companion_temp_dir("audit-target-cleanup");
+        let temp_dir = runtime_plugin_temp_dir("audit-target-cleanup");
         let journal_path = temp_dir.join("nested").join("events.jsonl");
 
         let check = audit_retention_doctor_check(&mvp::config::AuditConfig {
@@ -6117,7 +5528,7 @@ mod tests {
 
     #[test]
     fn build_doctor_next_steps_guides_managed_bridge_incomplete_setup() {
-        let install_root = browser_companion_temp_dir("managed-bridge-next-steps-incomplete");
+        let install_root = runtime_plugin_temp_dir("managed-bridge-next-steps-incomplete");
         let mut metadata =
             compatible_managed_bridge_metadata("wechat_clawbot_ilink_bridge", "weixin_reply_loop");
         let removed_transport_family = metadata.remove("transport_family");
@@ -6146,7 +5557,7 @@ mod tests {
         );
 
         write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-guided", &manifest);
-        config.external_skills.install_root = Some(install_root.display().to_string());
+        config.skills.install_root = Some(install_root.display().to_string());
 
         let checks = check_channel_surfaces(&config);
         let next_steps = build_doctor_next_steps_with_path_env(
@@ -6165,7 +5576,7 @@ mod tests {
 
     #[test]
     fn build_doctor_next_steps_guides_managed_bridge_ambiguity_resolution() {
-        let install_root = browser_companion_temp_dir("managed-bridge-next-steps-ambiguity");
+        let install_root = runtime_plugin_temp_dir("managed-bridge-next-steps-ambiguity");
         let mut first_manifest = managed_bridge_manifest(
             "weixin",
             Some("channel"),
@@ -6191,7 +5602,7 @@ mod tests {
 
         write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-a", &first_manifest);
         write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-b", &second_manifest);
-        config.external_skills.install_root = Some(install_root.display().to_string());
+        config.skills.install_root = Some(install_root.display().to_string());
 
         let checks = check_channel_surfaces(&config);
         let next_steps = build_doctor_next_steps_with_path_env(
@@ -6215,7 +5626,7 @@ mod tests {
 
     #[test]
     fn check_channel_surfaces_warns_when_configured_managed_bridge_plugin_id_is_missing() {
-        let install_root = browser_companion_temp_dir("managed-bridge-selection-missing");
+        let install_root = runtime_plugin_temp_dir("managed-bridge-selection-missing");
         let mut first_manifest = managed_bridge_manifest(
             "weixin",
             Some("channel"),
@@ -6242,7 +5653,7 @@ mod tests {
 
         write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-a", &first_manifest);
         write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-b", &second_manifest);
-        config.external_skills.install_root = Some(install_root.display().to_string());
+        config.skills.install_root = Some(install_root.display().to_string());
 
         let checks = check_channel_surfaces(&config);
 
@@ -6258,7 +5669,7 @@ mod tests {
 
     #[test]
     fn check_channel_surfaces_summarizes_multi_account_bridge_state_in_discovery_detail() {
-        let install_root = browser_companion_temp_dir("managed-bridge-discovery-multi-account");
+        let install_root = runtime_plugin_temp_dir("managed-bridge-discovery-multi-account");
         let manifest = managed_bridge_manifest(
             "weixin",
             Some("channel"),
@@ -6286,7 +5697,7 @@ mod tests {
         .expect("deserialize weixin config");
 
         write_managed_bridge_manifest(install_root.as_path(), "weixin-managed-bridge", &manifest);
-        config.external_skills.install_root = Some(install_root.display().to_string());
+        config.skills.install_root = Some(install_root.display().to_string());
 
         let checks = check_channel_surfaces(&config);
 
@@ -6305,7 +5716,7 @@ mod tests {
 
     #[test]
     fn doctor_json_checks_include_plugin_bridge_account_summary_for_mixed_multi_account_surface() {
-        let install_root = browser_companion_temp_dir("managed-bridge-json-multi-account");
+        let install_root = runtime_plugin_temp_dir("managed-bridge-json-multi-account");
         let manifest = managed_bridge_manifest(
             "weixin",
             Some("channel"),
@@ -6333,7 +5744,7 @@ mod tests {
         .expect("deserialize weixin config");
 
         write_managed_bridge_manifest(install_root.as_path(), "weixin-managed-bridge", &manifest);
-        config.external_skills.install_root = Some(install_root.display().to_string());
+        config.skills.install_root = Some(install_root.display().to_string());
 
         let inventory = mvp::channel::channel_inventory(&config);
         let checks = collect_channel_surface_checks(&inventory);
@@ -6389,68 +5800,8 @@ mod tests {
     }
 
     #[test]
-    fn doctor_json_payload_surfaces_structured_compaction_hygiene_block() {
-        let summary = DoctorSummary {
-            pass: 1,
-            warn: 1,
-            fail: 1,
-        };
-        let payload = build_doctor_json_payload(
-            &summary,
-            "/tmp/loong.toml",
-            vec![json!({
-                "name": "context compaction hygiene",
-                "level": "fail",
-                "detail": "broken continuity"
-            })],
-            json!({
-                "enabled": true,
-                "level": "fail",
-                "detail": "enabled=true continuity=broken",
-                "signal": {
-                    "metrics": {
-                        "continuity_health": "broken",
-                        "continuity_repairability": "retryable",
-                        "recovery_posture": "retry_exhausted"
-                    }
-                },
-                "next_steps": [
-                    "Inspect runtime compaction hygiene evidence: loong runtime snapshot --json --config '/tmp/loong.toml'"
-                ]
-            }),
-            false,
-            Vec::new(),
-            vec!["Re-run diagnostics: loong doctor --config '/tmp/loong.toml'".to_owned()],
-            vec![DoctorNextStepAction {
-                label: "Re-run diagnostics".to_owned(),
-                command: "loong doctor --config '/tmp/loong.toml'".to_owned(),
-            }],
-        );
-
-        assert_eq!(payload["schema"]["surface"], "doctor");
-        assert_eq!(payload["compaction_hygiene"]["level"], "fail");
-        assert_eq!(
-            payload["compaction_hygiene"]["signal"]["metrics"]["continuity_health"],
-            "broken"
-        );
-        assert_eq!(
-            payload["compaction_hygiene"]["signal"]["metrics"]["continuity_repairability"],
-            "retryable"
-        );
-        assert_eq!(
-            payload["compaction_hygiene"]["signal"]["metrics"]["recovery_posture"],
-            "retry_exhausted"
-        );
-        assert_eq!(
-            payload["next_step_actions"][0]["label"],
-            "Re-run diagnostics"
-        );
-    }
-
-    #[test]
     fn build_doctor_next_steps_guides_missing_managed_bridge_selection_resolution() {
-        let install_root =
-            browser_companion_temp_dir("managed-bridge-next-steps-selection-missing");
+        let install_root = runtime_plugin_temp_dir("managed-bridge-next-steps-selection-missing");
         let mut first_manifest = managed_bridge_manifest(
             "weixin",
             Some("channel"),
@@ -6477,7 +5828,7 @@ mod tests {
 
         write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-a", &first_manifest);
         write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-b", &second_manifest);
-        config.external_skills.install_root = Some(install_root.display().to_string());
+        config.skills.install_root = Some(install_root.display().to_string());
 
         let checks = check_channel_surfaces(&config);
         let next_steps = build_doctor_next_steps_with_path_env(
@@ -6501,7 +5852,7 @@ mod tests {
     #[test]
     fn build_doctor_next_steps_guides_duplicate_managed_bridge_selection_resolution() {
         let install_root =
-            browser_companion_temp_dir("managed-bridge-next-steps-selection-duplicated");
+            runtime_plugin_temp_dir("managed-bridge-next-steps-selection-duplicated");
         let mut first_manifest = managed_bridge_manifest(
             "weixin",
             Some("channel"),
@@ -6528,7 +5879,7 @@ mod tests {
 
         write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-a", &first_manifest);
         write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-b", &second_manifest);
-        config.external_skills.install_root = Some(install_root.display().to_string());
+        config.skills.install_root = Some(install_root.display().to_string());
 
         let checks = check_channel_surfaces(&config);
         let next_steps = build_doctor_next_steps_with_path_env(
@@ -6553,7 +5904,7 @@ mod tests {
 
     #[test]
     fn build_doctor_next_steps_with_channel_surfaces_keeps_managed_bridge_snapshot_stable() {
-        let install_root = browser_companion_temp_dir("managed-bridge-next-steps-snapshot");
+        let install_root = runtime_plugin_temp_dir("managed-bridge-next-steps-snapshot");
         let mut first_manifest = managed_bridge_manifest(
             "weixin",
             Some("channel"),
@@ -6579,7 +5930,7 @@ mod tests {
 
         write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-a", &first_manifest);
         write_managed_bridge_manifest(install_root.as_path(), "weixin-bridge-b", &second_manifest);
-        config.external_skills.install_root = Some(install_root.display().to_string());
+        config.skills.install_root = Some(install_root.display().to_string());
 
         let checks = check_channel_surfaces(&config);
         let inventory = mvp::channel::channel_inventory(&config);
@@ -6633,30 +5984,6 @@ mod tests {
     }
 
     #[test]
-    fn merge_doctor_next_steps_keeps_compaction_hygiene_follow_up_commands_stable() {
-        let next_steps = merge_doctor_next_steps(
-            vec!["Re-run diagnostics: loong doctor --config '/tmp/loong.toml'".to_owned()],
-            vec![
-                "Inspect runtime compaction hygiene evidence: loong runtime snapshot --json --config '/tmp/loong.toml'".to_owned(),
-                "Review recent session checkpoint summaries and continuity signals: loong sessions --config '/tmp/loong.toml'".to_owned(),
-            ],
-        );
-
-        assert!(
-            next_steps.iter().any(|step| {
-                step == "Inspect runtime compaction hygiene evidence: loong runtime snapshot --json --config '/tmp/loong.toml'"
-            }),
-            "doctor should keep compaction hygiene follow-up anchored to runtime snapshot: {next_steps:#?}"
-        );
-        assert!(
-            next_steps.iter().any(|step| {
-                step == "Review recent session checkpoint summaries and continuity signals: loong sessions --config '/tmp/loong.toml'"
-            }),
-            "doctor should keep compaction hygiene follow-up anchored to session checkpoint summaries: {next_steps:#?}"
-        );
-    }
-
-    #[test]
     fn provider_credentials_doctor_check_adds_volcengine_auth_guidance() {
         let mut config = mvp::config::LoongConfig::default();
         config.provider.kind = mvp::config::ProviderKind::Volcengine;
@@ -6695,6 +6022,24 @@ mod tests {
     }
 
     #[test]
+    fn provider_credentials_doctor_check_reports_x_api_key_env_credentials() {
+        let mut env = ScopedEnv::new();
+        env.set("ANTHROPIC_API_KEY", "test-anthropic-key");
+        let mut config = mvp::config::LoongConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Anthropic;
+        config.provider.api_key = None;
+        config.provider.api_key_env = None;
+        config.provider.oauth_access_token = None;
+        config.provider.oauth_access_token_env = None;
+
+        let check = provider_credentials_doctor_check(&config, true);
+
+        assert_eq!(check.name, "provider credentials");
+        assert_eq!(check.level, DoctorCheckLevel::Pass);
+        assert!(check.detail.contains("ANTHROPIC_API_KEY is available"));
+    }
+
+    #[test]
     fn web_search_provider_doctor_check_warns_when_firecrawl_credential_is_missing() {
         let mut env = ScopedEnv::new();
         let mut config = mvp::config::LoongConfig::default();
@@ -6707,7 +6052,7 @@ mod tests {
 
         let check = web_search_provider_doctor_check(&config);
 
-        assert_eq!(check.name, "web search provider");
+        assert_eq!(check.name, crate::access_terms::QUERY_SEARCH_PROVIDER_LABEL);
         assert_eq!(check.level, DoctorCheckLevel::Warn);
         assert!(check.detail.contains("Firecrawl Search"));
         assert!(check.detail.contains("FIRECRAWL_API_KEY"));
@@ -6727,7 +6072,7 @@ mod tests {
 
         let check = web_search_provider_doctor_check(&config);
 
-        assert_eq!(check.name, "web search provider");
+        assert_eq!(check.name, crate::access_terms::QUERY_SEARCH_PROVIDER_LABEL);
         assert_eq!(check.level, DoctorCheckLevel::Pass);
         assert!(check.detail.contains("Firecrawl Search"));
         assert!(check.detail.contains("FIRECRAWL_API_KEY"));
@@ -6743,9 +6088,25 @@ mod tests {
 
         let check = web_search_provider_doctor_check(&config);
 
-        assert_eq!(check.name, "web search provider");
+        assert_eq!(check.name, crate::access_terms::QUERY_SEARCH_PROVIDER_LABEL);
         assert_eq!(check.level, DoctorCheckLevel::Pass);
         assert_eq!(check.detail, "tools.web_search.enabled=false");
+    }
+
+    #[test]
+    fn web_search_provider_doctor_check_passes_when_openai_native_search_is_available() {
+        let mut config = mvp::config::LoongConfig::default();
+        config.provider.kind = mvp::config::ProviderKind::Openai;
+        config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+        config.tools.web_search.default_provider =
+            mvp::config::WEB_SEARCH_PROVIDER_TAVILY.to_owned();
+        config.tools.web_search.tavily_api_key = Some("${TAVILY_API_KEY}".to_owned());
+
+        let check = web_search_provider_doctor_check(&config);
+
+        assert_eq!(check.name, crate::access_terms::QUERY_SEARCH_PROVIDER_LABEL);
+        assert_eq!(check.level, DoctorCheckLevel::Pass);
+        assert_eq!(check.detail, "OpenAI Responses native web search");
     }
 
     #[test]
@@ -6777,55 +6138,9 @@ mod tests {
     }
 
     #[test]
-    fn build_doctor_next_steps_guides_browser_companion_repair() {
-        let checks = vec![DoctorCheck {
-            name: "browser companion install".to_owned(),
-            level: DoctorCheckLevel::Warn,
-            detail: "command `loong-browser-companion` was not found on PATH".to_owned(),
-        }];
-        let next_steps = build_doctor_next_steps_with_path_env(
-            &checks,
-            Path::new("/tmp/loong.toml"),
-            &mvp::config::LoongConfig::default(),
-            false,
-            Some(std::ffi::OsStr::new("")),
-        );
-
-        assert!(
-            next_steps.iter().any(|step| {
-                step == "Install or expose the browser companion command on PATH, then re-run: loong doctor --config '/tmp/loong.toml'"
-            }),
-            "doctor should turn browser companion warnings into a concrete repair path: {next_steps:#?}"
-        );
-    }
-
-    #[test]
-    fn build_doctor_next_steps_guides_browser_companion_version_alignment() {
-        let checks = vec![DoctorCheck {
-            name: "browser companion install".to_owned(),
-            level: DoctorCheckLevel::Warn,
-            detail: "command `browser-companion` responded, but expected_version=1.5.0 observed_version=loong-browser-companion 1.4.0".to_owned(),
-        }];
-        let next_steps = build_doctor_next_steps_with_path_env(
-            &checks,
-            Path::new("/tmp/loong.toml"),
-            &mvp::config::LoongConfig::default(),
-            false,
-            Some(std::ffi::OsStr::new("")),
-        );
-
-        assert!(
-            next_steps.iter().any(|step| {
-                step == "Align `tools.browser_companion.expected_version` with the installed companion build before retrying."
-            }),
-            "doctor should guide expected_version alignment when the companion install check reports a mismatch: {next_steps:#?}"
-        );
-    }
-
-    #[test]
     fn build_doctor_next_steps_guides_missing_web_search_credentials() {
         let checks = vec![DoctorCheck {
-            name: "web search provider".to_owned(),
+            name: crate::access_terms::QUERY_SEARCH_PROVIDER_LABEL.to_owned(),
             level: DoctorCheckLevel::Warn,
             detail: "Firecrawl Search: FIRECRAWL_API_KEY (expected). web.search will stay unavailable until the provider credential is supplied".to_owned(),
         }];
@@ -6844,120 +6159,20 @@ mod tests {
         );
         let rerun_onboard_command =
             crate::cli_handoff::format_subcommand_with_config("onboard", "/tmp/loong.toml");
-        let expected_onboard_step = format!(
-            "Or rerun onboarding to review the web search provider choice: {rerun_onboard_command}"
+        let expected_onboard_step = crate::access_terms::review_query_search_provider_choice_step(
+            rerun_onboard_command.as_str(),
         );
 
         assert!(
-            next_steps
-                .iter()
-                .any(|step| step == "Set web search credential in env: FIRECRAWL_API_KEY"),
+            next_steps.iter().any(|step| {
+                step.as_str()
+                    == crate::access_terms::set_query_search_credential_step("FIRECRAWL_API_KEY")
+            }),
             "doctor should surface the missing Firecrawl env binding as a concrete next step: {next_steps:#?}"
         );
         assert!(
             next_steps.iter().any(|step| step == &expected_onboard_step),
-            "doctor should keep the onboarding recovery path explicit for web search credentials: {next_steps:#?}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn browser_companion_doctor_checks_warn_when_command_is_missing() {
-        let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
-        let mut config = mvp::config::LoongConfig::default();
-        config.tools.browser_companion.enabled = true;
-
-        let checks = collect_browser_companion_doctor_checks(&config).await;
-
-        assert!(
-            checks.iter().any(|check| {
-                check.name == "browser companion install"
-                    && check.level == DoctorCheckLevel::Warn
-                    && check.detail.contains("no command is configured")
-            }),
-            "doctor should warn when browser companion is enabled without a command: {checks:#?}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn browser_companion_doctor_checks_warn_when_expected_version_mismatches() {
-        let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
-        let (command, observed_version, _exact_version, partial_version) = rustc_version_probe();
-
-        let mut config = mvp::config::LoongConfig::default();
-        config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(command);
-        config.tools.browser_companion.expected_version = Some(partial_version.clone());
-
-        let checks = collect_browser_companion_doctor_checks(&config).await;
-
-        assert!(
-            checks.iter().any(|check| {
-                check.name == "browser companion install"
-                    && check.level == DoctorCheckLevel::Warn
-                    && check
-                        .detail
-                        .contains(format!("expected_version={partial_version}").as_str())
-                    && check
-                        .detail
-                        .contains(format!("observed_version={observed_version}").as_str())
-            }),
-            "doctor should surface version mismatches for the managed companion lane: {checks:#?}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn browser_companion_doctor_checks_warn_when_runtime_gate_is_closed() {
-        let _env_guard = BrowserCompanionEnvGuard::runtime_gate_closed();
-        let (command, _observed_version, exact_version, _partial_version) = rustc_version_probe();
-
-        let mut config = mvp::config::LoongConfig::default();
-        config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(command);
-        config.tools.browser_companion.expected_version = Some(exact_version);
-
-        let checks = collect_browser_companion_doctor_checks(&config).await;
-
-        assert!(
-            checks.iter().any(|check| {
-                check.name == "browser companion runtime gate"
-                    && check.level == DoctorCheckLevel::Warn
-                    && check.detail.contains("install looks healthy")
-            }),
-            "doctor should distinguish healthy companion installs from a still-closed runtime gate: {checks:#?}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn browser_companion_doctor_checks_pass_when_runtime_gate_is_open() {
-        let _env_guard = BrowserCompanionEnvGuard::runtime_gate_open();
-        let (command, _observed_version, exact_version, _partial_version) = rustc_version_probe();
-
-        let mut config = mvp::config::LoongConfig::default();
-        config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(command);
-        config.tools.browser_companion.expected_version = Some(exact_version);
-
-        let checks = collect_browser_companion_doctor_checks(&config).await;
-
-        assert!(
-            checks.iter().any(|check| {
-                check.name == "browser companion install"
-                    && check.level == DoctorCheckLevel::Pass
-                    && check.detail.contains("responded with")
-            }),
-            "doctor should mark the companion install healthy when the version probe matches: {checks:#?}"
-        );
-        assert!(
-            checks.iter().any(|check| {
-                check.name == "browser companion runtime gate"
-                    && check.level == DoctorCheckLevel::Pass
-                    && check.detail.contains("runtime is ready")
-            }),
-            "doctor should mark the runtime gate healthy when the companion lane is opened: {checks:#?}"
+            "doctor should keep the onboarding recovery path explicit for query search credentials: {next_steps:#?}"
         );
     }
 
@@ -7159,8 +6374,7 @@ mod tests {
         );
         assert!(
             next_steps.iter().any(|step| {
-                step
-                    == "Teach Loong your working style: loong personalize --config '/tmp/loong.toml'"
+                step == "Set your working preferences: loong personalize --config '/tmp/loong.toml'"
             }),
             "green doctor runs should surface personalization as the third healthy-path suggestion: {next_steps:#?}"
         );
@@ -7172,112 +6386,10 @@ mod tests {
         );
         assert!(
             !next_steps.iter().any(|step| {
-                step == "Optional browser preview: loong skills enable-browser-preview --config '/tmp/loong.toml'"
+                step == "Open a channel: loong channels --config '/tmp/loong.toml'"
             }),
-            "green doctor runs should keep generic browser-preview nudges behind personalization: {next_steps:#?}"
+            "green doctor runs should keep lower-priority setup prompts behind personalization: {next_steps:#?}"
         );
-        assert!(
-            !next_steps.iter().any(
-                |step| {
-                    step == "Install browser preview runtime: npm install -g agent-browser && agent-browser install"
-                }
-            ),
-            "green doctor runs should not push runtime install steps before preview has been enabled: {next_steps:#?}"
-        );
-        assert!(
-            !next_steps.iter().any(
-                |step| step == "Verify browser preview runtime: agent-browser open example.com"
-            ),
-            "green doctor runs should not ask for runtime verification before preview has been enabled: {next_steps:#?}"
-        );
-    }
-
-    #[test]
-    fn doctor_followup_narrative_lines_skip_primary_action_duplicates() {
-        let next_steps = vec![
-            DoctorNextStep::action("Get a first answer", "loong ask --config '/tmp/loong.toml'"),
-            DoctorNextStep::action(
-                "Continue in chat",
-                "LOONG_CONFIG_PATH='/tmp/loong.toml' loong",
-            ),
-            DoctorNextStep::action(
-                "Teach Loong your working style",
-                "loong personalize --config '/tmp/loong.toml'",
-            ),
-            DoctorNextStep::guidance(
-                "If your provider blocks model listing during setup, retry with: loong doctor --config '/tmp/loong.toml' --skip-model-probe",
-            ),
-            DoctorNextStep::action(
-                "Open a channel",
-                "loong channels --config '/tmp/loong.toml'",
-            ),
-        ];
-
-        let lines = doctor_followup_narrative_lines(&next_steps, 3);
-
-        assert_eq!(
-            lines,
-            vec![
-                "- If your provider blocks model listing during setup, retry with: loong doctor --config '/tmp/loong.toml' --skip-model-probe"
-                    .to_owned(),
-                "- Open a channel: loong channels --config '/tmp/loong.toml'".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
-    fn build_doctor_next_steps_guides_browser_companion_preview_setup() {
-        let root = browser_companion_temp_dir("preview-runtime-missing");
-        let install_root = root.join("managed-skills");
-        std::fs::create_dir_all(install_root.join("browser-companion-preview"))
-            .expect("create managed skill directory");
-        std::fs::write(
-            install_root
-                .join("browser-companion-preview")
-                .join("SKILL.md"),
-            "# Browser Companion Preview\n\nUse agent-browser through exec.\n",
-        )
-        .expect("write managed preview skill");
-        let checks = vec![DoctorCheck {
-            name: "provider credentials".to_owned(),
-            level: DoctorCheckLevel::Pass,
-            detail: "provider credentials are available".to_owned(),
-        }];
-        let mut config = mvp::config::LoongConfig::default();
-        config.tools.file_root = Some(root.display().to_string());
-        config.tools.shell_allow.push("agent-browser".to_owned());
-        config.external_skills.enabled = true;
-        config.external_skills.auto_expose_installed = true;
-        config.external_skills.install_root = Some(install_root.display().to_string());
-
-        let next_steps = build_doctor_next_steps_with_path_env(
-            &checks,
-            Path::new("/tmp/loong.toml"),
-            &config,
-            false,
-            Some(std::ffi::OsStr::new("")),
-        );
-
-        assert!(
-            next_steps.iter().any(|step| {
-                step == "Install browser preview runtime: npm install -g agent-browser && agent-browser install"
-            }),
-            "doctor should point preview-enabled operators at a concrete runtime install action when agent-browser is missing: {next_steps:#?}"
-        );
-        assert!(
-            next_steps.iter().any(|step| {
-                step == "Verify browser preview runtime: agent-browser open example.com"
-            }),
-            "doctor should still surface a verification step after the runtime install hint: {next_steps:#?}"
-        );
-        assert!(
-            !next_steps.iter().any(|step| {
-                step == "Optional browser preview: loong skills enable-browser-preview --config '/tmp/loong.toml'"
-            }),
-            "doctor should not fall back to the optional enable step after preview has already been configured: {next_steps:#?}"
-        );
-
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -7300,22 +6412,15 @@ mod tests {
 
         assert!(
             next_steps.iter().any(|step| {
-                step
-                    == "Teach Loong your working style: loong personalize --config '/tmp/loong.toml'"
+                step == "Set your working preferences: loong personalize --config '/tmp/loong.toml'"
             }),
-            "doctor should prioritize personalization ahead of generic browser preview when the healthy-path list is capped: {next_steps:#?}"
-        );
-        assert!(
-            !next_steps.iter().any(|step| {
-                step == "Optional browser preview: loong skills enable-browser-preview --config '/tmp/loong.toml'"
-            }),
-            "doctor should keep generic browser preview behind personalization when only three healthy-path actions are shown: {next_steps:#?}"
+            "doctor should prioritize personalization ahead of lower-priority setup prompts when the healthy-path list is capped: {next_steps:#?}"
         );
     }
 
     #[test]
     fn collect_runtime_plugins_doctor_checks_warns_when_runtime_is_disabled() {
-        let root = browser_companion_temp_dir("runtime-plugins-disabled");
+        let root = runtime_plugin_temp_dir("runtime-plugins-disabled");
         let config = runtime_plugins_test_config(&root, false);
 
         let checks = collect_runtime_plugins_doctor_checks(&config);
@@ -7330,7 +6435,7 @@ mod tests {
 
     #[test]
     fn collect_runtime_plugins_doctor_checks_escape_runtime_values() {
-        let root = browser_companion_temp_dir("runtime-plugins-escaped");
+        let root = runtime_plugin_temp_dir("runtime-plugins-escaped");
         let mut config = runtime_plugins_test_config(&root, true);
         let escaped_root = root.join("runtime\nplugins");
 
@@ -7366,7 +6471,7 @@ mod tests {
 
     #[test]
     fn collect_runtime_plugins_doctor_checks_warns_when_no_runtime_roots_are_scanned() {
-        let root = browser_companion_temp_dir("runtime-plugins-zero-roots");
+        let root = runtime_plugin_temp_dir("runtime-plugins-zero-roots");
         let mut config = runtime_plugins_test_config(&root, true);
         config.runtime_plugins.roots = vec!["   ".to_owned()];
 

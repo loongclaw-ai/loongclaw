@@ -3,9 +3,6 @@ use loong_spec::CliResult;
 use serde::Serialize;
 use std::path::Path;
 
-use crate::first_run_action_presentation::{
-    build_first_run_action_sections, first_run_group_for_setup_action_kind,
-};
 use crate::gateway::client::GatewayLocalClient;
 use crate::gateway::read_models::{
     GatewayAcpObservabilityReadModel, GatewayOperatorChannelsSummaryReadModel,
@@ -16,10 +13,9 @@ use crate::gateway::read_models::{
 use crate::gateway::service::default_gateway_owner_status;
 use crate::gateway::state::{default_gateway_runtime_state_dir, load_gateway_owner_status};
 use crate::mvp;
-use crate::runtime_snapshot_compaction_presentation::build_compaction_hygiene_status_values;
 use crate::supervisor::LoadedSupervisorConfig;
 
-const STATUS_CLI_JSON_SCHEMA_VERSION: u32 = 3;
+const STATUS_CLI_JSON_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusCliJsonSchema {
@@ -46,13 +42,6 @@ pub struct StatusCliWorkUnitReadModel {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusCliAction {
-    pub kind: crate::next_actions::SetupNextActionKind,
-    pub label: String,
-    pub command: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct StatusCliDrillDownAction {
     pub label: String,
     pub command: String,
 }
@@ -68,9 +57,6 @@ pub struct StatusCliReadModel {
     pub acp: StatusCliAcpReadModel,
     pub work_units: StatusCliWorkUnitReadModel,
     pub next_actions: Vec<StatusCliAction>,
-    pub deep_dive_actions: Vec<StatusCliDrillDownAction>,
-    // Keep the command-only alias for older automation while the typed surface lands.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub recipes: Vec<String>,
 }
 
@@ -126,13 +112,11 @@ pub async fn collect_status_cli_read_model(
         crate::next_actions::collect_setup_next_actions(&config, config_path_text)
             .into_iter()
             .map(|action| StatusCliAction {
-                kind: action.kind,
                 label: action.label,
                 command: action.command,
             }),
     );
-    let deep_dive_actions = build_status_cli_deep_dive_actions(config_path_text);
-    let recipes = build_status_cli_legacy_recipe_commands(&deep_dive_actions);
+    let recipes = build_status_cli_recipes(config_path_text);
     let schema = StatusCliJsonSchema {
         version: STATUS_CLI_JSON_SCHEMA_VERSION,
         surface: "status",
@@ -149,7 +133,6 @@ pub async fn collect_status_cli_read_model(
         acp,
         work_units,
         next_actions,
-        deep_dive_actions,
         recipes,
     })
 }
@@ -365,7 +348,7 @@ fn load_persisted_acp_session_count(config: &mvp::config::LoongConfig) -> Option
     }
 }
 
-fn build_status_cli_deep_dive_actions(config_path: &str) -> Vec<StatusCliDrillDownAction> {
+fn build_status_cli_recipes(config_path: &str) -> Vec<String> {
     let command_name = crate::active_cli_command_name();
     let config_arg = crate::cli_handoff::shell_quote_argument(config_path);
     let gateway_recipe = format!("{command_name} gateway status");
@@ -378,36 +361,12 @@ fn build_status_cli_deep_dive_actions(config_path: &str) -> Vec<StatusCliDrillDo
         format!("{command_name} runtime work-unit health --config {config_arg} --json");
 
     vec![
-        StatusCliDrillDownAction {
-            label: "gateway status".to_owned(),
-            command: gateway_recipe,
-        },
-        StatusCliDrillDownAction {
-            label: "channel inventory".to_owned(),
-            command: channels_recipe,
-        },
-        StatusCliDrillDownAction {
-            label: "ACP observability".to_owned(),
-            command: acp_observability_recipe,
-        },
-        StatusCliDrillDownAction {
-            label: "ACP sessions".to_owned(),
-            command: acp_sessions_recipe,
-        },
-        StatusCliDrillDownAction {
-            label: "work-unit health".to_owned(),
-            command: work_units_recipe,
-        },
+        gateway_recipe,
+        channels_recipe,
+        acp_observability_recipe,
+        acp_sessions_recipe,
+        work_units_recipe,
     ]
-}
-
-fn build_status_cli_legacy_recipe_commands(
-    deep_dive_actions: &[StatusCliDrillDownAction],
-) -> Vec<String> {
-    deep_dive_actions
-        .iter()
-        .map(|action| action.command.clone())
-        .collect()
 }
 
 fn render_status_cli_text(status: &StatusCliReadModel) -> String {
@@ -430,8 +389,6 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
     let active_provider_label_option = runtime.active_provider_label.as_deref();
     let active_provider_label = active_provider_label_option.unwrap_or("-");
     let capability_snapshot_sha256 = runtime.capability_snapshot_sha256.as_str();
-    let compaction_hygiene = &runtime.compaction_hygiene;
-    let compaction_presentation = build_compaction_hygiene_status_values(compaction_hygiene);
     let visible_direct_tools = if runtime.visible_direct_tool_names.is_empty() {
         "-".to_owned()
     } else {
@@ -443,18 +400,41 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
         runtime.hidden_tool_surface_ids.join(",")
     };
     let tool_calling = &runtime.tool_calling;
-    let web_access = &runtime.web_access;
-    let ordinary_network_detail = render_web_ordinary_network_detail(web_access);
-    let query_search_detail = render_web_query_search_detail(web_access);
-    let web_boundary_note = web_access.separation_note.clone();
-    let mut sections = build_first_run_action_sections(
-        &status.next_actions,
-        |action| first_run_group_for_setup_action_kind(action.kind),
-        |action| loong_app::tui_surface::TuiActionSpec {
-            label: action.label.clone(),
-            command: action.command.clone(),
-        },
-    );
+    let access = &runtime.access;
+    let access_presentation = crate::status_access::build_status_access_presentation(access);
+    let ordinary_network_detail = access_presentation.ordinary_network_detail;
+    let query_search_detail = access_presentation.query_search_detail;
+    let browser_page_detail = access_presentation.browser_page_detail;
+    let managed_browser_detail = access_presentation.managed_browser_detail;
+    let governance_detail = access_presentation.governance_detail;
+    let web_boundary_note = access_presentation.boundary_note;
+    let mut sections = Vec::new();
+
+    if let Some(primary_action) = status.next_actions.first() {
+        sections.push(loong_app::tui_surface::TuiSectionSpec::ActionGroup {
+            title: Some("start here".to_owned()),
+            inline_title_when_wide: false,
+            items: vec![loong_app::tui_surface::TuiActionSpec {
+                label: primary_action.label.clone(),
+                command: primary_action.command.clone(),
+            }],
+        });
+    }
+    if status.next_actions.len() > 1 {
+        sections.push(loong_app::tui_surface::TuiSectionSpec::ActionGroup {
+            title: Some("also useful".to_owned()),
+            inline_title_when_wide: false,
+            items: status
+                .next_actions
+                .iter()
+                .skip(1)
+                .map(|action| loong_app::tui_surface::TuiActionSpec {
+                    label: action.label.clone(),
+                    command: action.command.clone(),
+                })
+                .collect(),
+        });
+    }
 
     sections.push(loong_app::tui_surface::TuiSectionSpec::Checklist {
         title: Some("runtime posture".to_owned()),
@@ -497,7 +477,7 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
                 detail: format!("availability={}", status.work_units.availability),
             },
             loong_app::tui_surface::TuiChecklistItemSpec {
-                status: if web_access.ordinary_network_access_enabled {
+                status: if crate::status_access::ordinary_network_is_ready(access) {
                     loong_app::tui_surface::TuiChecklistStatus::Pass
                 } else {
                     loong_app::tui_surface::TuiChecklistStatus::Warn
@@ -506,9 +486,36 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
                 detail: ordinary_network_detail.clone(),
             },
             loong_app::tui_surface::TuiChecklistItemSpec {
-                status: query_search_checklist_status(web_access),
+                status: if crate::status_access::query_search_is_ready(access) {
+                    loong_app::tui_surface::TuiChecklistStatus::Pass
+                } else {
+                    loong_app::tui_surface::TuiChecklistStatus::Warn
+                },
                 label: "query search".to_owned(),
                 detail: query_search_detail.clone(),
+            },
+            loong_app::tui_surface::TuiChecklistItemSpec {
+                status: if crate::status_access::browser_page_is_ready(access) {
+                    loong_app::tui_surface::TuiChecklistStatus::Pass
+                } else {
+                    loong_app::tui_surface::TuiChecklistStatus::Warn
+                },
+                label: "browser page".to_owned(),
+                detail: browser_page_detail,
+            },
+            loong_app::tui_surface::TuiChecklistItemSpec {
+                status: if crate::status_access::managed_browser_is_ready(access) {
+                    loong_app::tui_surface::TuiChecklistStatus::Pass
+                } else {
+                    loong_app::tui_surface::TuiChecklistStatus::Warn
+                },
+                label: "managed browser".to_owned(),
+                detail: managed_browser_detail,
+            },
+            loong_app::tui_surface::TuiChecklistItemSpec {
+                status: loong_app::tui_surface::TuiChecklistStatus::Pass,
+                label: "governance".to_owned(),
+                detail: governance_detail,
             },
         ],
     });
@@ -590,12 +597,8 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
                 value: query_search_detail,
             },
             loong_app::tui_surface::TuiKeyValueSpec::Plain {
-                key: "web boundary".to_owned(),
+                key: crate::access_terms::ACCESS_BOUNDARY_LABEL.to_owned(),
                 value: web_boundary_note,
-            },
-            loong_app::tui_surface::TuiKeyValueSpec::Plain {
-                key: "compaction hygiene".to_owned(),
-                value: compaction_presentation.hygiene.clone(),
             },
         ],
     });
@@ -747,26 +750,6 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
                 value: capability_snapshot_sha256.to_owned(),
             },
             loong_app::tui_surface::TuiKeyValueSpec::Plain {
-                key: "compaction samples".to_owned(),
-                value: compaction_presentation.samples.clone(),
-            },
-            loong_app::tui_surface::TuiKeyValueSpec::Plain {
-                key: "compaction prunes".to_owned(),
-                value: compaction_presentation.prunes.clone(),
-            },
-            loong_app::tui_surface::TuiKeyValueSpec::Plain {
-                key: "compaction pressure".to_owned(),
-                value: compaction_presentation.pressure.clone(),
-            },
-            loong_app::tui_surface::TuiKeyValueSpec::Plain {
-                key: "compaction trend".to_owned(),
-                value: compaction_presentation.trend.clone(),
-            },
-            loong_app::tui_surface::TuiKeyValueSpec::Plain {
-                key: "compaction repairability".to_owned(),
-                value: compaction_presentation.repairability,
-            },
-            loong_app::tui_surface::TuiKeyValueSpec::Plain {
                 key: "ACP".to_owned(),
                 value: render_status_cli_acp_text(&status.acp),
             },
@@ -784,16 +767,16 @@ fn render_status_cli_text(status: &StatusCliReadModel) -> String {
         });
     }
 
-    if !status.deep_dive_actions.is_empty() {
+    if !status.recipes.is_empty() {
         sections.push(loong_app::tui_surface::TuiSectionSpec::ActionGroup {
-            title: Some("inspect deeper".to_owned()),
+            title: Some("deep dives".to_owned()),
             inline_title_when_wide: false,
             items: status
-                .deep_dive_actions
+                .recipes
                 .iter()
-                .map(|action| loong_app::tui_surface::TuiActionSpec {
-                    label: action.label.clone(),
-                    command: action.command.clone(),
+                .map(|recipe| loong_app::tui_surface::TuiActionSpec {
+                    label: "recipe".to_owned(),
+                    command: recipe.clone(),
                 })
                 .collect(),
         });
@@ -863,11 +846,7 @@ fn collect_status_runtime_attention_actions(
         )
     };
 
-    vec![StatusCliAction {
-        kind: crate::next_actions::SetupNextActionKind::Doctor,
-        label,
-        command,
-    }]
+    vec![StatusCliAction { label, command }]
 }
 
 fn status_runtime_attention_action_label(
@@ -1063,33 +1042,6 @@ fn render_optional_usize(value: Option<usize>) -> String {
     value.unwrap_or_else(|| "-".to_owned())
 }
 
-fn render_web_ordinary_network_detail(
-    web_access: &crate::gateway::read_models::GatewayWebAccessReadModel,
-) -> String {
-    format!("enabled={}", web_access.ordinary_network_access_enabled)
-}
-
-fn render_web_query_search_detail(
-    web_access: &crate::gateway::read_models::GatewayWebAccessReadModel,
-) -> String {
-    format!(
-        "enabled={} · provider={} · credential_ready={}",
-        web_access.query_search_enabled,
-        web_access.query_search_default_provider,
-        web_access.query_search_credential_ready,
-    )
-}
-
-fn query_search_checklist_status(
-    web_access: &crate::gateway::read_models::GatewayWebAccessReadModel,
-) -> loong_app::tui_surface::TuiChecklistStatus {
-    if !web_access.query_search_enabled || web_access.query_search_credential_ready {
-        loong_app::tui_surface::TuiChecklistStatus::Pass
-    } else {
-        loong_app::tui_surface::TuiChecklistStatus::Warn
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1099,217 +1051,74 @@ mod tests {
     };
     use crate::gateway::state::{GatewayOwnerMode, GatewayOwnerStatus};
 
-    fn sample_compaction_hygiene_state() -> crate::RuntimeSnapshotCompactionHygieneState {
-        crate::RuntimeSnapshotCompactionHygieneState {
-            strategy: "turn_floor_only".to_owned(),
-            diagnostics_surface: "turn_checkpoint".to_owned(),
-            evidence_status: "ok".to_owned(),
-            trend_scope: "primary_lineage".to_owned(),
-            primary_lineage:
-                crate::runtime_snapshot_compaction_hygiene::RuntimeSnapshotCompactionLineageState {
-                    root_session_id: Some("root-session".to_owned()),
-                    sampled_session_count: 2,
-                    compaction_sample_count: 2,
-                    latest_compaction_status: Some(
-                        crate::mvp::conversation::TurnCheckpointProgressStatus::FailedOpen,
-                    ),
-                    compaction_failure_streak: 1,
-                    checkpoint_event_count: 3,
-                    checkpoint_failure_streak: 2,
-                    checkpoint_repair_action: Some(
-                        crate::mvp::conversation::TurnCheckpointRecoveryAction::RunCompaction,
-                    ),
-                    checkpoint_repair_manual_reason: None,
-                },
-            overall_window:
-                crate::runtime_snapshot_compaction_hygiene::RuntimeSnapshotCompactionHygieneWindow {
-                    sampled_session_count: 4,
-                    sessions_with_diagnostics: 2,
-                    sampled_session_read_errors: 0,
-                    failed_open_session_count: 1,
-                    total_demoted_recent_turns: 3,
-                    total_low_signal_turns: 4,
-                    total_tool_result_prunes: 2,
-                    total_tool_outcome_prunes: 1,
-                },
-            recent_window:
-                crate::runtime_snapshot_compaction_hygiene::RuntimeSnapshotCompactionHygieneWindow {
-                    sampled_session_count: 2,
-                    sessions_with_diagnostics: 1,
-                    sampled_session_read_errors: 0,
-                    failed_open_session_count: 1,
-                    total_demoted_recent_turns: 2,
-                    total_low_signal_turns: 2,
-                    total_tool_result_prunes: 1,
-                    total_tool_outcome_prunes: 0,
-                },
-            baseline_window:
-                crate::runtime_snapshot_compaction_hygiene::RuntimeSnapshotCompactionHygieneWindow {
-                    sampled_session_count: 2,
-                    sessions_with_diagnostics: 1,
-                    sampled_session_read_errors: 0,
-                    failed_open_session_count: 0,
-                    total_demoted_recent_turns: 1,
-                    total_low_signal_turns: 2,
-                    total_tool_result_prunes: 1,
-                    total_tool_outcome_prunes: 1,
-                },
-            error: None,
-        }
-    }
-
     #[test]
-    fn build_status_cli_deep_dive_actions_use_typed_labels_and_commands() {
-        let actions = build_status_cli_deep_dive_actions("/tmp/config.toml");
+    fn build_status_cli_recipes_use_grouped_runtime_commands() {
+        let recipes = build_status_cli_recipes("/tmp/config.toml");
 
         assert_eq!(
-            actions,
+            recipes,
             vec![
-                StatusCliDrillDownAction {
-                    label: "gateway status".to_owned(),
-                    command: "loong gateway status".to_owned(),
-                },
-                StatusCliDrillDownAction {
-                    label: "channel inventory".to_owned(),
-                    command: "loong channels --config '/tmp/config.toml' --json".to_owned(),
-                },
-                StatusCliDrillDownAction {
-                    label: "ACP observability".to_owned(),
-                    command: "loong runtime acp observability --config '/tmp/config.toml' --json"
-                        .to_owned(),
-                },
-                StatusCliDrillDownAction {
-                    label: "ACP sessions".to_owned(),
-                    command: "loong runtime acp sessions --config '/tmp/config.toml' --json"
-                        .to_owned(),
-                },
-                StatusCliDrillDownAction {
-                    label: "work-unit health".to_owned(),
-                    command: "loong runtime work-unit health --config '/tmp/config.toml' --json"
-                        .to_owned(),
-                },
+                "loong gateway status".to_owned(),
+                "loong channels --config '/tmp/config.toml' --json".to_owned(),
+                "loong runtime acp observability --config '/tmp/config.toml' --json".to_owned(),
+                "loong runtime acp sessions --config '/tmp/config.toml' --json".to_owned(),
+                "loong runtime work-unit health --config '/tmp/config.toml' --json".to_owned(),
             ]
         );
     }
 
     #[test]
     fn query_search_checklist_status_treats_disabled_mode_as_non_degraded() {
-        let disabled = crate::gateway::read_models::GatewayWebAccessReadModel {
+        let disabled = crate::gateway::read_models::GatewayToolAccessReadModel {
             ordinary_network_access_enabled: true,
             query_search_enabled: false,
             query_search_default_provider: "duckduckgo".to_owned(),
+            query_search_source: "external_provider".to_owned(),
+            query_search_provider_label: "DuckDuckGo".to_owned(),
             query_search_credential_ready: false,
-            separation_note: crate::RUNTIME_WEB_ACCESS_SEPARATION_NOTE.to_owned(),
+            browser_page_access_enabled: true,
+            managed_browser_session_enabled: false,
+            managed_browser_session_ready: false,
+            consent_mode: "full".to_owned(),
+            approval_mode: "disabled".to_owned(),
+            separation_note: crate::RUNTIME_TOOL_ACCESS_SEPARATION_NOTE.to_owned(),
         };
         assert_eq!(
-            query_search_checklist_status(&disabled),
+            if crate::status_access::query_search_is_ready(&disabled) {
+                loong_app::tui_surface::TuiChecklistStatus::Pass
+            } else {
+                loong_app::tui_surface::TuiChecklistStatus::Warn
+            },
             loong_app::tui_surface::TuiChecklistStatus::Pass
         );
 
-        let enabled_missing_credential = crate::gateway::read_models::GatewayWebAccessReadModel {
+        let enabled_missing_credential = crate::gateway::read_models::GatewayToolAccessReadModel {
             ordinary_network_access_enabled: true,
             query_search_enabled: true,
             query_search_default_provider: "brave".to_owned(),
+            query_search_source: "external_provider".to_owned(),
+            query_search_provider_label: "Brave Search".to_owned(),
             query_search_credential_ready: false,
-            separation_note: crate::RUNTIME_WEB_ACCESS_SEPARATION_NOTE.to_owned(),
+            browser_page_access_enabled: true,
+            managed_browser_session_enabled: false,
+            managed_browser_session_ready: false,
+            consent_mode: "full".to_owned(),
+            approval_mode: "disabled".to_owned(),
+            separation_note: crate::RUNTIME_TOOL_ACCESS_SEPARATION_NOTE.to_owned(),
         };
         assert_eq!(
-            query_search_checklist_status(&enabled_missing_credential),
+            if crate::status_access::query_search_is_ready(&enabled_missing_credential) {
+                loong_app::tui_surface::TuiChecklistStatus::Pass
+            } else {
+                loong_app::tui_surface::TuiChecklistStatus::Warn
+            },
             loong_app::tui_surface::TuiChecklistStatus::Warn
         );
     }
 
     #[test]
-    fn render_status_cli_text_surfaces_drill_down_actions() {
-        let gateway = sample_gateway_operator_summary();
-        let status = StatusCliReadModel {
-            config: "/tmp/config.toml".to_owned(),
-            schema: StatusCliJsonSchema {
-                version: STATUS_CLI_JSON_SCHEMA_VERSION,
-                surface: "status",
-                purpose: "operator_runtime_summary",
-            },
-            active_provider: "Demo [demo]".to_owned(),
-            active_model: "gpt-4.1-mini".to_owned(),
-            memory_profile: "window_only".to_owned(),
-            gateway,
-            acp: StatusCliAcpReadModel {
-                enabled: false,
-                availability: "disabled".to_owned(),
-                error: None,
-                persisted_session_count: Some(0),
-                observability: None,
-            },
-            work_units: StatusCliWorkUnitReadModel {
-                availability: "available".to_owned(),
-                error: None,
-                health: Some(WorkRuntimeHealthSnapshot {
-                    total_count: 0,
-                    ready_count: 0,
-                    leased_count: 0,
-                    running_count: 0,
-                    blocked_count: 0,
-                    retry_pending_count: 0,
-                    terminal_count: 0,
-                    archived_count: 0,
-                    expired_lease_count: 0,
-                }),
-            },
-            next_actions: vec![StatusCliAction {
-                kind: crate::next_actions::SetupNextActionKind::Ask,
-                label: "first answer".to_owned(),
-                command: "loong ask --config '/tmp/config.toml' --message 'hello'".to_owned(),
-            }],
-            deep_dive_actions: vec![StatusCliDrillDownAction {
-                label: "gateway status".to_owned(),
-                command: "loong gateway status".to_owned(),
-            }],
-            recipes: vec!["loong gateway status".to_owned()],
-        };
-
-        let rendered = render_status_cli_text(&status);
-
-        assert!(rendered.contains("start here"));
-        assert!(
-            rendered.contains(
-                "- first answer: loong ask --config '/tmp/config.toml' --message 'hello'"
-            )
-        );
-        assert!(rendered.contains("runtime posture"));
-        assert!(rendered.contains("[OK] tool calling"));
-        assert!(rendered.contains("[OK] ordinary network"));
-        assert!(rendered.contains("[OK] query search"));
-        assert!(rendered.contains("configured channels"));
-        assert!(rendered.contains("enabled channels"));
-        assert!(rendered.contains("service enabled ids"));
-        assert!(rendered.contains("runtime attention surfaces"));
-        assert!(rendered.contains("runtime attention ids"));
-        assert!(rendered.contains("saved runtime"));
-        assert!(rendered.contains("gateway summary"));
-        assert!(rendered.contains("paired devices: 2"));
-        assert!(rendered.contains("managed bridges: 1"));
-        assert!(rendered.contains("known nodes: 3"));
-        assert!(rendered.contains("visible tools: 4"));
-        assert!(rendered.contains("direct tools: read,exec"));
-        assert!(rendered.contains("hidden surfaces: agent,web"));
-        assert!(rendered.contains("ordinary network"));
-        assert!(rendered.contains("enabled=true"));
-        assert!(rendered.contains("query search"));
-        assert!(rendered.contains("provider=duckduckgo"));
-        assert!(rendered.contains("credential_ready=true"));
-        assert!(rendered.contains("web boundary"));
-        assert!(rendered.contains("ordinary network access stays separately governed"));
-        assert!(rendered.contains("channel and recovery detail"));
-        assert!(rendered.contains("enabled channels: telegram"));
-        assert!(rendered.contains("service enabled ids: telegram"));
-        assert!(rendered.contains("capability snapshot: abc123"));
-        assert!(rendered.contains("ACP: acp enabled=false availability=disabled"));
-        assert!(rendered.contains("inspect deeper"));
-        assert!(rendered.contains("- gateway status: loong gateway status"));
-    }
-
-    fn sample_gateway_operator_summary() -> GatewayOperatorSummaryReadModel {
-        GatewayOperatorSummaryReadModel {
+    fn render_status_cli_text_surfaces_drill_down_recipes() {
+        let gateway = GatewayOperatorSummaryReadModel {
             owner: GatewayOwnerStatus {
                 runtime_dir: "/tmp/runtime".to_owned(),
                 phase: "running".to_owned(),
@@ -1373,7 +1182,8 @@ mod tests {
                 capability_snapshot_sha256: "abc123".to_owned(),
                 active_provider_profile_id: Some("demo".to_owned()),
                 active_provider_label: Some("Demo".to_owned()),
-                compaction_hygiene: sample_compaction_hygiene_state(),
+                compaction_hygiene:
+                    crate::RuntimeSnapshotCompactionHygieneState::unknown_unavailable(),
                 tool_calling: crate::gateway::read_models::GatewayToolCallingReadModel {
                     availability: "ready".to_owned(),
                     structured_tool_schema_enabled: true,
@@ -1383,12 +1193,19 @@ mod tests {
                         "provider turns include structured tool definitions for the active model"
                             .to_owned(),
                 },
-                web_access: crate::gateway::read_models::GatewayWebAccessReadModel {
+                access: crate::gateway::read_models::GatewayToolAccessReadModel {
                     ordinary_network_access_enabled: true,
                     query_search_enabled: false,
                     query_search_default_provider: "duckduckgo".to_owned(),
+                    query_search_source: "external_provider".to_owned(),
+                    query_search_provider_label: "DuckDuckGo".to_owned(),
                     query_search_credential_ready: true,
-                    separation_note: crate::RUNTIME_WEB_ACCESS_SEPARATION_NOTE.to_owned(),
+                    browser_page_access_enabled: true,
+                    managed_browser_session_enabled: false,
+                    managed_browser_session_ready: false,
+                    consent_mode: "full".to_owned(),
+                    approval_mode: "disabled".to_owned(),
+                    separation_note: crate::RUNTIME_TOOL_ACCESS_SEPARATION_NOTE.to_owned(),
                 },
             },
             pairing: crate::gateway::read_models::GatewayOperatorPairingSummaryReadModel {
@@ -1401,11 +1218,7 @@ mod tests {
                 managed_bridge_count: 1,
                 total_count: 3,
             },
-        }
-    }
-
-    #[test]
-    fn render_status_cli_text_separates_continue_setup_actions() {
+        };
         let status = StatusCliReadModel {
             config: "/tmp/config.toml".to_owned(),
             schema: StatusCliJsonSchema {
@@ -1416,7 +1229,7 @@ mod tests {
             active_provider: "Demo [demo]".to_owned(),
             active_model: "gpt-4.1-mini".to_owned(),
             memory_profile: "window_only".to_owned(),
-            gateway: sample_gateway_operator_summary(),
+            gateway,
             acp: StatusCliAcpReadModel {
                 enabled: false,
                 availability: "disabled".to_owned(),
@@ -1439,55 +1252,20 @@ mod tests {
                     expired_lease_count: 0,
                 }),
             },
-            next_actions: vec![
-                StatusCliAction {
-                    kind: crate::next_actions::SetupNextActionKind::Ask,
-                    label: "first answer".to_owned(),
-                    command: "loong ask --config '/tmp/config.toml' --message 'hello'".to_owned(),
-                },
-                StatusCliAction {
-                    kind: crate::next_actions::SetupNextActionKind::Chat,
-                    label: "chat".to_owned(),
-                    command: "LOONG_CONFIG_PATH='/tmp/config.toml' loong".to_owned(),
-                },
-                StatusCliAction {
-                    kind: crate::next_actions::SetupNextActionKind::Personalize,
-                    label: "teach Loong your working style".to_owned(),
-                    command: "loong personalize --config '/tmp/config.toml'".to_owned(),
-                },
-                StatusCliAction {
-                    kind: crate::next_actions::SetupNextActionKind::Channel,
-                    label: "choose a channel".to_owned(),
-                    command: "loong channels --config '/tmp/config.toml'".to_owned(),
-                },
-            ],
-            deep_dive_actions: Vec::new(),
-            recipes: Vec::new(),
+            next_actions: vec![StatusCliAction {
+                label: "first answer".to_owned(),
+                command: "loong ask --config '/tmp/config.toml' --message 'hello'".to_owned(),
+            }],
+            recipes: vec!["loong gateway status".to_owned()],
         };
 
         let rendered = render_status_cli_text(&status);
 
-        assert!(rendered.contains("start here"), "{rendered}");
-        assert!(rendered.contains("also available"), "{rendered}");
-        assert!(rendered.contains("continue setup"), "{rendered}");
-        assert!(rendered.contains("- chat:"), "{rendered}");
+        assert!(rendered.contains("start here"));
         assert!(
-            rendered.contains("LOONG_CONFIG_PATH='/tmp/config.toml' loong"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("- teach Loong your working style:"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("loong personalize --config"),
-            "{rendered}"
-        );
-        assert!(rendered.contains("'/tmp/config.toml'"), "{rendered}");
-        assert!(rendered.contains("- choose a channel:"), "{rendered}");
-        assert!(
-            rendered.contains("loong channels --config '/tmp/config.toml'"),
-            "{rendered}"
+            rendered.contains(
+                "- first answer: loong ask --config '/tmp/config.toml' --message 'hello'"
+            )
         );
         assert!(rendered.contains("runtime posture"));
         assert!(rendered.contains("[OK] tool calling"));
@@ -1509,101 +1287,23 @@ mod tests {
         assert!(rendered.contains("ordinary network"));
         assert!(rendered.contains("enabled=true"));
         assert!(rendered.contains("query search"));
-        assert!(rendered.contains("provider=duckduckgo"));
+        assert!(rendered.contains("source=external_provider"));
+        assert!(rendered.contains("provider=DuckDuckGo"));
         assert!(rendered.contains("credential_ready=true"));
-        assert!(rendered.contains("web boundary"));
-        assert!(rendered.contains("ordinary network access stays separately governed"));
-        assert!(rendered.contains("compaction hygiene"));
-        assert!(rendered.contains("turn_floor_only"));
-        assert!(rendered.contains("posture=degraded"));
-        assert!(rendered.contains("surface=turn_checkpoint"));
-        assert!(rendered.contains("coverage=2/4 (50.0%)"));
+        assert!(rendered.contains("browser page"));
+        assert!(rendered.contains("managed browser"));
+        assert!(rendered.contains("governance"));
+        assert!(rendered.contains("access boundary"));
+        assert!(
+            rendered.contains("ordinary network access and browser lanes stay separately governed")
+        );
         assert!(rendered.contains("channel and recovery detail"));
         assert!(rendered.contains("enabled channels: telegram"));
         assert!(rendered.contains("service enabled ids: telegram"));
-        assert!(rendered.contains("compaction samples"));
-        assert!(rendered.contains("compaction prunes"));
-        assert!(rendered.contains("compaction pressure"));
-        assert!(rendered.contains("compaction trend"));
-        assert!(rendered.contains("updated_at_desc"));
-        assert!(rendered.contains("scope=primary_lineage"));
-        assert!(rendered.contains("root=root-session"));
-        assert!(rendered.contains("latest=failed_open"));
-        assert!(rendered.contains("failure_streak=1"));
-        assert!(rendered.contains("continuity=broken"));
-        assert!(rendered.contains("compaction repairability"));
-        assert!(rendered.contains("retryable"));
-        assert!(rendered.contains("action=run_compaction"));
-        assert!(rendered.contains("recovery_posture=retry_exhausted"));
-        assert!(rendered.contains("reliability=worsening"));
-        assert!(rendered.contains("rate=1/2 (50.0%)"));
-        assert!(rendered.contains("demoted_recent=1.500/session"));
         assert!(rendered.contains("capability snapshot: abc123"));
         assert!(rendered.contains("ACP: acp enabled=false availability=disabled"));
-    }
-
-    #[test]
-    fn render_status_cli_text_groups_channel_kind_even_when_label_varies() {
-        let status = StatusCliReadModel {
-            config: "/tmp/config.toml".to_owned(),
-            schema: StatusCliJsonSchema {
-                version: STATUS_CLI_JSON_SCHEMA_VERSION,
-                surface: "status",
-                purpose: "operator_runtime_summary",
-            },
-            active_provider: "Demo [demo]".to_owned(),
-            active_model: "gpt-4.1-mini".to_owned(),
-            memory_profile: "window_only".to_owned(),
-            gateway: sample_gateway_operator_summary(),
-            acp: StatusCliAcpReadModel {
-                enabled: false,
-                availability: "disabled".to_owned(),
-                error: None,
-                persisted_session_count: Some(0),
-                observability: None,
-            },
-            work_units: StatusCliWorkUnitReadModel {
-                availability: "available".to_owned(),
-                error: None,
-                health: Some(WorkRuntimeHealthSnapshot {
-                    total_count: 0,
-                    ready_count: 0,
-                    leased_count: 0,
-                    running_count: 0,
-                    blocked_count: 0,
-                    retry_pending_count: 0,
-                    terminal_count: 0,
-                    archived_count: 0,
-                    expired_lease_count: 0,
-                }),
-            },
-            next_actions: vec![
-                StatusCliAction {
-                    kind: crate::next_actions::SetupNextActionKind::Ask,
-                    label: "first answer".to_owned(),
-                    command: "loong ask --config '/tmp/config.toml' --message 'hello'".to_owned(),
-                },
-                StatusCliAction {
-                    kind: crate::next_actions::SetupNextActionKind::Channel,
-                    label: "inspect configured bridges".to_owned(),
-                    command: "loong channels --config '/tmp/config.toml'".to_owned(),
-                },
-            ],
-            deep_dive_actions: Vec::new(),
-            recipes: Vec::new(),
-        };
-
-        let rendered = render_status_cli_text(&status);
-
-        assert!(rendered.contains("continue setup"), "{rendered}");
-        assert!(
-            rendered.contains("- inspect configured bridges:"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("loong channels --config '/tmp/config.toml'"),
-            "{rendered}"
-        );
+        assert!(rendered.contains("deep dives"));
+        assert!(rendered.contains("- recipe: loong gateway status"));
     }
 
     #[test]
@@ -1703,7 +1403,8 @@ mod tests {
                 capability_snapshot_sha256: "abc123".to_owned(),
                 active_provider_profile_id: Some("demo".to_owned()),
                 active_provider_label: Some("Demo".to_owned()),
-                compaction_hygiene: sample_compaction_hygiene_state(),
+                compaction_hygiene:
+                    crate::RuntimeSnapshotCompactionHygieneState::unknown_unavailable(),
                 tool_calling: crate::gateway::read_models::GatewayToolCallingReadModel {
                     availability: "ready".to_owned(),
                     structured_tool_schema_enabled: true,
@@ -1713,12 +1414,19 @@ mod tests {
                         "provider turns include structured tool definitions for the active model"
                             .to_owned(),
                 },
-                web_access: crate::gateway::read_models::GatewayWebAccessReadModel {
+                access: crate::gateway::read_models::GatewayToolAccessReadModel {
                     ordinary_network_access_enabled: true,
                     query_search_enabled: false,
                     query_search_default_provider: "duckduckgo".to_owned(),
+                    query_search_source: "external_provider".to_owned(),
+                    query_search_provider_label: "DuckDuckGo".to_owned(),
                     query_search_credential_ready: true,
-                    separation_note: crate::RUNTIME_WEB_ACCESS_SEPARATION_NOTE.to_owned(),
+                    browser_page_access_enabled: true,
+                    managed_browser_session_enabled: false,
+                    managed_browser_session_ready: false,
+                    consent_mode: "full".to_owned(),
+                    approval_mode: "disabled".to_owned(),
+                    separation_note: crate::RUNTIME_TOOL_ACCESS_SEPARATION_NOTE.to_owned(),
                 },
             },
             pairing: crate::gateway::read_models::GatewayOperatorPairingSummaryReadModel {
@@ -1852,7 +1560,8 @@ mod tests {
                 capability_snapshot_sha256: "abc123".to_owned(),
                 active_provider_profile_id: Some("demo".to_owned()),
                 active_provider_label: Some("Demo".to_owned()),
-                compaction_hygiene: sample_compaction_hygiene_state(),
+                compaction_hygiene:
+                    crate::RuntimeSnapshotCompactionHygieneState::unknown_unavailable(),
                 tool_calling: crate::gateway::read_models::GatewayToolCallingReadModel {
                     availability: "ready".to_owned(),
                     structured_tool_schema_enabled: true,
@@ -1862,12 +1571,19 @@ mod tests {
                         "provider turns include structured tool definitions for the active model"
                             .to_owned(),
                 },
-                web_access: crate::gateway::read_models::GatewayWebAccessReadModel {
+                access: crate::gateway::read_models::GatewayToolAccessReadModel {
                     ordinary_network_access_enabled: true,
                     query_search_enabled: false,
                     query_search_default_provider: "duckduckgo".to_owned(),
+                    query_search_source: "external_provider".to_owned(),
+                    query_search_provider_label: "DuckDuckGo".to_owned(),
                     query_search_credential_ready: true,
-                    separation_note: crate::RUNTIME_WEB_ACCESS_SEPARATION_NOTE.to_owned(),
+                    browser_page_access_enabled: true,
+                    managed_browser_session_enabled: false,
+                    managed_browser_session_ready: false,
+                    consent_mode: "full".to_owned(),
+                    approval_mode: "disabled".to_owned(),
+                    separation_note: crate::RUNTIME_TOOL_ACCESS_SEPARATION_NOTE.to_owned(),
                 },
             },
             pairing: crate::gateway::read_models::GatewayOperatorPairingSummaryReadModel {
@@ -1989,7 +1705,8 @@ mod tests {
                 capability_snapshot_sha256: "abc123".to_owned(),
                 active_provider_profile_id: Some("demo".to_owned()),
                 active_provider_label: Some("Demo".to_owned()),
-                compaction_hygiene: sample_compaction_hygiene_state(),
+                compaction_hygiene:
+                    crate::RuntimeSnapshotCompactionHygieneState::unknown_unavailable(),
                 tool_calling: crate::gateway::read_models::GatewayToolCallingReadModel {
                     availability: "ready".to_owned(),
                     structured_tool_schema_enabled: true,
@@ -1999,12 +1716,19 @@ mod tests {
                         "provider turns include structured tool definitions for the active model"
                             .to_owned(),
                 },
-                web_access: crate::gateway::read_models::GatewayWebAccessReadModel {
+                access: crate::gateway::read_models::GatewayToolAccessReadModel {
                     ordinary_network_access_enabled: true,
                     query_search_enabled: false,
                     query_search_default_provider: "duckduckgo".to_owned(),
+                    query_search_source: "external_provider".to_owned(),
+                    query_search_provider_label: "DuckDuckGo".to_owned(),
                     query_search_credential_ready: true,
-                    separation_note: crate::RUNTIME_WEB_ACCESS_SEPARATION_NOTE.to_owned(),
+                    browser_page_access_enabled: true,
+                    managed_browser_session_enabled: false,
+                    managed_browser_session_ready: false,
+                    consent_mode: "full".to_owned(),
+                    approval_mode: "disabled".to_owned(),
+                    separation_note: crate::RUNTIME_TOOL_ACCESS_SEPARATION_NOTE.to_owned(),
                 },
             },
             pairing: crate::gateway::read_models::GatewayOperatorPairingSummaryReadModel {
@@ -2052,13 +1776,8 @@ mod tests {
                 }),
             },
             next_actions: vec![StatusCliAction {
-                kind: crate::next_actions::SetupNextActionKind::Doctor,
                 label: "inspect weixin managed bridge runtime (retrying)".to_owned(),
                 command: "loong doctor --config '/tmp/config.toml'".to_owned(),
-            }],
-            deep_dive_actions: vec![StatusCliDrillDownAction {
-                label: "gateway status".to_owned(),
-                command: "loong gateway status".to_owned(),
             }],
             recipes: vec!["loong gateway status".to_owned()],
         };

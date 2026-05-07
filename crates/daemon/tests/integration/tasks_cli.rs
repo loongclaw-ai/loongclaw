@@ -1,6 +1,10 @@
 #![allow(unsafe_code)]
 
 use super::*;
+use loong_app::tools::runtime_config::{
+    SKILLS_ALLOWED_DOMAINS_ENV, SKILLS_AUTO_EXPOSE_INSTALLED_ENV, SKILLS_BLOCKED_DOMAINS_ENV,
+    SKILLS_ENABLED_ENV, SKILLS_INSTALL_ROOT_ENV, SKILLS_REQUIRE_DOWNLOAD_APPROVAL_ENV,
+};
 use rusqlite::{Connection, params};
 use std::{
     ffi::OsString,
@@ -62,12 +66,12 @@ const TASKS_RUNTIME_ENV_KEYS: &[&str] = &[
     "LOONG_BROWSER_MAX_SESSIONS",
     "LOONG_BROWSER_MAX_TEXT_CHARS",
     "LOONG_CONFIG_PATH",
-    "LOONG_EXTERNAL_SKILLS_ALLOWED_DOMAINS",
-    "LOONG_EXTERNAL_SKILLS_AUTO_EXPOSE_INSTALLED",
-    "LOONG_EXTERNAL_SKILLS_BLOCKED_DOMAINS",
-    "LOONG_EXTERNAL_SKILLS_ENABLED",
-    "LOONG_EXTERNAL_SKILLS_INSTALL_ROOT",
-    "LOONG_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL",
+    SKILLS_ALLOWED_DOMAINS_ENV,
+    SKILLS_AUTO_EXPOSE_INSTALLED_ENV,
+    SKILLS_BLOCKED_DOMAINS_ENV,
+    SKILLS_ENABLED_ENV,
+    SKILLS_INSTALL_ROOT_ENV,
+    SKILLS_REQUIRE_DOWNLOAD_APPROVAL_ENV,
     "LOONG_FILE_ROOT",
     "LOONG_MEMORY_BACKEND",
     "LOONG_MEMORY_PROFILE",
@@ -231,7 +235,7 @@ fn seed_background_task_record(
                 "max_active_children": 2,
                 "timeout_seconds": 60,
                 "allow_shell_in_child": false,
-                "child_tool_allowlist": ["file.read"],
+                "child_tool_allowlist": ["read"],
                 "workspace_root": workspace_root,
                 "kernel_bound": false,
                 "runtime_narrowing": {}
@@ -260,7 +264,7 @@ fn seed_background_task_record(
     .expect("create approval request");
     repo.upsert_session_tool_policy(mvp::session::repository::NewSessionToolPolicyRecord {
         session_id: task_id.to_owned(),
-        requested_tool_ids: vec!["file.read".to_owned()],
+        requested_tool_ids: vec!["read".to_owned()],
         runtime_narrowing: mvp::tools::runtime_config::ToolRuntimeNarrowing::default(),
     })
     .expect("upsert session tool policy");
@@ -772,7 +776,7 @@ async fn execute_tasks_command_status_surfaces_approval_and_tool_policy() {
     );
     assert_eq!(
         execution.payload["task"]["tool_policy"]["requested_tool_ids"][0],
-        "file.read"
+        "read"
     );
     assert_eq!(
         execution.payload["task"]["tool_policy"]["visible_requested_tool_ids"][0],
@@ -780,7 +784,7 @@ async fn execute_tasks_command_status_surfaces_approval_and_tool_policy() {
     );
     assert_eq!(
         execution.payload["task"]["tool_policy"]["effective_tool_ids"][0],
-        "file.read"
+        "read"
     );
     assert_eq!(
         execution.payload["task"]["tool_policy"]["visible_effective_tool_ids"][0],

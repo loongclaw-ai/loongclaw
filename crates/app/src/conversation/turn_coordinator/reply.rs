@@ -1,18 +1,31 @@
 use super::*;
-
+use crate::conversation::turn_shared::ToolResultContinuation;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MissingToolContinuationExpectation {
-    RetryableFailure,
-    RetryableFailureAfterRepair,
+enum MissingToolCallExpectation {
+    Initial,
+    AfterRepair,
 }
 
-impl MissingToolContinuationExpectation {
+impl MissingToolCallExpectation {
     fn from_tool_failure(payload: &ToolDrivenFollowupPayload) -> Option<Self> {
         match payload {
-            ToolDrivenFollowupPayload::ToolFailure { reason, retryable }
-                if *retryable && reason.starts_with("missing_tool_call_followup:") =>
-            {
-                Some(Self::RetryableFailure)
+            ToolDrivenFollowupPayload::ToolFailure { reason, retryable } if *retryable => reason
+                .starts_with("missing_tool_call_followup:")
+                .then_some(Self::Initial),
+            ToolDrivenFollowupPayload::ToolFailure { .. }
+            | ToolDrivenFollowupPayload::ToolResult { .. }
+            | ToolDrivenFollowupPayload::DiscoveryRecovery { .. } => None,
+        }
+    }
+
+    fn from_followup_payload(payload: &ToolDrivenFollowupPayload) -> Option<Self> {
+        match payload {
+            ToolDrivenFollowupPayload::ToolFailure { reason, retryable } if *retryable => {
+                if reason.starts_with("missing_tool_call_followup:") {
+                    Some(Self::Initial)
+                } else {
+                    None
+                }
             }
             ToolDrivenFollowupPayload::ToolFailure { .. }
             | ToolDrivenFollowupPayload::ToolResult { .. }
@@ -22,35 +35,127 @@ impl MissingToolContinuationExpectation {
 
     fn contract_mode(self) -> ToolDrivenFollowupContractMode {
         match self {
-            Self::RetryableFailure => ToolDrivenFollowupContractMode::RetryableFailure,
-            Self::RetryableFailureAfterRepair => {
-                ToolDrivenFollowupContractMode::RepairRetryableFailure
-            }
+            Self::Initial => ToolDrivenFollowupContractMode::RetryableFailure,
+            Self::AfterRepair => ToolDrivenFollowupContractMode::RepairRetryableFailure,
         }
     }
 
     fn after_attempt(self) -> Self {
-        match self {
-            Self::RetryableFailure => Self::RetryableFailureAfterRepair,
-            Self::RetryableFailureAfterRepair => Self::RetryableFailureAfterRepair,
+        Self::AfterRepair
+    }
+
+    fn after_attempted(self) -> bool {
+        matches!(self, Self::AfterRepair)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolResultContinuationExpectation {
+    after_repair: bool,
+    continuation: ToolResultContinuation,
+}
+
+impl ToolResultContinuationExpectation {
+    fn from_followup_payload(
+        payload: &ToolDrivenFollowupPayload,
+        lane_execution: &ProviderTurnLaneExecution,
+    ) -> Option<Self> {
+        if !lane_execution.supports_provider_turn_followup {
+            return None;
+        }
+
+        match payload {
+            ToolDrivenFollowupPayload::ToolResult { .. }
+                if payload.has_nonterminal_tool_result_continuation() =>
+            {
+                payload.tool_result_continuation().map(|continuation| Self {
+                    after_repair: false,
+                    continuation,
+                })
+            }
+            ToolDrivenFollowupPayload::ToolResult { .. }
+                if lane_execution.textual_tool_parse_followup_turn =>
+            {
+                Some(Self {
+                    after_repair: false,
+                    continuation: ToolResultContinuation {
+                        state: "textual_tool_parse_followup".to_owned(),
+                        is_terminal: false,
+                        recommended_tool: None,
+                        recommended_payload: None,
+                        note: None,
+                    },
+                })
+            }
+            ToolDrivenFollowupPayload::ToolFailure { .. }
+            | ToolDrivenFollowupPayload::ToolResult { .. }
+            | ToolDrivenFollowupPayload::DiscoveryRecovery { .. } => None,
+        }
+    }
+
+    fn contract_mode(&self) -> ToolDrivenFollowupContractMode {
+        ToolDrivenFollowupContractMode::ToolResultContinuation
+    }
+
+    fn after_attempt(&self) -> Self {
+        Self {
+            after_repair: true,
+            continuation: self.continuation.clone(),
         }
     }
 
     fn after_attempted(self) -> bool {
-        matches!(self, Self::RetryableFailureAfterRepair)
+        self.after_repair
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PendingProviderFollowupExpectation {
+    MissingToolCall(MissingToolCallExpectation),
+    ToolResultContinuation(ToolResultContinuationExpectation),
+}
+
+impl PendingProviderFollowupExpectation {
+    fn from_followup_payload(
+        payload: &ToolDrivenFollowupPayload,
+        lane_execution: &ProviderTurnLaneExecution,
+    ) -> Option<Self> {
+        MissingToolCallExpectation::from_followup_payload(payload)
+            .map(Self::MissingToolCall)
+            .or_else(|| {
+                ToolResultContinuationExpectation::from_followup_payload(payload, lane_execution)
+                    .map(Self::ToolResultContinuation)
+            })
     }
 
-    fn payload_kind(self) -> ToolDrivenFollowupKind {
+    fn contract_mode(&self) -> ToolDrivenFollowupContractMode {
         match self {
-            Self::RetryableFailure | Self::RetryableFailureAfterRepair => {
-                ToolDrivenFollowupKind::ToolFailure
+            Self::MissingToolCall(expectation) => expectation.contract_mode(),
+            Self::ToolResultContinuation(expectation) => expectation.contract_mode(),
+        }
+    }
+
+    fn after_attempt(&self) -> Self {
+        match self {
+            Self::MissingToolCall(expectation) => {
+                Self::MissingToolCall(expectation.after_attempt())
             }
+            Self::ToolResultContinuation(expectation) => {
+                Self::ToolResultContinuation(expectation.after_attempt())
+            }
+        }
+    }
+
+    fn payload_kind(&self) -> ToolDrivenFollowupKind {
+        match self {
+            Self::MissingToolCall(_) => ToolDrivenFollowupKind::ToolFailure,
+            Self::ToolResultContinuation(_) => ToolDrivenFollowupKind::ToolResult,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MissingToolContinuationDecision {
+enum ProviderFollowupExpectationDecision {
     Finish {
         continuation_state: Option<ToolDrivenContinuationState>,
     },
@@ -58,66 +163,175 @@ enum MissingToolContinuationDecision {
     ForceBlockedReply,
 }
 
-fn evaluate_missing_tool_continuation(
-    expectation: MissingToolContinuationExpectation,
+fn evaluate_missing_tool_call_expectation(
+    expectation: MissingToolCallExpectation,
     parsed_reply: &ParsedToolDrivenContinuationReply,
-) -> MissingToolContinuationDecision {
+) -> ProviderFollowupExpectationDecision {
+    let reply_still_leaks_missing_tool_markup =
+        missing_tool_call_followup_payload(parsed_reply.reply.as_str()).is_some();
+    if reply_still_leaks_missing_tool_markup {
+        return if expectation.after_attempted() {
+            ProviderFollowupExpectationDecision::ForceBlockedReply
+        } else {
+            ProviderFollowupExpectationDecision::RequestRepair
+        };
+    }
+
     match parsed_reply.state {
         Some(ToolDrivenContinuationState::Continue) => {
             if expectation.after_attempted() {
-                MissingToolContinuationDecision::ForceBlockedReply
+                ProviderFollowupExpectationDecision::ForceBlockedReply
             } else {
-                MissingToolContinuationDecision::RequestRepair
+                ProviderFollowupExpectationDecision::RequestRepair
             }
         }
         Some(ToolDrivenContinuationState::Done) => {
             if parsed_reply.reply.is_empty() {
                 if expectation.after_attempted() {
-                    MissingToolContinuationDecision::ForceBlockedReply
+                    ProviderFollowupExpectationDecision::ForceBlockedReply
                 } else {
-                    MissingToolContinuationDecision::RequestRepair
+                    ProviderFollowupExpectationDecision::RequestRepair
                 }
             } else {
-                MissingToolContinuationDecision::Finish {
+                ProviderFollowupExpectationDecision::Finish {
                     continuation_state: Some(ToolDrivenContinuationState::Done),
                 }
             }
         }
         Some(ToolDrivenContinuationState::Blocked) => {
             if parsed_reply.reply.is_empty() {
-                MissingToolContinuationDecision::ForceBlockedReply
+                ProviderFollowupExpectationDecision::ForceBlockedReply
             } else {
-                MissingToolContinuationDecision::Finish {
+                ProviderFollowupExpectationDecision::Finish {
+                    continuation_state: Some(ToolDrivenContinuationState::Blocked),
+                }
+            }
+        }
+        None => {
+            let clean_plaintext_repair =
+                !parsed_reply.reply.is_empty() && !reply_still_leaks_missing_tool_markup;
+            if clean_plaintext_repair {
+                return ProviderFollowupExpectationDecision::Finish {
+                    continuation_state: None,
+                };
+            }
+            if expectation.after_attempted() {
+                ProviderFollowupExpectationDecision::ForceBlockedReply
+            } else {
+                ProviderFollowupExpectationDecision::RequestRepair
+            }
+        }
+    }
+}
+
+fn evaluate_tool_result_continuation_expectation(
+    expectation: ToolResultContinuationExpectation,
+    parsed_reply: &ParsedToolDrivenContinuationReply,
+) -> ProviderFollowupExpectationDecision {
+    match parsed_reply.state {
+        Some(ToolDrivenContinuationState::Continue) => {
+            if expectation.after_attempted() {
+                ProviderFollowupExpectationDecision::ForceBlockedReply
+            } else {
+                ProviderFollowupExpectationDecision::RequestRepair
+            }
+        }
+        Some(ToolDrivenContinuationState::Done) => {
+            if parsed_reply.reply.is_empty()
+                || expectation
+                    .continuation
+                    .reply_requests_more_evidence(parsed_reply.reply.as_str())
+            {
+                if expectation.after_attempted() {
+                    ProviderFollowupExpectationDecision::ForceBlockedReply
+                } else {
+                    ProviderFollowupExpectationDecision::RequestRepair
+                }
+            } else {
+                ProviderFollowupExpectationDecision::Finish {
+                    continuation_state: Some(ToolDrivenContinuationState::Done),
+                }
+            }
+        }
+        Some(ToolDrivenContinuationState::Blocked) => {
+            if parsed_reply.reply.is_empty() {
+                ProviderFollowupExpectationDecision::ForceBlockedReply
+            } else {
+                ProviderFollowupExpectationDecision::Finish {
                     continuation_state: Some(ToolDrivenContinuationState::Blocked),
                 }
             }
         }
         None => {
             if expectation.after_attempted() {
-                MissingToolContinuationDecision::ForceBlockedReply
+                ProviderFollowupExpectationDecision::ForceBlockedReply
             } else {
-                MissingToolContinuationDecision::RequestRepair
+                ProviderFollowupExpectationDecision::RequestRepair
             }
         }
     }
 }
 
-fn missing_tool_continuation_blocked_reply(
-    expectation: MissingToolContinuationExpectation,
+fn evaluate_pending_provider_followup(
+    expectation: &PendingProviderFollowupExpectation,
+    parsed_reply: &ParsedToolDrivenContinuationReply,
+) -> ProviderFollowupExpectationDecision {
+    match expectation {
+        PendingProviderFollowupExpectation::MissingToolCall(expectation) => {
+            evaluate_missing_tool_call_expectation(*expectation, parsed_reply)
+        }
+        PendingProviderFollowupExpectation::ToolResultContinuation(expectation) => {
+            evaluate_tool_result_continuation_expectation(expectation.clone(), parsed_reply)
+        }
+    }
+}
+
+fn sanitize_pending_provider_followup_reply(
+    expectation: &PendingProviderFollowupExpectation,
+    parsed_reply: ParsedToolDrivenContinuationReply,
+) -> ParsedToolDrivenContinuationReply {
+    if !matches!(
+        expectation,
+        &PendingProviderFollowupExpectation::MissingToolCall(_)
+    ) {
+        return parsed_reply;
+    }
+    let Some(clean_reply) = salvage_missing_tool_call_reply_text(parsed_reply.reply.as_str())
+    else {
+        return parsed_reply;
+    };
+    ParsedToolDrivenContinuationReply {
+        state: parsed_reply.state,
+        reply: clean_reply,
+    }
+}
+
+fn pending_provider_followup_blocked_reply(
+    expectation: &PendingProviderFollowupExpectation,
 ) -> String {
     match expectation.payload_kind() {
-        ToolDrivenFollowupKind::ToolFailure => "I couldn't continue because the required retry tool call was never issued. The turn stopped here instead of pretending the retry happened.".to_owned(),
+        ToolDrivenFollowupKind::ToolFailure
+            if matches!(
+                expectation,
+                &PendingProviderFollowupExpectation::MissingToolCall(_)
+            ) =>
+        {
+            "I couldn't continue because the required retry tool call was never issued. The turn stopped here instead of pretending the retry happened.".to_owned()
+        }
+        ToolDrivenFollowupKind::ToolFailure => {
+            "I couldn't continue because the retryable tool failure was not repaired with a new tool call. The turn stopped here instead of pretending the retry succeeded.".to_owned()
+        }
         ToolDrivenFollowupKind::ToolResult => "I couldn't continue because the required follow-up tool call was never issued. The turn stopped here instead of pretending the work completed.".to_owned(),
         ToolDrivenFollowupKind::DiscoveryRecovery => "I couldn't continue because the required follow-up tool call was never issued.".to_owned(),
     }
 }
 
-fn build_missing_tool_continuation_repair_messages(
+fn build_followup_repair_messages(
     base_messages: &[Value],
     assistant_reply: &str,
     user_input: &str,
     loop_warning_reason: Option<&str>,
-    expectation: MissingToolContinuationExpectation,
+    continuation_contract: ToolDrivenFollowupContractMode,
 ) -> Vec<Value> {
     let mut messages = base_messages.to_vec();
     let assistant_reply = assistant_reply.trim();
@@ -127,8 +341,7 @@ fn build_missing_tool_continuation_repair_messages(
             "content": assistant_reply,
         }));
     }
-    let continuation_contract =
-        render_tool_followup_continuation_contract(expectation.contract_mode());
+    let continuation_contract = render_tool_followup_continuation_contract(continuation_contract);
     messages.push(json!({
         "role": "user",
         "content": build_tool_followup_user_prompt_with_context(
@@ -148,7 +361,7 @@ struct ProviderReplyLoopState {
     current_continue_phase: ProviderTurnContinuePhase,
     remaining_provider_rounds: usize,
     provider_round_index: usize,
-    pending_missing_tool_continuation: Option<MissingToolContinuationExpectation>,
+    pending_followup_expectation: Option<PendingProviderFollowupExpectation>,
 }
 
 impl ProviderReplyLoopState {
@@ -162,7 +375,7 @@ impl ProviderReplyLoopState {
             current_continue_phase: continue_phase.clone(),
             remaining_provider_rounds: remaining_provider_rounds.max(1),
             provider_round_index: 0,
-            pending_missing_tool_continuation: None,
+            pending_followup_expectation: None,
         }
     }
 
@@ -186,7 +399,7 @@ enum ReplyLoopDecision {
     },
     RepairFollowup {
         raw_reply: String,
-        expectation: MissingToolContinuationExpectation,
+        expectation: PendingProviderFollowupExpectation,
         loop_warning_reason: Option<String>,
     },
     GuardFollowup {
@@ -202,14 +415,21 @@ fn build_reply_loop_decision(state: &mut ProviderReplyLoopState) -> ReplyLoopDec
             let latest_tool_payload = tool_driven_followup_payload(
                 state.current_continue_phase.lane_execution.had_tool_intents,
                 &state.current_continue_phase.lane_execution.turn_result,
-            );
+            )
+            .or_else(|| {
+                state
+                    .current_continue_phase
+                    .carried_followup_payload
+                    .clone()
+                    .filter(ToolDrivenFollowupPayload::requests_runtime_followup_chain)
+            });
             if let Some(reason) = state.current_continue_phase.hard_stop_reason() {
                 ReplyLoopDecision::GuardFollowup {
                     raw_reply: reply.clone(),
                     reason: reason.to_owned(),
                     latest_tool_payload,
                 }
-            } else if let Some(expectation) = state.pending_missing_tool_continuation.take() {
+            } else if let Some(expectation) = state.pending_followup_expectation.take() {
                 let parsed_reply = parse_tool_driven_continuation_reply(
                     state
                         .current_continue_phase
@@ -217,15 +437,15 @@ fn build_reply_loop_decision(state: &mut ProviderReplyLoopState) -> ReplyLoopDec
                         .assistant_preface
                         .as_str(),
                 );
-                match evaluate_missing_tool_continuation(expectation, &parsed_reply) {
-                    MissingToolContinuationDecision::Finish { continuation_state } => {
+                match evaluate_pending_provider_followup(&expectation, &parsed_reply) {
+                    ProviderFollowupExpectationDecision::Finish { continuation_state } => {
                         ReplyLoopDecision::FinalizeDirect {
                             reply: reply.clone(),
                             latest_tool_payload,
                             continuation_state,
                         }
                     }
-                    MissingToolContinuationDecision::RequestRepair => {
+                    ProviderFollowupExpectationDecision::RequestRepair => {
                         ReplyLoopDecision::RepairFollowup {
                             raw_reply: reply.clone(),
                             expectation,
@@ -235,9 +455,9 @@ fn build_reply_loop_decision(state: &mut ProviderReplyLoopState) -> ReplyLoopDec
                                 .map(ToOwned::to_owned),
                         }
                     }
-                    MissingToolContinuationDecision::ForceBlockedReply => {
+                    ProviderFollowupExpectationDecision::ForceBlockedReply => {
                         ReplyLoopDecision::FinalizeDirect {
-                            reply: missing_tool_continuation_blocked_reply(expectation),
+                            reply: pending_provider_followup_blocked_reply(&expectation),
                             latest_tool_payload,
                             continuation_state: Some(ToolDrivenContinuationState::Blocked),
                         }
@@ -256,10 +476,14 @@ fn build_reply_loop_decision(state: &mut ProviderReplyLoopState) -> ReplyLoopDec
                         .loop_warning_reason()
                         .map(ToOwned::to_owned),
                 }
-            } else if state
+            } else if (state
                 .current_continue_phase
                 .lane_execution
                 .supports_provider_turn_followup
+                || state
+                    .current_continue_phase
+                    .lane_execution
+                    .provider_originated_tool_intents)
                 && (!state
                     .current_continue_phase
                     .lane_execution
@@ -267,14 +491,7 @@ fn build_reply_loop_decision(state: &mut ProviderReplyLoopState) -> ReplyLoopDec
                     || state
                         .current_continue_phase
                         .lane_execution
-                        .discovery_search_turn
-                    || assistant_preface_signals_provider_turn_followup(
-                        state
-                            .current_continue_phase
-                            .lane_execution
-                            .assistant_preface
-                            .as_str(),
-                    ))
+                        .discovery_search_turn)
                 && let Some(payload) = latest_tool_payload
             {
                 ReplyLoopDecision::Followup {
@@ -330,7 +547,7 @@ fn finalize_provider_reply(
 ) -> ResolvedProviderTurn {
     #[cfg(feature = "memory-sqlite")]
     if let Some(latest_tool_payload) = latest_tool_payload.as_ref() {
-        persist_active_external_skills_from_followup_payload_if_needed(
+        persist_active_skills_from_followup_payload_if_needed(
             &continue_phase.followup_config,
             session_id,
             latest_tool_payload,
@@ -364,7 +581,7 @@ async fn handle_guard_followup_reply<R: ConversationRuntime + ?Sized>(
 ) -> ResolvedProviderTurn {
     #[cfg(feature = "memory-sqlite")]
     if let Some(latest_tool_payload) = latest_tool_payload.as_ref() {
-        persist_active_external_skills_from_followup_payload_if_needed(
+        persist_active_skills_from_followup_payload_if_needed(
             &state.current_continue_phase.followup_config,
             session_id,
             latest_tool_payload,
@@ -402,7 +619,7 @@ fn provider_turn_missing_tool_followup_payload(
     lane_execution: &ProviderTurnLaneExecution,
     reply_text: &str,
 ) -> Option<ToolDrivenFollowupPayload> {
-    if !lane_execution.supports_provider_turn_followup || lane_execution.had_tool_intents {
+    if lane_execution.had_tool_intents {
         return None;
     }
 
@@ -410,7 +627,7 @@ fn provider_turn_missing_tool_followup_payload(
         lane_execution
             .malformed_parse_followup_turn
             .then(|| ToolDrivenFollowupPayload::ToolFailure {
-                reason: "missing_tool_call_followup: previous provider reply contained malformed tool-call markup instead of a valid tool call. If another tool is required, emit the exact next tool call now instead of malformed tool text.".to_owned(),
+                reason: "missing_tool_call_followup: previous provider reply contained malformed tool-call markup instead of a valid tool call. If another tool is required, emit the exact next tool call now instead of malformed tool text or leaked wrapper text.".to_owned(),
                 retryable: true,
             })
     })
@@ -433,18 +650,25 @@ async fn handle_followup_reply_decision<R: ConversationRuntime + ?Sized>(
     current_continue_phase: &mut ProviderTurnContinuePhase,
     remaining_provider_rounds: &mut usize,
     provider_round_index: &mut usize,
-    pending_missing_tool_continuation: &mut Option<MissingToolContinuationExpectation>,
+    pending_followup_expectation: &mut Option<PendingProviderFollowupExpectation>,
     raw_reply: String,
     followup: ToolDrivenFollowupPayload,
     requires_completion_pass: bool,
     loop_warning_reason: Option<String>,
 ) -> Option<ResolvedProviderTurn> {
-    let continuation_expectation = MissingToolContinuationExpectation::from_tool_failure(&followup);
+    let continuation_expectation = PendingProviderFollowupExpectation::from_followup_payload(
+        &followup,
+        &current_continue_phase.lane_execution,
+    );
     let provider_continuation_enabled = current_continue_phase
         .lane_execution
-        .supports_provider_turn_followup;
+        .supports_provider_turn_followup
+        || (current_continue_phase
+            .lane_execution
+            .provider_originated_tool_intents
+            && matches!(followup, ToolDrivenFollowupPayload::ToolResult { .. }));
     #[cfg(feature = "memory-sqlite")]
-    persist_active_external_skills_from_followup_payload_if_needed(
+    persist_active_skills_from_followup_payload_if_needed(
         &current_continue_phase.followup_config,
         session_id,
         &followup,
@@ -462,7 +686,9 @@ async fn handle_followup_reply_decision<R: ConversationRuntime + ?Sized>(
             .as_deref(),
         user_input,
         loop_warning_reason.as_deref(),
-        continuation_expectation.map(MissingToolContinuationExpectation::contract_mode),
+        continuation_expectation
+            .as_ref()
+            .map(PendingProviderFollowupExpectation::contract_mode),
     );
 
     if provider_continuation_enabled && *remaining_provider_rounds > 1 {
@@ -552,7 +778,7 @@ async fn handle_followup_reply_decision<R: ConversationRuntime + ?Sized>(
                     followup_preparation.turn_id.as_str(),
                 );
                 let returned_tool_intent_count = turn.tool_intents.len();
-                let followup_result = summarize_discovery_first_followup_turn(&turn);
+                let followup_result = summarize_followup_turn(&turn);
                 if current_continue_phase.lane_execution.discovery_search_turn {
                     emit_discovery_first_event(
                         runtime,
@@ -563,7 +789,7 @@ async fn handle_followup_reply_decision<R: ConversationRuntime + ?Sized>(
                             "outcome": followup_result.outcome,
                             "followup_tool_name": followup_result.followup_tool_name,
                             "followup_target_tool_id": followup_result.followup_target_tool_id,
-                            "resolved_to_tool_invoke": followup_result.resolved_to_tool_invoke,
+                            "used_legacy_hidden_tool_wrapper": followup_result.used_legacy_hidden_tool_wrapper,
                             "raw_tool_output_requested": current_continue_phase
                                 .lane_execution
                                 .raw_tool_output_requested,
@@ -598,11 +824,12 @@ async fn handle_followup_reply_decision<R: ConversationRuntime + ?Sized>(
                         .lane_execution
                         .supports_provider_turn_followup
                         || provider_continuation_enabled,
+                    current_continue_phase.carried_followup_payload.clone(),
                 )
                 .await;
                 *current_preparation = followup_preparation;
                 *provider_round_index = provider_round_index.saturating_add(1);
-                *pending_missing_tool_continuation = if returned_tool_intent_count == 0 {
+                *pending_followup_expectation = if returned_tool_intent_count == 0 {
                     continuation_expectation
                 } else {
                     None
@@ -625,7 +852,7 @@ async fn handle_followup_reply_decision<R: ConversationRuntime + ?Sized>(
                             "outcome": "provider_error",
                             "followup_tool_name": Value::Null,
                             "followup_target_tool_id": Value::Null,
-                            "resolved_to_tool_invoke": false,
+                            "used_legacy_hidden_tool_wrapper": false,
                             "raw_tool_output_requested": current_continue_phase
                                 .lane_execution
                                 .raw_tool_output_requested,
@@ -664,44 +891,49 @@ async fn handle_followup_reply_decision<R: ConversationRuntime + ?Sized>(
         )
         .await;
         let (reply, continuation_state) = if let Some(expectation) = continuation_expectation {
-            match evaluate_missing_tool_continuation(expectation, &completion_reply) {
-                MissingToolContinuationDecision::Finish { continuation_state } => {
+            let completion_reply =
+                sanitize_pending_provider_followup_reply(&expectation, completion_reply);
+            match evaluate_pending_provider_followup(&expectation, &completion_reply) {
+                ProviderFollowupExpectationDecision::Finish { continuation_state } => {
                     (completion_reply.reply, continuation_state)
                 }
-                MissingToolContinuationDecision::RequestRepair => {
+                ProviderFollowupExpectationDecision::RequestRepair => {
                     let repair_expectation = expectation.after_attempt();
-                    let repair_messages = build_missing_tool_continuation_repair_messages(
+                    let repair_messages = build_followup_repair_messages(
                         &current_preparation.session.messages,
                         completion_reply.reply.as_str(),
                         user_input,
                         loop_warning_reason.as_deref(),
-                        repair_expectation,
+                        repair_expectation.contract_mode(),
                     );
-                    let repaired_completion_reply = request_completion_with_raw_fallback_detailed(
-                        runtime,
-                        &current_continue_phase.followup_config,
-                        &repair_messages,
-                        binding,
-                        raw_reply.as_str(),
-                        retry_progress.clone(),
-                    )
-                    .await;
-                    match evaluate_missing_tool_continuation(
-                        repair_expectation,
+                    let repaired_completion_reply = sanitize_pending_provider_followup_reply(
+                        &repair_expectation,
+                        request_completion_with_raw_fallback_detailed(
+                            runtime,
+                            &current_continue_phase.followup_config,
+                            &repair_messages,
+                            binding,
+                            raw_reply.as_str(),
+                            retry_progress.clone(),
+                        )
+                        .await,
+                    );
+                    match evaluate_pending_provider_followup(
+                        &repair_expectation,
                         &repaired_completion_reply,
                     ) {
-                        MissingToolContinuationDecision::Finish { continuation_state } => {
+                        ProviderFollowupExpectationDecision::Finish { continuation_state } => {
                             (repaired_completion_reply.reply, continuation_state)
                         }
-                        MissingToolContinuationDecision::RequestRepair
-                        | MissingToolContinuationDecision::ForceBlockedReply => (
-                            missing_tool_continuation_blocked_reply(repair_expectation),
+                        ProviderFollowupExpectationDecision::RequestRepair
+                        | ProviderFollowupExpectationDecision::ForceBlockedReply => (
+                            pending_provider_followup_blocked_reply(&repair_expectation),
                             Some(ToolDrivenContinuationState::Blocked),
                         ),
                     }
                 }
-                MissingToolContinuationDecision::ForceBlockedReply => (
-                    missing_tool_continuation_blocked_reply(expectation),
+                ProviderFollowupExpectationDecision::ForceBlockedReply => (
+                    pending_provider_followup_blocked_reply(&expectation),
                     Some(ToolDrivenContinuationState::Blocked),
                 ),
             }
@@ -741,13 +973,13 @@ async fn handle_repair_followup_reply<R: ConversationRuntime + ?Sized>(
     current_continue_phase: &mut ProviderTurnContinuePhase,
     remaining_provider_rounds: &mut usize,
     provider_round_index: &mut usize,
-    pending_missing_tool_continuation: &mut Option<MissingToolContinuationExpectation>,
+    pending_followup_expectation: &mut Option<PendingProviderFollowupExpectation>,
     raw_reply: String,
-    expectation: MissingToolContinuationExpectation,
+    expectation: PendingProviderFollowupExpectation,
     loop_warning_reason: Option<String>,
 ) -> Option<ResolvedProviderTurn> {
     if *remaining_provider_rounds <= 1 {
-        let reply = missing_tool_continuation_blocked_reply(expectation);
+        let reply = pending_provider_followup_blocked_reply(&expectation);
         let checkpoint = current_continue_phase.checkpoint_with_continuation_state(
             preparation,
             user_input,
@@ -761,12 +993,12 @@ async fn handle_repair_followup_reply<R: ConversationRuntime + ?Sized>(
         ));
     }
 
-    let repair_messages = build_missing_tool_continuation_repair_messages(
+    let repair_messages = build_followup_repair_messages(
         &current_preparation.session.messages,
         raw_reply.as_str(),
         user_input,
         loop_warning_reason.as_deref(),
-        expectation.after_attempt(),
+        expectation.after_attempt().contract_mode(),
     );
     let next_provider_round = current_provider_round.saturating_add(1);
     *remaining_provider_rounds -= 1;
@@ -775,7 +1007,7 @@ async fn handle_repair_followup_reply<R: ConversationRuntime + ?Sized>(
         match runtime.tool_view(&current_continue_phase.followup_config, session_id, binding) {
             Ok(tool_view) => tool_view,
             Err(_error) => {
-                let reply = missing_tool_continuation_blocked_reply(expectation);
+                let reply = pending_provider_followup_blocked_reply(&expectation);
                 let checkpoint = current_continue_phase.checkpoint_with_continuation_state(
                     preparation,
                     user_input,
@@ -851,11 +1083,12 @@ async fn handle_repair_followup_reply<R: ConversationRuntime + ?Sized>(
                 observer,
                 next_provider_round,
                 true,
+                current_continue_phase.carried_followup_payload.clone(),
             )
             .await;
             *current_preparation = repair_preparation;
             *provider_round_index = provider_round_index.saturating_add(1);
-            *pending_missing_tool_continuation = if repair_tool_intent_count == 0 {
+            *pending_followup_expectation = if repair_tool_intent_count == 0 {
                 Some(expectation.after_attempt())
             } else {
                 None
@@ -864,7 +1097,7 @@ async fn handle_repair_followup_reply<R: ConversationRuntime + ?Sized>(
         }
         ProviderTurnRequestAction::FinalizeInlineProviderError { .. }
         | ProviderTurnRequestAction::ReturnError { .. } => {
-            let reply = missing_tool_continuation_blocked_reply(expectation);
+            let reply = pending_provider_followup_blocked_reply(&expectation);
             let checkpoint = current_continue_phase.checkpoint_with_continuation_state(
                 preparation,
                 user_input,
@@ -967,7 +1200,7 @@ pub(super) async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>
                     &mut state.current_continue_phase,
                     &mut state.remaining_provider_rounds,
                     &mut state.provider_round_index,
-                    &mut state.pending_missing_tool_continuation,
+                    &mut state.pending_followup_expectation,
                     raw_reply,
                     followup,
                     requires_completion_pass,
@@ -1000,7 +1233,7 @@ pub(super) async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>
                     &mut state.current_continue_phase,
                     &mut state.remaining_provider_rounds,
                     &mut state.provider_round_index,
-                    &mut state.pending_missing_tool_continuation,
+                    &mut state.pending_followup_expectation,
                     raw_reply,
                     expectation,
                     loop_warning_reason,
@@ -1035,7 +1268,7 @@ pub(super) async fn resolve_provider_turn_reply<R: ConversationRuntime + ?Sized>
 }
 
 #[cfg(feature = "memory-sqlite")]
-pub(super) fn persist_active_external_skills_from_followup_payload_if_needed(
+pub(super) fn persist_active_skills_from_followup_payload_if_needed(
     config: &LoongConfig,
     session_id: &str,
     payload: &ToolDrivenFollowupPayload,
@@ -1046,11 +1279,10 @@ pub(super) fn persist_active_external_skills_from_followup_payload_if_needed(
 
     let tool_runtime_config =
         crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None);
-    let updates =
-        active_external_skills::collect_active_external_skills_from_tool_result_text_with_config(
-            text,
-            &tool_runtime_config,
-        );
+    let updates = active_skills::collect_active_skills_from_tool_result_text_with_config(
+        text,
+        &tool_runtime_config,
+    );
     if updates.is_empty() {
         return;
     }
@@ -1059,13 +1291,10 @@ pub(super) fn persist_active_external_skills_from_followup_payload_if_needed(
     let Ok(repo) = SessionRepository::new(&memory_config) else {
         return;
     };
-    let Ok(existing_state) =
-        active_external_skills::load_persisted_active_external_skills(&repo, session_id)
-    else {
+    let Ok(existing_state) = active_skills::load_persisted_active_skills(&repo, session_id) else {
         return;
     };
-    let Some(merged_state) =
-        active_external_skills::merge_active_external_skills(existing_state.clone(), updates)
+    let Some(merged_state) = active_skills::merge_active_skills(existing_state.clone(), updates)
     else {
         return;
     };
@@ -1075,11 +1304,11 @@ pub(super) fn persist_active_external_skills_from_followup_payload_if_needed(
 
     let _ = repo.append_event(NewSessionEvent {
         session_id: session_id.to_owned(),
-        event_kind: active_external_skills::ACTIVE_EXTERNAL_SKILLS_EVENT_KIND.to_owned(),
+        event_kind: active_skills::ACTIVE_SKILLS_EVENT_KIND.to_owned(),
         actor_session_id: Some(session_id.to_owned()),
         payload_json: json!({
             "source": "tool_followup",
-            "active_external_skills": merged_state,
+            "active_skills": merged_state,
         }),
     });
 }
@@ -1109,6 +1338,8 @@ pub(super) fn build_turn_reply_followup_messages_with_warning(
     user_input: &str,
     loop_warning_reason: Option<&str>,
 ) -> Vec<Value> {
+    let continuation_contract = MissingToolCallExpectation::from_tool_failure(&followup)
+        .map(MissingToolCallExpectation::contract_mode);
     build_turn_reply_followup_messages_with_contract(
         base_messages,
         assistant_preface,
@@ -1116,7 +1347,7 @@ pub(super) fn build_turn_reply_followup_messages_with_warning(
         tool_request_summary,
         user_input,
         loop_warning_reason,
-        None,
+        continuation_contract,
     )
 }
 

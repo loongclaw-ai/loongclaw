@@ -9,9 +9,8 @@ use crate::CliResult;
 use crate::KernelContext;
 use crate::config::LoongConfig;
 use crate::conversation::{
-    ContextArtifactDescriptor, ContextArtifactKind, PromptCompiler, PromptFragment, PromptLane,
-    PromptRenderPolicy, ToolOutputStreamingPolicy,
-    latest_tool_discovery_state_from_assistant_contents,
+    ContextArtifactDescriptor, ContextArtifactKind, PromptCompiler, PromptFragment,
+    ToolOutputStreamingPolicy,
 };
 use crate::runtime_identity;
 use crate::runtime_self;
@@ -24,6 +23,9 @@ use crate::memory;
 use crate::session::repository::{SessionNodeKind, SessionRepository};
 #[cfg(feature = "memory-sqlite")]
 use crate::session::store::SessionStoreConfig;
+
+#[path = "request_message_prompt_contract.rs"]
+mod prompt_contract;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProjectedMessageContext {
@@ -263,10 +265,19 @@ fn build_prompt_fragments_from_prompt_sources(
 ) -> Vec<PromptFragment> {
     let system_prompt = config.cli.resolved_system_prompt();
     let system_text = system_prompt.trim().to_owned();
-    let capability_snapshot =
-        tools::capability_snapshot_for_view_with_config(tool_view, tool_runtime_config);
-    let deferred_tool_text_workflow = render_deferred_tool_text_workflow_section_if_needed(config);
-    let execution_discipline_section = render_execution_discipline_section();
+    let provider_tool_surface = super::native_tool_surface::provider_tool_surface(config);
+    let prompt_surface = provider_tool_surface
+        .materialize(config, tool_view, tool_runtime_config)
+        .map(|surface_plan| surface_plan.prompt)
+        .unwrap_or_else(|_| super::native_tool_surface::ProviderToolPromptSurface {
+            capability_snapshot: tools::capability_snapshot_for_view_with_config(
+                tool_view,
+                tool_runtime_config,
+            ),
+            prompt_sections: Vec::new(),
+        });
+    let capability_snapshot = prompt_surface.capability_snapshot;
+    let native_tool_sections = prompt_surface.prompt_sections;
     let workspace_guidance_section = workspace_guidance_model
         .as_ref()
         .and_then(workspace_guidance::render_workspace_guidance_section);
@@ -281,164 +292,19 @@ fn build_prompt_fragments_from_prompt_sources(
     let runtime_identity_section = resolved_runtime_identity
         .as_ref()
         .map(runtime_identity::render_runtime_identity_section);
+    let runtime_scope_section = Some(prompt_contract::render_runtime_scope_section(config));
 
-    let mut prompt_fragments = Vec::new();
-
-    if !system_text.is_empty() {
-        let base_fragment = PromptFragment::new(
-            "base-system",
-            PromptLane::BaseSystem,
-            "base-system",
-            system_text,
-            ContextArtifactKind::SystemPrompt,
-        )
-        .with_dedupe_key("base-system")
-        .with_cacheable(true);
-
-        prompt_fragments.push(base_fragment);
-    }
-
-    if let Some(section) = workspace_guidance_section {
-        let workspace_guidance_fragment = PromptFragment::new(
-            "workspace-guidance",
-            PromptLane::WorkspaceGuidance,
-            "workspace-guidance",
-            section,
-            ContextArtifactKind::RuntimeContract,
-        )
-        .with_cacheable(true);
-
-        prompt_fragments.push(workspace_guidance_fragment);
-    }
-
-    if let Some(section) = runtime_self_section {
-        let runtime_self_fragment = PromptFragment::new(
-            "runtime-self",
-            PromptLane::RuntimeSelf,
-            "runtime-self",
-            section,
-            ContextArtifactKind::RuntimeContract,
-        )
-        .with_cacheable(true);
-
-        prompt_fragments.push(runtime_self_fragment);
-    }
-
-    if let Some(section) = runtime_identity_section {
-        let runtime_identity_fragment = PromptFragment::new(
-            "runtime-identity",
-            PromptLane::RuntimeIdentity,
-            "runtime-identity",
-            section,
-            ContextArtifactKind::Profile,
-        )
-        .with_cacheable(true);
-
-        prompt_fragments.push(runtime_identity_fragment);
-    }
-
-    let execution_discipline_fragment = PromptFragment::new(
-        "execution-discipline",
-        PromptLane::ExecutionDiscipline,
-        "execution-discipline",
-        execution_discipline_section,
-        ContextArtifactKind::RuntimeContract,
-    )
-    .with_cacheable(true);
-
-    prompt_fragments.push(execution_discipline_fragment);
-
-    if let Some(section) = extra_section {
-        let binding_fragment = PromptFragment::new(
-            "governed-runtime-binding",
-            PromptLane::CapabilitySnapshot,
-            "governed-runtime-binding",
-            section,
-            ContextArtifactKind::RuntimeContract,
-        )
-        .with_cacheable(true);
-
-        prompt_fragments.push(binding_fragment);
-    }
-
-    let capability_fragment = PromptFragment::new(
-        "capability-snapshot",
-        PromptLane::CapabilitySnapshot,
-        "capability-snapshot",
+    prompt_contract::build_prompt_fragments_from_prompt_sources(
+        config,
+        system_text,
+        workspace_guidance_section,
+        runtime_self_section,
+        runtime_identity_section,
+        runtime_scope_section,
+        extra_section,
         capability_snapshot,
-        ContextArtifactKind::RuntimeContract,
+        native_tool_sections,
     )
-    .with_cacheable(true);
-
-    prompt_fragments.push(capability_fragment);
-
-    if let Some(section) = deferred_tool_text_workflow {
-        let deferred_tool_text_fragment = PromptFragment::new(
-            "deferred-tool-text-workflow",
-            PromptLane::CapabilitySnapshot,
-            "deferred-tool-text-workflow",
-            section,
-            ContextArtifactKind::RuntimeContract,
-        )
-        .with_cacheable(true);
-
-        prompt_fragments.push(deferred_tool_text_fragment);
-    }
-
-    prompt_fragments
-}
-
-fn render_execution_discipline_section() -> String {
-    let lines = [
-        "## Execution Discipline".to_owned(),
-        "<tool_persistence>".to_owned(),
-        "- Use tools whenever they materially improve correctness, completeness, or grounding."
-            .to_owned(),
-        "- Do not stop early when another bounded tool call would likely close an evidence gap."
-            .to_owned(),
-        "- If one retrieval path returns partial or empty results, retry with a different bounded strategy before asking the user."
-            .to_owned(),
-        "- Prefer continuing through bounded intermediate steps over narrating every step to the user."
-            .to_owned(),
-        "</tool_persistence>".to_owned(),
-        "<mandatory_tool_use>".to_owned(),
-        "- Do not answer live system, file-content, git-state, or current-fact questions from memory when runtime retrieval is available."
-            .to_owned(),
-        "- Prefer runtime evidence over recalled assumptions about the environment you are currently executing in."
-            .to_owned(),
-        "</mandatory_tool_use>".to_owned(),
-        "<act_dont_ask>".to_owned(),
-        "- When ambiguity does not change the next tool or runtime action, act on the obvious local interpretation."
-            .to_owned(),
-        "- Ask only when the missing detail changes the required tool, target, or side effect."
-            .to_owned(),
-        "- Do not emit incremental progress chatter after each tool result; keep going until you can deliver a completed result, a concrete blocker, or a real approval request."
-            .to_owned(),
-        "</act_dont_ask>".to_owned(),
-        "<prerequisite_checks>".to_owned(),
-        "- Before a mutating step or a high-confidence claim, check whether discovery, inspection, or preflight lookup is still needed."
-            .to_owned(),
-        "- Treat prerequisite discovery as part of the task rather than optional ceremony."
-            .to_owned(),
-        "</prerequisite_checks>".to_owned(),
-        "<verification>".to_owned(),
-        "- Before finalizing, check correctness, grounding, output shape, and whether a real stop condition has been reached."
-            .to_owned(),
-        "- A reply is not by itself proof that a long-running task is complete."
-            .to_owned(),
-        "- Queued async work, waiting task handles, blocked task states, and pending approvals are intermediate runtime states, not final completion."
-            .to_owned(),
-        "</verification>".to_owned(),
-        "<missing_context>".to_owned(),
-        "- If required information is retrievable, retrieve it instead of asking."
-            .to_owned(),
-        "- Ask only when the missing information is not locally or remotely retrievable."
-            .to_owned(),
-        "- If you must proceed under uncertainty, label assumptions explicitly.".to_owned(),
-        "</missing_context>".to_owned(),
-    ];
-
-    lines.join("\n")
 }
 
 async fn load_workspace_guidance_model_with_binding_and_budget(
@@ -486,87 +352,8 @@ async fn load_workspace_guidance_model_with_binding_and_budget(
     model
 }
 
-fn render_deferred_tool_text_workflow_section_if_needed(config: &LoongConfig) -> Option<String> {
-    let tool_schema_mode = config.provider.resolved_tool_schema_mode_config();
-    let tool_schema_disabled =
-        tool_schema_mode == crate::config::ProviderToolSchemaModeConfig::Disabled;
-    if !tool_schema_disabled {
-        return None;
-    }
-
-    Some(render_deferred_tool_text_workflow_section())
-}
-
-fn render_deferred_tool_text_workflow_section() -> String {
-    let direct_call_example_lines = [
-        "{",
-        "  \"name\": \"read\",",
-        "  \"arguments\": {",
-        "    \"path\": \"README.md\"",
-        "  }",
-        "}",
-    ];
-    let direct_call_example = direct_call_example_lines.join("\n");
-
-    let discovery_call_example_lines = [
-        "{",
-        "  \"name\": \"tool_search\",",
-        "  \"arguments\": {",
-        "    \"query\": \"approval session status\",",
-        "    \"limit\": 5",
-        "  }",
-        "}",
-    ];
-    let discovery_call_example = discovery_call_example_lines.join("\n");
-
-    let invoke_call_example_lines = [
-        "{",
-        "  \"name\": \"tool_invoke\",",
-        "  \"arguments\": {",
-        "    \"tool_id\": \"agent\",",
-        "    \"lease\": \"<lease from tool_search>\",",
-        "    \"arguments\": {",
-        "      \"operation\": \"session-status\",",
-        "      \"session_id\": \"<session id>\"",
-        "    }",
-        "  }",
-        "}",
-    ];
-    let invoke_call_example = invoke_call_example_lines.join("\n");
-
-    let lines = [
-        "## Tool Access".to_owned(),
-        "Structured provider tool schemas are disabled for this profile.".to_owned(),
-        "Use the smallest tool that fits: `read`, `write`, `exec`, `web`, `browser`, or `memory`. These direct tools are the normal path.".to_owned(),
-        "For `web`, distinguish search-provider mode from ordinary network mode: `web { query }` uses web-search providers, while `web { url }` or low-level request fields are still normal network access.".to_owned(),
-        "Use `tool_search` only when the task needs a hidden surface such as `agent`, `skills`, or `channel`, and keep the query short and capability-focused.".to_owned(),
-        "Use `tool_invoke` only with a fresh lease returned by `tool_search`; do not route normal direct-tool work through leases.".to_owned(),
-        "Grouped hidden surfaces such as `agent`, `skills`, and `channel` are not direct tool calls. If `tool_search` returns one of them, pass it back through `tool_invoke` with the returned lease instead of emitting that grouped name directly.".to_owned(),
-        "When you need a tool, emit the raw JSON call instead of only describing the missing capability.".to_owned(),
-        "Direct tool example:".to_owned(),
-        direct_call_example,
-        "In raw JSON tool calls, use the provider tool names `tool_search` and `tool_invoke`.".to_owned(),
-        "tool_invoke leases are short-lived; after any invalid_tool_lease response, refresh with tool_search before retrying.".to_owned(),
-        "If you already know the tool id, refresh directly with exact_tool_id to fetch a fresh lease card.".to_owned(),
-        "Hidden-tool discovery example:".to_owned(),
-        discovery_call_example,
-        "Hidden-tool invocation example:".to_owned(),
-        invoke_call_example,
-    ];
-
-    lines.join("\n")
-}
-
 fn render_governed_runtime_binding_section(binding: ProviderRuntimeBinding<'_>) -> String {
-    let kernel_binding = if binding.is_kernel_bound() {
-        "present"
-    } else {
-        "absent"
-    };
-    format!(
-        "## Governed Runtime Binding\n- session_mode: {}\n- kernel_binding: {kernel_binding}",
-        binding.session_mode().as_str()
-    )
+    prompt_contract::render_governed_runtime_binding_section(binding)
 }
 
 fn build_base_artifacts(messages: &[Value]) -> Vec<ContextArtifactDescriptor> {
@@ -642,7 +429,7 @@ async fn read_runtime_self_source_via_kernel(
 ) -> Option<String> {
     let request_path = workspace_guidance::workspace_source_request_path(workspace_root, path)?;
     let request = ToolCoreRequest {
-        tool_name: "file.read".to_owned(),
+        tool_name: "read".to_owned(),
         payload: json!({
             "path": request_path,
         }),
@@ -666,7 +453,7 @@ async fn read_workspace_guidance_source_via_kernel(
 ) -> Option<String> {
     let request_path = workspace_guidance::workspace_source_request_path(workspace_root, path)?;
     let request = ToolCoreRequest {
-        tool_name: "file.read".to_owned(),
+        tool_name: "read".to_owned(),
         payload: json!({
             "path": request_path,
         }),
@@ -1009,47 +796,12 @@ fn append_hydrated_memory_messages(
 
 #[cfg(feature = "memory-sqlite")]
 fn append_hydrated_tool_discovery_prompt_fragment(
-    prompt_fragments: &mut Vec<PromptFragment>,
-    tool_view: &ToolView,
-    hydrated: &memory::HydratedMemoryContext,
-    session_path_projection: Option<&SessionPathProjection>,
+    _prompt_fragments: &mut Vec<PromptFragment>,
+    _tool_view: &ToolView,
+    _hydrated: &memory::HydratedMemoryContext,
+    _session_path_projection: Option<&SessionPathProjection>,
 ) {
-    let assistant_contents = session_path_projection
-        .map(|projection| projection.assistant_contents.clone())
-        .unwrap_or_else(|| {
-            hydrated
-                .recent_window
-                .iter()
-                .filter(|turn| turn.role == "assistant")
-                .map(|turn| turn.content.trim())
-                .filter(|content| !content.is_empty())
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        });
-    let discovery_state =
-        latest_tool_discovery_state_from_assistant_contents(assistant_contents.as_slice());
-    let filtered_state = discovery_state
-        .as_ref()
-        .and_then(|discovery_state| discovery_state.filtered_for_tool_view(tool_view));
-    let Some(discovery_state) = filtered_state else {
-        return;
-    };
-
-    let content = discovery_state.render_delta_prompt();
-    let fragment = PromptFragment::new(
-        "tool-discovery-delta",
-        PromptLane::ToolDiscoveryDelta,
-        "tool-discovery-delta",
-        content,
-        ContextArtifactKind::ToolHint,
-    )
-    .with_dedupe_key("tool-discovery-delta")
-    .with_render_policy(PromptRenderPolicy::GovernedAdvisory {
-        allowed_root_headings: &[],
-    })
-    .with_tool_discovery_state(discovery_state);
-
-    prompt_fragments.push(fragment);
+    // Discovery-first prompt deltas are no longer part of the provider-facing tool contract.
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -1272,10 +1024,13 @@ mod tests {
 
     #[test]
     fn execution_discipline_section_emphasizes_continued_execution_over_progress_chatter() {
-        let section = render_execution_discipline_section();
-        assert!(section.contains("Prefer continuing through bounded intermediate steps"));
+        let section = prompt_contract::render_execution_discipline_section();
+        assert!(section.contains(
+            "Default to the best bounded action already allowed by the current runtime authority."
+        ));
+        assert!(section.contains("Continue from tool results and retrieved evidence until no useful bounded action remains."));
         assert!(section.contains("Do not emit incremental progress chatter"));
-        assert!(section.contains("intermediate runtime states, not final completion"));
+        assert!(section.contains("Only stop for a verified completion condition, a concrete blocker, or a real approval boundary."));
     }
 
     #[cfg(feature = "memory-sqlite")]
@@ -1652,10 +1407,9 @@ mod tests {
 
         assert!(system_content.contains("## Tool Access"));
         assert!(system_content.contains("`web { query }` uses web-search providers"));
-        assert!(system_content.contains("\"name\": \"tool_search\""));
-        assert!(system_content.contains("\"name\": \"tool_invoke\""));
-        assert!(system_content.contains("invalid_tool_lease"));
-        assert!(system_content.contains("exact_tool_id"));
+        assert!(system_content.contains("\"name\": \"read\""));
+        assert!(!system_content.contains("\"name\": \"tool_search\""));
+        assert!(!system_content.contains("\"name\": \"tool_invoke\""));
     }
 
     #[test]
@@ -1875,6 +1629,78 @@ mod tests {
         assert!(content.contains("<prerequisite_checks>"));
         assert!(content.contains("<verification>"));
         assert!(content.contains("<missing_context>"));
+        assert!(content.contains(
+            "do not ask for permission to inspect repository files or pages; emit the tool call"
+        ));
+        assert!(content.contains("prefer `edit` or `write` over repeated read-only inspection"));
+        assert!(content.contains(
+            "Do not claim that a file changed unless a mutating tool call actually succeeded"
+        ));
+        assert!(content.contains(
+            "the normal bounded sequence is: inspect only if needed, then `edit` or `write`, then `read` back the changed file"
+        ));
+    }
+
+    #[test]
+    fn build_system_message_includes_runtime_scope_section() {
+        let mut config = LoongConfig::default();
+        config.tools.file_root = Some("/tmp/loong-runtime-root".to_owned());
+
+        let system = build_system_message(&config, true).expect("system message");
+        let content = system["content"].as_str().expect("system content");
+
+        assert!(content.contains("## Runtime Scope"));
+        assert!(content.contains("file_root_source: explicit_file_root"));
+        assert!(content.contains("file_root: /tmp/loong-runtime-root"));
+    }
+
+    #[test]
+    fn build_system_message_emphasizes_yolo_by_default_with_runtime_boundaries() {
+        let config = LoongConfig::default();
+
+        let system = build_system_message(&config, true).expect("system message");
+        let content = system["content"].as_str().expect("system content");
+
+        assert!(content.contains("<yolo_by_default>"));
+        assert!(content.contains(
+            "Default to the best bounded action already allowed by the current runtime authority."
+        ));
+        assert!(content.contains("Do not ask for confirmation for ordinary allowed work."));
+        assert!(content.contains("Continue from tool results and retrieved evidence until no useful bounded action remains."));
+        assert!(content.contains("Only stop for a verified completion condition, a concrete blocker, or a real approval boundary."));
+        assert!(content.contains(
+            "do not ask for permission to inspect repository files or pages; emit the tool call"
+        ));
+    }
+
+    #[test]
+    fn build_system_message_explains_native_web_search_for_openai_responses() {
+        let mut config = LoongConfig::default();
+        config.provider.kind = crate::config::ProviderKind::Openai;
+        config.provider.wire_api = crate::config::ProviderWireApi::Responses;
+        config.tools.web_search.enabled = true;
+
+        let system = build_system_message(&config, true).expect("system message");
+        let content = system["content"].as_str().expect("system content");
+
+        assert!(content.contains("## Native Query Search"));
+        assert!(content.contains("native `web_search`"));
+        assert!(content.contains("Use `web` for direct URL fetches and low-level HTTP requests."));
+        assert!(content.contains("- web: fetch a URL or send an HTTP request."));
+        assert!(!content.contains("- web: fetch a URL, search the web, or send an HTTP request."));
+    }
+
+    #[test]
+    fn build_system_message_omits_native_web_search_note_when_query_search_is_disabled() {
+        let mut config = LoongConfig::default();
+        config.provider.kind = crate::config::ProviderKind::Openai;
+        config.provider.wire_api = crate::config::ProviderWireApi::Responses;
+        config.tools.web_search.enabled = false;
+
+        let system = build_system_message(&config, true).expect("system message");
+        let content = system["content"].as_str().expect("system content");
+
+        assert!(!content.contains("## Native Query Search"));
     }
 
     #[test]

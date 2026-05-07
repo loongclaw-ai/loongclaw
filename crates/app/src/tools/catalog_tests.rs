@@ -1,84 +1,6 @@
 use super::*;
 use tempfile::tempdir;
 
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_visibility_surface_requires_runtime_readiness_for_all_companion_tools() {
-    let catalog = tool_catalog();
-    let expected = [
-        ("browser.companion.session.start", ToolExecutionKind::Core),
-        ("browser.companion.navigate", ToolExecutionKind::Core),
-        ("browser.companion.snapshot", ToolExecutionKind::Core),
-        ("browser.companion.wait", ToolExecutionKind::Core),
-        ("browser.companion.session.stop", ToolExecutionKind::Core),
-        ("browser.companion.click", ToolExecutionKind::App),
-        ("browser.companion.type", ToolExecutionKind::App),
-    ];
-
-    let mut hidden = ToolRuntimeConfig::default();
-    hidden.browser_companion.enabled = true;
-    hidden.browser_companion.ready = false;
-    hidden.browser_companion.command = Some("browser-companion".to_owned());
-    let hidden_view = runtime_tool_view_for_runtime_config(&hidden);
-
-    let mut visible = ToolRuntimeConfig::default();
-    visible.browser_companion.enabled = true;
-    visible.browser_companion.ready = true;
-    visible.browser_companion.command = Some("browser-companion".to_owned());
-    let visible_view = runtime_tool_view_for_runtime_config(&visible);
-
-    for (tool_name, execution_kind) in expected {
-        let descriptor = catalog
-            .resolve(tool_name)
-            .unwrap_or_else(|| panic!("missing browser companion descriptor `{tool_name}`"));
-        assert_eq!(
-            descriptor.visibility_gate,
-            ToolVisibilityGate::BrowserCompanion
-        );
-        assert_eq!(descriptor.execution_kind, execution_kind);
-        assert!(
-            !hidden_view.contains(tool_name),
-            "tool should stay hidden until runtime-ready: {tool_name}"
-        );
-        assert!(
-            visible_view.contains(tool_name),
-            "tool should appear once runtime-ready: {tool_name}"
-        );
-    }
-}
-
-#[test]
-fn browser_companion_visibility_gate_requires_runtime_readiness() {
-    let mut config = ToolRuntimeConfig::default();
-    config.browser_companion.enabled = true;
-    config.browser_companion.ready = false;
-    config.browser_companion.command = Some("browser-companion".to_owned());
-
-    assert!(!tool_visibility_gate_enabled_for_runtime_policy(
-        ToolVisibilityGate::BrowserCompanion,
-        &config
-    ));
-
-    config.browser_companion.ready = true;
-
-    assert!(tool_visibility_gate_enabled_for_runtime_policy(
-        ToolVisibilityGate::BrowserCompanion,
-        &config
-    ));
-}
-
-#[test]
-fn browser_companion_visibility_gate_stays_hidden_for_config_only_views() {
-    let mut config = ToolConfig::default();
-    config.browser_companion.enabled = true;
-
-    assert!(!tool_visibility_gate_enabled_for_runtime_view(
-        ToolVisibilityGate::BrowserCompanion,
-        &config,
-        false
-    ));
-}
-
 #[test]
 fn memory_file_root_visibility_gate_requires_safe_root_configuration() {
     let hidden_config = ToolConfig::default();
@@ -219,11 +141,9 @@ fn runtime_tool_view_includes_memory_search_for_canonical_memory_without_workspa
 }
 
 #[test]
-fn browser_visibility_gate_is_independent_from_companion_settings() {
+fn browser_visibility_gate_tracks_browser_runtime() {
     let mut config = ToolRuntimeConfig::default();
     config.browser.enabled = true;
-    config.browser_companion.enabled = false;
-    config.browser_companion.ready = false;
 
     assert!(tool_visibility_gate_enabled_for_runtime_policy(
         ToolVisibilityGate::Browser,
@@ -383,16 +303,16 @@ fn scheduling_class_marks_parallel_safe_subset() {
     let catalog = tool_catalog();
     assert_eq!(
         catalog
-            .descriptor("tool.search")
-            .expect("tool.search descriptor")
+            .resolve("file.read")
+            .expect("file.read alias")
             .scheduling_class(),
         ToolSchedulingClass::ParallelSafe
     );
     #[cfg(feature = "tool-file")]
     assert_eq!(
         catalog
-            .descriptor("file.read")
-            .expect("file.read descriptor")
+            .resolve("file.read")
+            .expect("file.read alias")
             .scheduling_class(),
         ToolSchedulingClass::ParallelSafe
     );
@@ -445,13 +365,18 @@ fn scheduling_class_marks_parallel_safe_subset() {
 
 #[test]
 fn tool_catalog_entries_expose_concurrency_class() {
-    let search = find_tool_catalog_entry("tool.search").expect("tool.search catalog entry");
-    assert_eq!(search.scheduling_class, ToolSchedulingClass::ParallelSafe);
-    assert_eq!(search.concurrency_class, ToolConcurrencyClass::ReadOnly);
+    assert!(find_tool_catalog_entry("tool.search").is_none());
+    assert!(find_tool_catalog_entry("tool.invoke").is_none());
 
-    let invoke = find_tool_catalog_entry("tool.invoke").expect("tool.invoke catalog entry");
-    assert_eq!(invoke.scheduling_class, ToolSchedulingClass::SerialOnly);
-    assert_eq!(invoke.concurrency_class, ToolConcurrencyClass::Unknown);
+    let read = find_tool_catalog_entry("file.read").expect("file.read catalog entry");
+    assert_eq!(read.scheduling_class, ToolSchedulingClass::ParallelSafe);
+    assert_eq!(read.concurrency_class, ToolConcurrencyClass::ReadOnly);
+    assert_eq!(read.surface_id, Some("read"));
+
+    let write = find_tool_catalog_entry("file.write").expect("file.write catalog entry");
+    assert_eq!(write.scheduling_class, ToolSchedulingClass::SerialOnly);
+    assert_eq!(write.concurrency_class, ToolConcurrencyClass::Mutating);
+    assert_eq!(write.surface_id, Some("write"));
 
     let delegate_async =
         find_tool_catalog_entry("delegate_async").expect("delegate_async catalog entry");
@@ -478,33 +403,43 @@ fn tool_catalog_entries_expose_concurrency_class() {
         );
     }
 
-    let file_write = find_tool_catalog_entry("file.write").expect("file.write catalog entry");
-    assert_eq!(file_write.scheduling_class, ToolSchedulingClass::SerialOnly);
-    assert_eq!(file_write.concurrency_class, ToolConcurrencyClass::Mutating);
-    assert_eq!(file_write.surface_id, Some("write"));
-    assert!(
-        file_write
-            .usage_guidance
-            .is_some_and(|guidance| guidance.contains("normal patching and file creation"))
+    let write_alias = find_tool_catalog_entry("file.write").expect("file.write catalog entry");
+    assert_eq!(
+        write_alias.scheduling_class,
+        ToolSchedulingClass::SerialOnly
     );
+    assert_eq!(
+        write_alias.concurrency_class,
+        ToolConcurrencyClass::Mutating
+    );
+    assert_eq!(write_alias.surface_id, Some("write"));
+    assert!(write_alias.usage_guidance.is_some_and(
+        |guidance| guidance.contains("whole-file") || guidance.contains("file creation")
+    ));
 
     let bash_exec = find_tool_catalog_entry("bash.exec").expect("bash.exec catalog entry");
     assert_eq!(bash_exec.scheduling_class, ToolSchedulingClass::SerialOnly);
     assert_eq!(bash_exec.concurrency_class, ToolConcurrencyClass::Mutating);
-    assert_eq!(bash_exec.surface_id, Some("exec"));
+    assert_eq!(bash_exec.surface_id, Some("bash"));
 }
 
 #[test]
 fn tool_catalog_resolve_preserves_canonical_provider_and_alias_lookup() {
     let catalog = tool_catalog();
 
-    let canonical = catalog.resolve("tool.search").expect("canonical lookup");
-    let provider_name = catalog.resolve("tool_search").expect("provider lookup");
+    let canonical = catalog.resolve("file.read").expect("canonical lookup");
+    let provider_name = catalog.resolve("file_read").expect("provider lookup");
+    let write_alias = catalog.resolve("file_write").expect("write alias");
+    let edit_alias = catalog.resolve("file_edit").expect("edit alias");
     let alias = catalog.resolve("shell").expect("alias lookup");
 
-    assert_eq!(canonical.name, "tool.search");
-    assert_eq!(provider_name.name, "tool.search");
+    assert_eq!(canonical.name, "read");
+    assert_eq!(provider_name.name, "read");
+    assert_eq!(write_alias.name, "write");
+    assert_eq!(edit_alias.name, "edit");
     assert_eq!(alias.name, "shell.exec");
+    assert!(catalog.resolve("tool_search").is_none());
+    assert!(catalog.resolve("tool_invoke").is_none());
 }
 
 #[test]
@@ -637,14 +572,11 @@ fn governance_profile_follows_descriptor_declared_policy() {
         ToolApprovalMode::PolicyDriven
     );
 
-    let external_skills_policy = governance_profile_for_tool_name("external_skills.policy");
+    let skills_policy = governance_profile_for_tool_name("skills.policy");
 
-    assert_eq!(external_skills_policy.scope, ToolGovernanceScope::Routine);
-    assert_eq!(external_skills_policy.risk_class, ToolRiskClass::High);
-    assert_eq!(
-        external_skills_policy.approval_mode,
-        ToolApprovalMode::PolicyDriven
-    );
+    assert_eq!(skills_policy.scope, ToolGovernanceScope::Routine);
+    assert_eq!(skills_policy.risk_class, ToolRiskClass::High);
+    assert_eq!(skills_policy.approval_mode, ToolApprovalMode::PolicyDriven);
 
     let unknown_policy = governance_profile_for_tool_name("unknown.tool");
 
@@ -654,11 +586,11 @@ fn governance_profile_follows_descriptor_declared_policy() {
 #[cfg(feature = "tool-browser")]
 #[test]
 fn governance_profile_resolves_alias_backed_tool_metadata() {
-    let policy = governance_profile_for_tool_name("browser_companion_click");
+    let policy = governance_profile_for_tool_name("browser_click");
 
     assert_eq!(policy.scope, ToolGovernanceScope::Routine);
-    assert_eq!(policy.risk_class, ToolRiskClass::High);
-    assert_eq!(policy.approval_mode, ToolApprovalMode::PolicyDriven);
+    assert_eq!(policy.risk_class, ToolRiskClass::Low);
+    assert_eq!(policy.approval_mode, ToolApprovalMode::Never);
 }
 
 #[cfg(feature = "tool-shell")]
@@ -734,32 +666,16 @@ fn autonomy_capability_action_is_independent_from_governance_profile() {
 #[test]
 fn autonomy_capability_action_classifies_representative_tool_families() {
     let expectations = [
-        ("tool.search", CapabilityActionClass::Discover),
-        ("tool_search", CapabilityActionClass::Discover),
-        ("tool.invoke", CapabilityActionClass::ExecuteExisting),
+        ("file.read", CapabilityActionClass::ExecuteExisting),
+        ("file.edit", CapabilityActionClass::ExecuteExisting),
+        ("shell.exec", CapabilityActionClass::ExecuteExisting),
         ("config.import", CapabilityActionClass::ExecuteExisting),
-        (
-            "external_skills.fetch",
-            CapabilityActionClass::CapabilityFetch,
-        ),
-        (
-            "external_skills.install",
-            CapabilityActionClass::CapabilityInstall,
-        ),
-        (
-            "external_skills.invoke",
-            CapabilityActionClass::CapabilityLoad,
-        ),
         ("provider.switch", CapabilityActionClass::RuntimeSwitch),
         ("delegate", CapabilityActionClass::TopologyExpand),
         ("delegate_async", CapabilityActionClass::TopologyExpand),
         (
             "approval_request_resolve",
             CapabilityActionClass::ExecuteExisting,
-        ),
-        (
-            "external_skills.policy",
-            CapabilityActionClass::PolicyMutation,
         ),
         ("session_archive", CapabilityActionClass::SessionMutation),
         ("session_cancel", CapabilityActionClass::SessionMutation),
@@ -801,10 +717,10 @@ fn autonomy_capability_action_catalog_entries_expose_serializable_metadata() {
         find_tool_catalog_entry("delegate_async").expect("delegate_async catalog entry");
     let delegate_async_value =
         serde_json::to_value(delegate_async).expect("serialize delegate_async catalog entry");
-    let search = find_tool_catalog_entry("tool.search").expect("tool.search catalog entry");
-    let search_value = serde_json::to_value(search).expect("serialize tool.search catalog entry");
-    let invoke = find_tool_catalog_entry("tool.invoke").expect("tool.invoke catalog entry");
-    let invoke_value = serde_json::to_value(invoke).expect("serialize tool.invoke catalog entry");
+    let read = find_tool_catalog_entry("file.read").expect("file.read catalog entry");
+    let read_value = serde_json::to_value(read).expect("serialize file.read catalog entry");
+    let bash = find_tool_catalog_entry("bash.exec").expect("bash.exec catalog entry");
+    let bash_value = serde_json::to_value(bash).expect("serialize bash.exec catalog entry");
 
     assert_eq!(
         delegate_async.capability_action_class,
@@ -815,8 +731,8 @@ fn autonomy_capability_action_catalog_entries_expose_serializable_metadata() {
         "topology_expand"
     );
     assert_eq!(delegate_async_value["concurrency_class"], "mutating");
-    assert_eq!(search_value["concurrency_class"], "read_only");
-    assert_eq!(invoke_value["concurrency_class"], "unknown");
+    assert_eq!(read_value["concurrency_class"], "read_only");
+    assert_eq!(bash_value["concurrency_class"], "mutating");
 }
 
 #[test]
@@ -901,17 +817,11 @@ fn delegate_definitions_surface_shared_and_worktree_isolation_modes() {
 }
 
 #[test]
-fn external_skills_policy_definition_surfaces_update_controls() {
-    let descriptor = tool_catalog()
-        .descriptor("external_skills.policy")
-        .expect("external_skills.policy descriptor");
-    let definition = descriptor.provider_definition();
-    let properties = &definition["function"]["parameters"]["properties"];
-
-    assert_eq!(properties["action"]["enum"], json!(["get", "set", "reset"]));
-    assert!(properties["policy_update_approved"].is_object());
-    assert!(properties["allowed_domains"].is_object());
-    assert!(properties["blocked_domains"].is_object());
+fn skills_policy_is_not_exposed_in_tool_catalog() {
+    assert!(
+        tool_catalog().descriptor("skills.policy").is_none(),
+        "skills policy should stay off the model/runtime tool catalog"
+    );
 }
 
 #[cfg(feature = "tool-websearch")]
@@ -926,18 +836,6 @@ fn web_search_definition_requires_query_and_exposes_provider_override() {
     assert_eq!(parameters["required"], json!(["query"]));
     assert!(parameters["properties"]["provider"]["enum"].is_array());
     assert!(parameters["properties"]["max_results"].is_object());
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_type_definition_requires_session_selector_and_text() {
-    let descriptor = tool_catalog()
-        .descriptor("browser.companion.type")
-        .expect("browser.companion.type descriptor");
-    let definition = descriptor.provider_definition();
-    let required = &definition["function"]["parameters"]["required"];
-
-    assert_eq!(required, &json!(["session_id", "selector", "text"]));
 }
 
 #[cfg(feature = "feishu-integration")]
@@ -1004,9 +902,7 @@ fn read_definitions_surface_line_window_fields() {
     assert!(direct_parameter_types.contains(&("offset", "integer")));
     assert!(direct_parameter_types.contains(&("limit", "integer")));
 
-    let file_descriptor = catalog
-        .descriptor("file.read")
-        .expect("file.read descriptor");
+    let file_descriptor = catalog.resolve("file.read").expect("file.read alias");
     let file_definition = file_descriptor.provider_definition();
     let file_properties = &file_definition["function"]["parameters"]["properties"];
     let file_parameter_types = file_descriptor.parameter_types();
@@ -1020,16 +916,7 @@ fn read_definitions_surface_line_window_fields() {
 }
 
 #[test]
-fn exec_definition_supports_script_mode() {
+fn top_level_catalog_no_longer_exposes_public_exec_descriptor() {
     let catalog = tool_catalog();
-    let descriptor = catalog.descriptor("exec").expect("exec descriptor");
-    let definition = descriptor.provider_definition();
-    let properties = &definition["function"]["parameters"]["properties"];
-    let any_of = &definition["function"]["parameters"]["anyOf"];
-
-    assert!(properties.get("script").is_some());
-    assert!(descriptor.argument_hint().contains("script?:string"));
-    assert!(descriptor.parameter_types().contains(&("script", "string")));
-    assert_eq!(descriptor.required_fields(), Vec::<&str>::new());
-    assert!(any_of.is_array());
+    assert!(catalog.descriptor("exec").is_none());
 }

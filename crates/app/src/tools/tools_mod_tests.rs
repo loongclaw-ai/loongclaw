@@ -1,7 +1,10 @@
 use super::*;
+use crate::config::ToolConfig;
 use crate::test_support::{ScopedEnv, ScopedLoongHome, unique_temp_dir};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use loong_contracts::Capability;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 
@@ -36,7 +39,7 @@ fn test_tool_runtime_config(root: impl AsRef<Path>) -> ToolTestRuntimeConfig {
         shell_allow: BTreeSet::from(["echo".to_owned(), "cat".to_owned(), "ls".to_owned()]),
         file_root: Some(root.as_ref().to_path_buf()),
         messages_enabled: true,
-        external_skills: runtime_config::ExternalSkillsRuntimePolicy {
+        skills: runtime_config::SkillsRuntimePolicy {
             enabled: true,
             require_download_approval: true,
             allowed_domains: BTreeSet::new(),
@@ -109,6 +112,34 @@ fn execute_tool_core_with_test_context(
 }
 
 #[test]
+fn normalize_without_fs_preserves_relative_parent_segments() {
+    let normalized = normalize_without_fs(Path::new("../../workspace/./src/../README.md"));
+    assert_eq!(normalized, PathBuf::from("../../workspace/README.md"));
+}
+
+#[test]
+fn take_trusted_internal_tool_context_extracts_reserved_payload_map() {
+    let mut payload = serde_json::Map::from_iter([(
+        LOONG_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
+        json!({
+            "tool_search": {
+                "visible_tool_ids": ["read", "write"]
+            }
+        }),
+    )]);
+
+    let trusted = take_trusted_internal_tool_context(&mut payload);
+
+    assert!(payload.is_empty());
+    assert_eq!(
+        trusted.get("tool_search"),
+        Some(&json!({
+            "visible_tool_ids": ["read", "write"]
+        }))
+    );
+}
+
+#[test]
 fn expected_tool_request_error_classifies_validation_failures() {
     assert!(super::is_expected_tool_request_error(
         "tool_not_found: unknown tool `missing`"
@@ -123,7 +154,7 @@ fn expected_tool_request_error_classifies_validation_failures() {
         "direct_exec_ambiguous: provide either `command` or `script`, not both"
     ));
     assert!(super::is_expected_tool_request_error(
-        "tool_surface_unavailable: `browser` cannot route to `managed browser actions` in this runtime; read-only browser inspection is still available"
+        "direct_browser_interactive_automation_unavailable: built-in browser only supports `open`, `extract`, and page-link `click`; use the `agent-browser` skill for richer browser automation"
     ));
     assert!(super::is_expected_tool_request_error(
         "web.fetch response exceeded max_bytes limit (120000 bytes); retry with a smaller `max_bytes` or a narrower web request"
@@ -141,77 +172,18 @@ fn unique_tool_temp_dir(prefix: &str) -> PathBuf {
     unique_temp_dir(prefix)
 }
 
-const TEST_BROWSER_COMPANION_TIMEOUT_SECONDS: u64 = 120;
-
-fn browser_companion_runtime_config(
-    root: &Path,
-    command: String,
-) -> runtime_config::ToolRuntimeConfig {
-    let mut config = test_tool_runtime_config(root).into_inner();
-    config.browser_companion.enabled = true;
-    config.browser_companion.ready = true;
-    config.browser_companion.command = Some(command);
-    config.browser_companion.timeout_seconds = TEST_BROWSER_COMPANION_TIMEOUT_SECONDS;
-    config
-}
-
 mod bash_exec_tests;
 
-#[cfg(unix)]
-fn write_browser_companion_script(
-    root: &Path,
-    name: &str,
-    stdout_body: &str,
-    log_path: &Path,
-) -> PathBuf {
-    let path = root.join(name);
-    let script = format!(
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '1.2.3\\n'\n  exit 0\nfi\nBODY=''\nIFS= read -r BODY || true\nprintf '%s' \"$BODY\" > \"{}\"\nprintf '%s' '{}'\n",
-        log_path.display(),
-        stdout_body.replace('\'', "'\"'\"'")
-    );
-    crate::test_support::write_executable_script_atomically(&path, &script)
-        .expect("write browser companion script");
-    path
-}
-
 #[cfg(windows)]
-fn write_browser_companion_script(
-    root: &Path,
-    name: &str,
-    stdout_body: &str,
-    log_path: &Path,
-) -> PathBuf {
+fn write_agent_browser_cli_script(root: &Path, log_path: &Path) -> PathBuf {
     use std::fs;
 
-    let path = root.join(format!("{name}.cmd"));
+    let path = root.join("agent-browser.cmd");
     let script = format!(
-        "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo 1.2.3\r\n  exit /b 0\r\n)\r\nsetlocal enableextensions\r\nset /p BODY=\r\n> \"{}\" <nul set /p =%BODY%\r\necho {}\r\n",
-        log_path.display(),
-        stdout_body
+        "@echo off\r\nif \"%~1\"==\"--version\" (\r\n  echo agent-browser 0.23.0\r\n  exit /b 0\r\n)\r\n> \"{log}\" (\r\n  for %%A in (%*) do @echo %%~A\r\n)\r\nset \"CMD=\"\r\nset \"NEXT_IS_SESSION=\"\r\n:parse\r\nif \"%~1\"==\"\" goto parsed\r\nif /I \"%~1\"==\"--session\" (\r\n  set \"SESSION=%~2\"\r\n  shift\r\n  shift\r\n  goto parse\r\n)\r\nif /I \"%~1\"==\"--json\" (\r\n  shift\r\n  goto parse\r\n)\r\nset \"CMD=%~1\"\r\nshift\r\ngoto parsed\r\n:parsed\r\nif /I \"%CMD%\"==\"open\" (\r\n  echo {{\"success\":true,\"data\":{{\"title\":\"Example Domain\",\"url\":\"%~1\"}},\"error\":null}}\r\n  exit /b 0\r\n)\r\nif /I \"%CMD%\"==\"snapshot\" (\r\n  echo {{\"success\":true,\"data\":{{\"origin\":\"https://example.com/\",\"snapshot\":\"- link \\\"Learn more\\\" [ref=e1]\"}},\"error\":null}}\r\n  exit /b 0\r\n)\r\nif /I \"%CMD%\"==\"click\" (\r\n  echo {{\"success\":true,\"data\":{{\"clicked\":\"%~1\",\"session\":\"%SESSION%\"}},\"error\":null}}\r\n  exit /b 0\r\n)\r\nif /I \"%CMD%\"==\"close\" (\r\n  echo {{\"success\":true,\"data\":{{\"closed\":true}},\"error\":null}}\r\n  exit /b 0\r\n)\r\necho {{\"success\":false,\"data\":null,\"error\":\"unsupported command\"}}\r\nexit /b 1\r\n",
+        log = log_path.display()
     );
-    fs::write(&path, script).expect("write browser companion script");
-    path
-}
-
-#[cfg(unix)]
-fn write_browser_companion_sleep_script(root: &Path, name: &str, sleep_seconds: u64) -> PathBuf {
-    let path = root.join(name);
-    let script = format!(
-        "#!/bin/sh\nsleep {sleep_seconds}\nprintf '%s' '{{\"ok\":true,\"result\":{{\"delayed\":true}}}}'\n"
-    );
-    crate::test_support::write_executable_script_atomically(&path, &script)
-        .expect("write browser companion sleep script");
-    path
-}
-
-#[cfg(windows)]
-fn write_browser_companion_sleep_script(root: &Path, name: &str, _sleep_seconds: u64) -> PathBuf {
-    use std::fs;
-
-    let path = root.join(format!("{name}.cmd"));
-    let script = "@echo off\r\nping -n 3 127.0.0.1 > nul\r\necho {\"ok\":true,\"result\":{\"delayed\":true}}\r\n";
-    fs::write(&path, script).expect("write browser companion sleep script");
+    fs::write(&path, script).expect("write fake agent-browser cli script");
     path
 }
 
@@ -222,34 +194,25 @@ fn capability_snapshot_is_deterministic() {
     assert!(snapshot.contains("Available tools:"));
     assert!(snapshot.contains("- read:"));
     assert!(snapshot.contains("- write:"));
-    assert!(snapshot.contains("- exec:"));
+    assert!(snapshot.contains("- edit:"));
+    assert!(snapshot.contains("- bash:"));
     assert!(snapshot.contains("Available tools:"));
-    assert!(snapshot.contains(
-        "- tool.search: Discover hidden specialized tools relevant to the current task."
-    ));
-    assert!(snapshot.contains("- tool.invoke: Invoke a discovered hidden specialized tool using a valid lease from tool_search."));
-    assert!(snapshot.contains("Hidden specialized tool tags currently discoverable:"));
-    assert!(snapshot.contains("Additional specialized tools available through tool.search:"));
     assert!(snapshot.contains("Guidelines:"));
-    assert!(snapshot.contains("Keep tool.search queries short and capability-focused."));
-    assert!(snapshot.contains("Use read for repo inspection before shelling out."));
+    assert!(snapshot.contains("Use read for filesystem inspection before shelling out."));
     assert!(snapshot.contains(
             "Use `offset` and `limit` to page through large files instead of reading everything at once."
         ));
-    assert!(snapshot.contains("Use exec for normal command-line work."));
-    assert!(snapshot.contains(
-            "Use agent only for Loong's own approvals, sessions, delegation, provider routing, or config work."
-        ));
+    assert!(snapshot.contains("Use bash for normal command-line work."));
     assert!(!snapshot.contains("shell.exec"));
     assert!(!snapshot.contains("file.read"));
 
     let snapshot2 = capability_snapshot();
     assert!(snapshot2.starts_with("[tool_discovery_runtime]"));
-    assert!(snapshot2.contains("- tool.search:"));
+    assert!(snapshot2.contains("- read:"));
 }
 
 #[test]
-fn capability_snapshot_stays_compact_when_external_skills_are_installed() {
+fn capability_snapshot_stays_compact_when_skills_are_installed() {
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -272,7 +235,7 @@ fn capability_snapshot_stays_compact_when_external_skills_are_installed() {
         fs::write(path, content).expect("write fixture");
     }
 
-    let root = unique_temp_dir("loong-tool-capability-snapshot-skills");
+    let root = unique_temp_dir("loongclaw-tool-capability-snapshot-skills");
     fs::create_dir_all(&root).expect("create fixture root");
     write_file(
         &root,
@@ -283,7 +246,7 @@ fn capability_snapshot_stays_compact_when_external_skills_are_installed() {
     let config = test_tool_runtime_config(&root);
     execute_tool_core_with_config(
         ToolCoreRequest {
-            tool_name: "external_skills.install".to_owned(),
+            tool_name: "skills.install".to_owned(),
             payload: json!({
                 "path": "skills/demo-skill"
             }),
@@ -294,18 +257,19 @@ fn capability_snapshot_stays_compact_when_external_skills_are_installed() {
 
     let snapshot = capability_snapshot_with_config(&config);
     assert!(snapshot.starts_with("[tool_discovery_runtime]"));
-    assert!(snapshot.contains("[available_external_skills]"));
+    assert!(snapshot.contains("[available_skills]"));
     assert!(snapshot.contains("demo-skill"));
     assert!(snapshot.contains("Use the read tool to load a listed skill's SKILL.md file"));
     assert!(snapshot.contains("<available_skills>"));
     let expected_skill_md_path = root
-        .join("external-skills-installed")
+        .join(crate::config::HOME_DIR_NAME)
+        .join("skills")
         .join("demo-skill")
-        .join("SKILL.md")
-        .display()
-        .to_string();
+        .join("SKILL.md");
+    let expected_skill_md_path = expected_skill_md_path.to_string_lossy().replace('\\', "/");
+    let normalized_snapshot = snapshot.replace('\\', "/");
     assert!(
-        snapshot.contains(&expected_skill_md_path),
+        normalized_snapshot.contains(&expected_skill_md_path),
         "snapshot should surface installed skill path: {snapshot}"
     );
 
@@ -323,26 +287,20 @@ fn capability_snapshot_only_lists_visible_direct_and_gateway_tools() {
     assert!(snapshot.contains("Available tools:"));
     assert!(snapshot.contains("- read:"));
     assert!(snapshot.contains("- write:"));
-    assert!(snapshot.contains("- exec:"));
+    assert!(snapshot.contains("- edit:"));
+    assert!(snapshot.contains("- bash:"));
     assert!(snapshot.contains("Available tools:"));
-    assert!(snapshot.contains(
-        "- tool.search: Discover hidden specialized tools relevant to the current task."
-    ));
-    assert!(snapshot.contains("- tool.invoke: Invoke a discovered hidden specialized tool using a valid lease from tool_search."));
-    assert!(snapshot.contains("Hidden specialized tool tags currently discoverable:"));
-    assert!(snapshot.contains("Additional specialized tools available through tool.search:"));
     assert!(snapshot.contains("Guidelines:"));
-    assert!(snapshot.contains("Keep tool.search queries short and capability-focused."));
-    assert!(snapshot.contains("Use write for new files or whole-file rewrites."));
+    assert!(snapshot.contains("Use write for new files and whole-file writes."));
     assert!(!snapshot.contains("claw.migrate"));
-    assert!(!snapshot.contains("external_skills.fetch"));
+    assert!(!snapshot.contains("skills.fetch"));
     assert!(!snapshot.contains("file.read"));
     assert!(!snapshot.contains("shell.exec"));
 
     let lines: Vec<&str> = snapshot.lines().skip(1).collect();
-    assert!(lines.len() >= 8);
+    assert!(lines.len() >= 4);
     assert!(lines.iter().any(|line| line.starts_with("- read:")));
-    assert!(lines.iter().any(|line| line.starts_with("- tool.search:")));
+    assert!(lines.iter().any(|line| line.starts_with("- write:")));
 }
 
 #[cfg(all(
@@ -357,57 +315,13 @@ fn tool_registry_returns_runtime_discoverable_tools_for_default_config() {
     let entries = tool_registry_with_config(Some(&config));
     let names = entries
         .iter()
-        .map(|entry| entry.name.as_str())
+        .map(|entry| entry.name.clone())
         .collect::<BTreeSet<_>>();
-    let expected = BTreeSet::from([
-        "approval_request_resolve",
-        "approval_request_status",
-        "approval_requests_list",
-        "config.import",
-        "delegate",
-        "delegate_async",
-        "external_skills.fetch",
-        "external_skills.inspect",
-        "external_skills.install",
-        "external_skills.invoke",
-        "external_skills.list",
-        "external_skills.policy",
-        "external_skills.recommend",
-        "external_skills.remove",
-        "external_skills.resolve",
-        "external_skills.search",
-        "external_skills.source_search",
-        "provider.switch",
-        "session_archive",
-        "session_artifacts",
-        "session_cancel",
-        "session_children",
-        "session_continue",
-        "session_create_branch_summary",
-        "session_create_checkpoint",
-        "session_events",
-        "session_fork_head",
-        "session_heads",
-        "session_pin_head",
-        "session_path",
-        "session_recover",
-        "session_search",
-        "session_set_active_head",
-        "session_status",
-        "session_tool_policy_clear",
-        "session_tool_policy_set",
-        "session_tool_policy_status",
-        "session_unpin_head",
-        "session_wait",
-        "task_events",
-        "task_history",
-        "task_status",
-        "task_wait",
-        "tasks_list",
-        "tasks_search",
-        "sessions_history",
-        "sessions_list",
-    ]);
+    let expected =
+        visible_direct_tool_states_for_view(&runtime_tool_view_for_runtime_config(&config))
+            .into_iter()
+            .map(|state| state.surface_id)
+            .collect::<BTreeSet<_>>();
     assert_eq!(names, expected);
 }
 
@@ -423,58 +337,13 @@ fn tool_registry_returns_runtime_discoverable_tools_for_default_config_no_websea
     let entries = tool_registry_with_config(Some(&config));
     let names = entries
         .iter()
-        .map(|entry| entry.name.as_str())
+        .map(|entry| entry.name.clone())
         .collect::<BTreeSet<_>>();
-    let expected = BTreeSet::from([
-        "approval_request_resolve",
-        "approval_request_status",
-        "approval_requests_list",
-        "config.import",
-        "delegate",
-        "delegate_async",
-        "external_skills.fetch",
-        "external_skills.inspect",
-        "external_skills.install",
-        "external_skills.invoke",
-        "external_skills.list",
-        "external_skills.policy",
-        "external_skills.recommend",
-        "external_skills.remove",
-        "external_skills.resolve",
-        "external_skills.search",
-        "external_skills.source_search",
-        "provider.switch",
-        "session_archive",
-        "session_artifacts",
-        "session_cancel",
-        "session_children",
-        "session_continue",
-        "session_create_branch_summary",
-        "session_create_checkpoint",
-        "session_events",
-        "session_fork_head",
-        "session_heads",
-        "session_pin_head",
-        "session_path",
-        "session_recover",
-        "session_search",
-        "session_set_active_head",
-        "session_status",
-        "session_tool_policy_clear",
-        "session_tool_policy_set",
-        "session_tool_policy_status",
-        "session_unpin_head",
-        "session_wait",
-        "task_events",
-        "task_history",
-        "task_status",
-        "task_wait",
-        "tasks_list",
-        "tasks_search",
-        "sessions_history",
-        "sessions_list",
-    ]);
-
+    let expected =
+        visible_direct_tool_states_for_view(&runtime_tool_view_for_runtime_config(&config))
+            .into_iter()
+            .map(|state| state.surface_id)
+            .collect::<BTreeSet<_>>();
     assert_eq!(names, expected);
 }
 
@@ -491,20 +360,14 @@ fn tool_registry_re_exposes_session_mutation_tools_when_runtime_policy_allows_th
     let names = entries
         .iter()
         .map(|entry| entry.name.clone())
-        .collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>();
 
-    assert!(names.contains(&"session_archive".to_owned()));
-    assert!(names.contains(&"session_create_checkpoint".to_owned()));
-    assert!(names.contains(&"session_create_branch_summary".to_owned()));
-    assert!(names.contains(&"session_cancel".to_owned()));
-    assert!(names.contains(&"session_continue".to_owned()));
-    assert!(names.contains(&"session_fork_head".to_owned()));
-    assert!(names.contains(&"session_pin_head".to_owned()));
-    assert!(names.contains(&"session_recover".to_owned()));
-    assert!(names.contains(&"session_set_active_head".to_owned()));
-    assert!(names.contains(&"session_tool_policy_set".to_owned()));
-    assert!(names.contains(&"session_tool_policy_clear".to_owned()));
-    assert!(names.contains(&"session_unpin_head".to_owned()));
+    let expected =
+        visible_direct_tool_states_for_view(&runtime_tool_view_for_runtime_config(&config))
+            .into_iter()
+            .map(|state| state.surface_id)
+            .collect::<BTreeSet<_>>();
+    assert_eq!(names, expected);
 }
 
 #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
@@ -514,21 +377,17 @@ fn capability_snapshot_for_view_keeps_hidden_tools_out_of_direct_surface_copy() 
     let snapshot = capability_snapshot_for_view(&view);
 
     assert!(snapshot.contains("Available tools:"));
-    assert!(snapshot.contains(
-        "- tool.search: Discover hidden specialized tools relevant to the current task."
-    ));
-    assert!(snapshot.contains("- tool.invoke: Invoke a discovered hidden specialized tool using a valid lease from tool_search."));
     assert!(!snapshot.contains("- config.import:"));
     assert!(!snapshot.contains("- shell.exec:"));
-    assert!(snapshot.contains("- exec:"));
+    assert!(snapshot.contains("- bash:"));
 }
 
 #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
 #[test]
-fn try_provider_tool_definitions_for_view_exposes_gateway_when_no_direct_tool_is_visible() {
+fn try_provider_tool_definitions_for_view_returns_empty_when_no_direct_tool_is_visible() {
     let view = ToolView::from_tool_names(["config.import"]);
     let defs = try_provider_tool_definitions_for_view(&view)
-        .expect("restricted runtime view should still expose the discovery gateway");
+        .expect("restricted runtime view should still expose direct tools");
     let names: Vec<&str> = defs
         .iter()
         .filter_map(|item| item.get("function"))
@@ -536,7 +395,7 @@ fn try_provider_tool_definitions_for_view_exposes_gateway_when_no_direct_tool_is
         .filter_map(Value::as_str)
         .collect();
 
-    assert_eq!(names, vec!["tool_invoke", "tool_search"]);
+    assert!(names.is_empty());
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -638,6 +497,18 @@ fn runtime_tool_view_hides_web_fetch_when_disabled() {
 }
 
 #[test]
+fn runtime_tool_view_hides_hidden_file_executor_tools() {
+    let root_view = runtime_tool_view_for_config(&crate::config::ToolConfig::default());
+
+    assert!(root_view.contains("read"));
+    assert!(root_view.contains("write"));
+    assert!(root_view.contains("edit"));
+    assert!(!root_view.contains("file.read"));
+    assert!(!root_view.contains("file.write"));
+    assert!(!root_view.contains("file.edit"));
+}
+
+#[test]
 fn runtime_tool_view_hides_web_search_when_disabled() {
     let mut config = crate::config::ToolConfig::default();
     config.web_search.enabled = false;
@@ -658,35 +529,32 @@ fn runtime_tool_view_hides_browser_when_disabled() {
 }
 
 #[test]
-fn runtime_tool_view_respects_explicit_external_skills_toggle() {
+fn runtime_tool_view_respects_explicit_skills_toggle() {
     let config = crate::config::ToolConfig::default();
 
     let disabled_view = runtime_tool_view_for_config(&config);
-    assert!(!disabled_view.contains("external_skills.fetch"));
-    assert!(!disabled_view.contains("external_skills.invoke"));
-    assert!(!disabled_view.contains("external_skills.list"));
+    assert!(!disabled_view.contains("skills.fetch"));
+    assert!(!disabled_view.contains("skills.list"));
 
-    let enabled_view = runtime_tool_view_for_config_with_external_skills(&config, true);
-    assert!(enabled_view.contains("external_skills.fetch"));
-    assert!(enabled_view.contains("external_skills.invoke"));
-    assert!(enabled_view.contains("external_skills.list"));
+    let enabled_view = runtime_tool_view_for_config_with_skills(&config, true);
+    assert!(!enabled_view.contains("skills.fetch"));
+    assert!(!enabled_view.contains("skills.list"));
 }
 
 #[test]
-fn runtime_tool_view_with_runtime_config_uses_runtime_external_skills_policy() {
+fn runtime_tool_view_with_runtime_config_uses_runtime_skills_policy() {
     let runtime_config = runtime_config::ToolRuntimeConfig {
-        external_skills: runtime_config::ExternalSkillsRuntimePolicy {
+        skills: runtime_config::SkillsRuntimePolicy {
             enabled: true,
-            ..runtime_config::ExternalSkillsRuntimePolicy::default()
+            ..runtime_config::SkillsRuntimePolicy::default()
         },
         ..runtime_config::ToolRuntimeConfig::default()
     };
 
     let view = runtime_tool_view_with_runtime_config(&ToolConfig::default(), &runtime_config);
 
-    assert!(view.contains("external_skills.fetch"));
-    assert!(view.contains("external_skills.invoke"));
-    assert!(view.contains("external_skills.list"));
+    assert!(!view.contains("skills.fetch"));
+    assert!(!view.contains("skills.list"));
 }
 
 #[test]
@@ -706,9 +574,9 @@ fn capability_snapshot_with_config_uses_runtime_enabled_tool_view() {
             enabled: false,
             ..runtime_config::WebFetchRuntimePolicy::default()
         },
-        external_skills: runtime_config::ExternalSkillsRuntimePolicy {
+        skills: runtime_config::SkillsRuntimePolicy {
             enabled: false,
-            ..runtime_config::ExternalSkillsRuntimePolicy::default()
+            ..runtime_config::SkillsRuntimePolicy::default()
         },
         ..runtime_config::ToolRuntimeConfig::default()
     };
@@ -717,7 +585,7 @@ fn capability_snapshot_with_config_uses_runtime_enabled_tool_view() {
     assert!(!snapshot.contains("- browser.open:"));
     assert!(!snapshot.contains("- web.fetch:"));
     assert!(!snapshot.contains("- delegate:"));
-    assert!(!snapshot.contains("- external_skills.fetch:"));
+    assert!(!snapshot.contains("- skills.fetch:"));
 }
 
 #[test]
@@ -757,8 +625,8 @@ fn runtime_tool_view_exposes_sessions_send_only_when_messages_enabled() {
 fn delegate_child_tool_view_hides_shell_by_default() {
     let view = delegate_child_tool_view_for_config(&crate::config::ToolConfig::default());
 
-    assert!(view.contains("file.read"));
-    assert!(view.contains("file.write"));
+    assert!(view.contains("read"));
+    assert!(view.contains("write"));
     assert!(!view.contains("shell.exec"));
 }
 
@@ -770,8 +638,8 @@ fn delegate_child_tool_view_can_allow_shell_when_enabled() {
 
     let view = delegate_child_tool_view_for_config(&config);
 
-    assert!(view.contains("file.read"));
-    assert!(view.contains("file.write"));
+    assert!(view.contains("read"));
+    assert!(view.contains("write"));
     assert!(view.contains("shell.exec"));
 }
 
@@ -784,15 +652,7 @@ fn delegate_child_tool_view_can_allow_shell_when_enabled() {
 fn provider_tool_definitions_are_stable_and_cover_direct_surface() {
     let config = runtime_config::ToolRuntimeConfig::default();
     let defs = provider_tool_definitions_with_config(Some(&config));
-    let expected_names = vec![
-        "browser",
-        "exec",
-        "read",
-        "tool_invoke",
-        "tool_search",
-        "web",
-        "write",
-    ];
+    let expected_names = vec!["bash", "browse", "edit", "read", "web", "write"];
     assert_eq!(defs.len(), expected_names.len());
 
     let names: Vec<&str> = defs
@@ -818,30 +678,6 @@ fn provider_tool_definitions_are_stable_and_cover_direct_surface() {
         }
     }
 
-    let tool_search = defs
-        .iter()
-        .find(|item| {
-            item.get("function")
-                .and_then(|function| function.get("name"))
-                .and_then(Value::as_str)
-                == Some("tool_search")
-        })
-        .expect("tool_search definition should exist");
-    let tool_search_properties = tool_search["function"]["parameters"]["properties"]
-        .as_object()
-        .expect("tool_search properties should be an object");
-    let tool_search_required = tool_search["function"]["parameters"]["required"]
-        .as_array()
-        .expect("required should be an array");
-
-    assert!(tool_search_properties.contains_key("query"));
-    assert!(tool_search_properties.contains_key("exact_tool_id"));
-    assert!(!tool_search_required.contains(&Value::String("query".to_owned())));
-    assert!(
-        tool_search["function"]["parameters"].get("anyOf").is_none(),
-        "anyOf removed for OpenAI-compatible provider compatibility"
-    );
-
     let web = defs
         .iter()
         .find(|item| {
@@ -862,38 +698,16 @@ fn provider_tool_definitions_are_stable_and_cover_direct_surface() {
         .expect("web provider description should be text");
     assert!(web_provider_description.contains("`web { query }` / `web.search`"));
     assert!(web_provider_description.contains("plain URL fetch/request mode"));
-
-    let browser = defs
-        .iter()
-        .find(|item| {
-            item.get("function")
-                .and_then(|function| function.get("name"))
-                .and_then(Value::as_str)
-                == Some("browser")
-        })
-        .expect("browser definition should exist");
-    let browser_properties = browser["function"]["parameters"]["properties"]
-        .as_object()
-        .expect("browser properties should be an object");
-    assert!(browser_properties.contains_key("url"));
-    assert!(browser_properties.contains_key("session_id"));
-    assert!(browser_properties.contains_key("text"));
-    assert!(browser_properties.contains_key("condition"));
-    assert!(browser_properties.contains_key("timeout_ms"));
-    assert!(
-        !browser_properties.contains_key("action"),
-        "browser should stay payload-shape-driven instead of teaching sub-action names"
-    );
 }
 
 #[test]
 fn provider_exposed_tool_gate_covers_direct_and_gateway_tools() {
     assert!(is_provider_exposed_tool_name("read"));
     assert!(is_provider_exposed_tool_name("write"));
-    assert!(is_provider_exposed_tool_name("exec"));
-    assert!(is_provider_exposed_tool_name("tool.search"));
-    assert!(is_provider_exposed_tool_name("tool.invoke"));
-    assert!(!is_provider_exposed_tool_name("file.read"));
+    assert!(is_provider_exposed_tool_name("bash"));
+    assert!(is_provider_exposed_tool_name("edit"));
+    assert!(is_provider_exposed_tool_name("browse"));
+    assert!(is_provider_exposed_tool_name("file.read"));
     assert!(!is_provider_exposed_tool_name("shell.exec"));
 }
 
@@ -968,104 +782,94 @@ fn shell_exec_catalog_exposes_timeout_ms() {
 fn file_write_catalog_exposes_overwrite_flag() {
     let catalog = tool_catalog();
     let descriptor = catalog
-        .descriptor("file.write")
-        .expect("file.write should be in the catalog");
+        .descriptor("write")
+        .expect("write should be in the catalog");
     let definition = descriptor.provider_definition();
     let properties = definition["function"]["parameters"]["properties"]
         .as_object()
-        .expect("file.write parameters");
+        .expect("write parameters");
     let required_fields = definition["function"]["parameters"]["required"].as_array();
 
     assert!(
         properties.contains_key("overwrite"),
-        "file.write schema should expose overwrite parameter"
+        "write schema should expose overwrite parameter"
     );
     assert!(
         required_fields
             .is_none_or(|fields| !fields.contains(&Value::String("overwrite".to_owned()))),
-        "file.write schema should keep overwrite optional"
+        "write schema should keep overwrite optional"
     );
 
     let entry = catalog::find_tool_catalog_entry("file.write")
-        .expect("file.write should be in catalog entries");
+        .expect("file.write alias should resolve in catalog entries");
     assert!(
         entry
             .argument_hint
             .split(',')
             .any(|part| part == "overwrite?:boolean"),
-        "file.write argument hint should expose overwrite"
+        "write argument hint should expose overwrite"
     );
 }
 
 #[cfg(feature = "tool-file")]
 #[test]
-fn file_edit_catalog_exposes_exact_edit_blocks() {
+fn direct_edit_catalog_exposes_exact_edit_blocks_and_write_stays_whole_file_only() {
     let catalog = tool_catalog();
-    let direct_descriptor = catalog
+    let write_descriptor = catalog
         .descriptor("write")
         .expect("write should be in the catalog");
-    let direct_definition = direct_descriptor.provider_definition();
-    let direct_properties = direct_definition["function"]["parameters"]["properties"]
+    let write_definition = write_descriptor.provider_definition();
+    let write_properties = write_definition["function"]["parameters"]["properties"]
         .as_object()
         .expect("write parameters");
-    let direct_any_of = direct_definition["function"]["parameters"]["anyOf"]
-        .as_array()
-        .expect("write anyOf");
 
     assert!(
-        direct_properties.contains_key("edits"),
-        "write schema should expose exact edit blocks"
+        write_properties.contains_key("content"),
+        "write schema should keep whole-file content mode"
     );
+    assert!(!write_properties.contains_key("edits"));
+    assert!(!write_properties.contains_key("old_string"));
+    assert!(!write_properties.contains_key("new_string"));
     assert!(
-        direct_descriptor.argument_hint().contains("edits?:array"),
-        "write argument hint should expose edits"
+        write_definition["function"]["parameters"]
+            .get("anyOf")
+            .is_none(),
+        "write should no longer advertise mixed edit branches"
     );
-    assert!(
-        direct_descriptor
-            .parameter_types()
-            .contains(&("edits", "array")),
-        "write parameter types should expose edits"
-    );
-    assert!(
-        direct_any_of
-            .iter()
-            .any(|branch| branch["required"] == json!(["edits"])),
-        "write anyOf should include edits mode"
-    );
+    assert_eq!(write_descriptor.required_fields(), vec!["path", "content"]);
 
-    let file_edit_descriptor = catalog
-        .descriptor("file.edit")
-        .expect("file.edit should be in the catalog");
-    let file_edit_definition = file_edit_descriptor.provider_definition();
-    let file_edit_properties = file_edit_definition["function"]["parameters"]["properties"]
+    let edit_descriptor = catalog
+        .descriptor("edit")
+        .expect("edit should be in the catalog");
+    let edit_definition = edit_descriptor.provider_definition();
+    let edit_properties = edit_definition["function"]["parameters"]["properties"]
         .as_object()
-        .expect("file.edit parameters");
-    let file_edit_any_of = file_edit_definition["function"]["parameters"]["anyOf"]
-        .as_array()
-        .expect("file.edit anyOf");
+        .expect("edit parameters");
 
     assert!(
-        file_edit_properties.contains_key("edits"),
-        "file.edit schema should expose exact edit blocks"
+        edit_properties.contains_key("edits"),
+        "edit schema should expose exact edit blocks"
     );
     assert!(
-        file_edit_descriptor
-            .argument_hint()
-            .contains("edits?:array"),
-        "file.edit argument hint should expose edits"
+        edit_descriptor.argument_hint().contains("edits:array"),
+        "edit argument hint should expose edits"
     );
     assert!(
-        file_edit_descriptor
+        edit_descriptor
             .parameter_types()
             .contains(&("edits", "array")),
-        "file.edit parameter types should expose edits"
+        "edit parameter types should expose edits"
     );
-    assert_eq!(file_edit_descriptor.required_fields(), vec!["path"]);
+    assert_eq!(edit_descriptor.required_fields(), vec!["path", "edits"]);
+    assert_eq!(
+        edit_definition["function"]["parameters"]["required"],
+        json!(["path", "edits"])
+    );
     assert!(
-        file_edit_any_of
-            .iter()
-            .any(|branch| branch["required"] == json!(["edits"])),
-        "file.edit anyOf should include edits mode"
+        edit_definition["function"]["parameters"]
+            .get("anyOf")
+            .is_none(),
+        "edit should expose one canonical provider-visible shape"
     );
 }
 
@@ -1134,6 +938,53 @@ fn provider_tool_definitions_trim_web_query_mode_when_search_is_runtime_disabled
 }
 
 #[test]
+fn provider_tool_definitions_include_browse_surface_when_browser_is_enabled() {
+    let defs =
+        provider_tool_definitions_with_config(Some(&runtime_config::ToolRuntimeConfig::default()));
+    assert!(defs.iter().any(|item| {
+        item.get("function")
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str)
+            == Some("browse")
+    }));
+}
+
+#[test]
+fn provider_tool_definitions_expose_browse_page_actions() {
+    let defs =
+        provider_tool_definitions_with_config(Some(&runtime_config::ToolRuntimeConfig::default()));
+    let browse = defs
+        .iter()
+        .find(|item| {
+            item.get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                == Some("browse")
+        })
+        .expect("browse definition should exist");
+    let properties = browse["function"]["parameters"]["properties"]
+        .as_object()
+        .expect("browse properties should be an object");
+
+    let action_enum = properties["action"]["enum"]
+        .as_array()
+        .expect("browse action enum should exist");
+    assert!(action_enum.contains(&json!("open")));
+    assert!(action_enum.contains(&json!("extract")));
+    assert!(action_enum.contains(&json!("click")));
+    assert!(!action_enum.contains(&json!("start")));
+    assert!(!action_enum.contains(&json!("type")));
+
+    let mode_enum = properties["mode"]["enum"]
+        .as_array()
+        .expect("browse mode enum should exist");
+    assert!(mode_enum.contains(&json!("page_text")));
+    assert!(mode_enum.contains(&json!("selector_text")));
+    assert!(!mode_enum.contains(&json!("summary")));
+    assert!(!mode_enum.contains(&json!("html")));
+}
+
+#[test]
 fn runtime_tool_search_entries_trim_web_search_mode_when_query_mode_is_disabled() {
     let config = runtime_config::ToolRuntimeConfig {
         web_search: runtime_config::WebSearchRuntimePolicy {
@@ -1159,26 +1010,49 @@ fn runtime_tool_search_entries_trim_web_search_mode_when_query_mode_is_disabled(
 }
 
 #[test]
+fn runtime_tool_search_entries_hide_browse_surface_when_browser_is_disabled() {
+    let config = runtime_config::ToolRuntimeConfig {
+        browser: runtime_config::BrowserRuntimePolicy {
+            enabled: false,
+            ..runtime_config::BrowserRuntimePolicy::default()
+        },
+        ..runtime_config::ToolRuntimeConfig::default()
+    };
+    let entries = runtime_tool_search_entries(&config, None, false);
+    assert!(!entries.iter().any(|entry| entry.tool_id == "browse"));
+}
+
+#[test]
+fn runtime_tool_search_entries_expose_browse_surface_when_browser_is_enabled() {
+    let entries =
+        runtime_tool_search_entries(&runtime_config::ToolRuntimeConfig::default(), None, false);
+    let browse = entries
+        .iter()
+        .find(|entry| entry.tool_id == "browse")
+        .expect("browse direct search entry");
+
+    assert!(browse.summary.contains("Open a page"));
+    assert!(!browse.argument_hint.is_empty());
+    assert!(browse.usage_guidance.as_deref().is_some());
+}
+
+#[test]
 fn canonical_tool_name_maps_known_aliases() {
-    assert_eq!(canonical_tool_name("tool_search"), "tool.search");
-    assert_eq!(canonical_tool_name("tool_invoke"), "tool.invoke");
+    assert_eq!(canonical_tool_name("tool_search"), "tool_search");
+    assert_eq!(canonical_tool_name("tool_invoke"), "tool_invoke");
     assert_eq!(canonical_tool_name("claw.migrate"), "config.import");
     assert_eq!(canonical_tool_name("claw_migrate"), "config.import");
     assert_eq!(canonical_tool_name("config_import"), "config.import");
-    assert_eq!(
-        canonical_tool_name("external_skills_policy"),
-        "external_skills.policy"
-    );
-    assert_eq!(
-        canonical_tool_name("external_skills_fetch"),
-        "external_skills.fetch"
-    );
-    assert_eq!(canonical_tool_name("file_read"), "file.read");
-    assert_eq!(canonical_tool_name("file_write"), "file.write");
+    assert_eq!(canonical_tool_name("file_read"), "read");
+    assert_eq!(canonical_tool_name("file_write"), "write");
     assert_eq!(canonical_tool_name("provider_switch"), "provider.switch");
     assert_eq!(canonical_tool_name("browser_open"), "browser.open");
+    assert_eq!(canonical_tool_name("browse.open"), "browser.open");
     assert_eq!(canonical_tool_name("browser_extract"), "browser.extract");
+    assert_eq!(canonical_tool_name("browse.extract"), "browser.extract");
     assert_eq!(canonical_tool_name("browser_click"), "browser.click");
+    assert_eq!(canonical_tool_name("browse.click"), "browser.click");
+    assert_eq!(canonical_tool_name("file_edit"), "edit");
     assert_eq!(canonical_tool_name("shell_exec"), "shell.exec");
     assert_eq!(canonical_tool_name("shell"), "shell.exec");
     assert_eq!(canonical_tool_name("web_fetch"), "web.fetch");
@@ -1224,7 +1098,7 @@ fn canonical_tool_name_maps_known_aliases() {
         canonical_tool_name("feishu_calendar_freebusy"),
         "feishu.calendar.freebusy"
     );
-    assert_eq!(canonical_tool_name("file.read"), "file.read");
+    assert_eq!(canonical_tool_name("file.read"), "read");
 }
 
 #[test]
@@ -1235,15 +1109,15 @@ fn tool_id_visible_in_view_supports_direct_aliases_and_grouped_surfaces() {
     assert!(tool_id_visible_in_view("read", &view));
     assert!(tool_id_visible_in_view("feishu.messages.send", &view));
     assert!(tool_id_visible_in_view("feishu_messages_send", &view));
-    assert!(tool_id_visible_in_view("channel", &view));
+    assert!(!tool_id_visible_in_view("channel", &view));
     assert!(!tool_id_visible_in_view("skills", &view));
-    assert!(!tool_id_visible_in_view("external_skills.install", &view));
+    assert!(!tool_id_visible_in_view("skills.install", &view));
 }
 
 #[cfg(feature = "tool-file")]
 #[test]
 fn runtime_tool_view_hides_memory_tools_when_memory_corpus_is_empty() {
-    let root = unique_tool_temp_dir("loong-memory-tool-view-empty");
+    let root = unique_tool_temp_dir("loongclaw-memory-tool-view-empty");
 
     std::fs::create_dir_all(&root).expect("create root dir");
 
@@ -1257,7 +1131,7 @@ fn runtime_tool_view_hides_memory_tools_when_memory_corpus_is_empty() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn runtime_tool_view_includes_memory_tools_when_memory_corpus_exists() {
-    let root = unique_tool_temp_dir("loong-memory-tool-view-visible");
+    let root = unique_tool_temp_dir("loongclaw-memory-tool-view-visible");
     let memory_path = root.join("MEMORY.md");
 
     std::fs::create_dir_all(&root).expect("create root dir");
@@ -1284,7 +1158,7 @@ fn tool_search_returns_direct_results_for_common_file_queries() {
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after epoch")
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("loong-tool-search-{nanos}"));
+    let root = std::env::temp_dir().join(format!("loongclaw-tool-search-{nanos}"));
     fs::create_dir_all(&root).expect("create fixture root");
     fs::write(root.join("README.md"), "hello tool search").expect("write fixture");
 
@@ -1323,7 +1197,7 @@ fn tool_search_returns_direct_results_for_common_file_queries() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn tool_search_surfaces_memory_tools_when_memory_corpus_is_available() {
-    let root = unique_tool_temp_dir("loong-memory-tool-search");
+    let root = unique_tool_temp_dir("loongclaw-memory-tool-search");
     let memory_dir = root.join("memory");
 
     std::fs::create_dir_all(&memory_dir).expect("create memory dir");
@@ -1356,7 +1230,7 @@ fn tool_search_surfaces_memory_tools_when_memory_corpus_is_available() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn tool_search_hides_memory_tools_when_memory_corpus_is_empty() {
-    let root = unique_tool_temp_dir("loong-memory-tool-search-empty");
+    let root = unique_tool_temp_dir("loongclaw-memory-tool-search-empty");
 
     std::fs::create_dir_all(&root).expect("create root dir");
 
@@ -1386,7 +1260,7 @@ fn tool_search_hides_memory_tools_when_memory_corpus_is_empty() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn memory_search_tool_returns_structured_hits_from_workspace_memory_files() {
-    let root = unique_tool_temp_dir("loong-memory-search");
+    let root = unique_tool_temp_dir("loongclaw-memory-search");
     let memory_dir = root.join("memory");
 
     std::fs::create_dir_all(&memory_dir).expect("create memory dir");
@@ -1463,7 +1337,7 @@ fn memory_search_tool_returns_structured_hits_from_workspace_memory_files() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn memory_get_tool_returns_bounded_line_window_from_memory_file() {
-    let root = unique_tool_temp_dir("loong-memory-get");
+    let root = unique_tool_temp_dir("loongclaw-memory-get");
     let memory_path = root.join("MEMORY.md");
 
     std::fs::create_dir_all(&root).expect("create root dir");
@@ -1508,7 +1382,7 @@ fn memory_get_tool_returns_bounded_line_window_from_memory_file() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn memory_get_tool_uses_selected_memory_system_id_in_provenance() {
-    let root = unique_tool_temp_dir("loong-memory-get-selected-system");
+    let root = unique_tool_temp_dir("loongclaw-memory-get-selected-system");
     let memory_path = root.join("MEMORY.md");
 
     std::fs::create_dir_all(&root).expect("create root dir");
@@ -1539,7 +1413,7 @@ fn memory_get_tool_uses_selected_memory_system_id_in_provenance() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn memory_get_tool_reads_requested_window_without_loading_invalid_tail() {
-    let root = unique_tool_temp_dir("loong-memory-get-invalid-tail");
+    let root = unique_tool_temp_dir("loongclaw-memory-get-invalid-tail");
     let memory_path = root.join("MEMORY.md");
     let mut bytes = b"line one\nline two\n".to_vec();
 
@@ -1572,7 +1446,7 @@ fn memory_get_tool_reads_requested_window_without_loading_invalid_tail() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn memory_search_tool_rejects_invalid_max_results_values() {
-    let root = unique_tool_temp_dir("loong-memory-search-invalid-max-results");
+    let root = unique_tool_temp_dir("loongclaw-memory-search-invalid-max-results");
 
     std::fs::create_dir_all(&root).expect("create root dir");
     std::fs::write(root.join("MEMORY.md"), "deploy freeze window\n").expect("write memory");
@@ -1608,7 +1482,7 @@ fn memory_search_tool_rejects_invalid_max_results_values() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn memory_get_tool_rejects_invalid_window_arguments() {
-    let root = unique_tool_temp_dir("loong-memory-get-invalid-window");
+    let root = unique_tool_temp_dir("loongclaw-memory-get-invalid-window");
 
     std::fs::create_dir_all(&root).expect("create root dir");
     std::fs::write(root.join("MEMORY.md"), "line one\nline two\n").expect("write memory");
@@ -1644,7 +1518,7 @@ fn memory_get_tool_rejects_invalid_window_arguments() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn memory_get_tool_hides_non_corpus_file_existence() {
-    let root = unique_tool_temp_dir("loong-memory-get-corpus-boundary");
+    let root = unique_tool_temp_dir("loongclaw-memory-get-corpus-boundary");
 
     std::fs::create_dir_all(&root).expect("create root dir");
     std::fs::write(root.join("MEMORY.md"), "line one\nline two\n").expect("write memory");
@@ -1683,7 +1557,7 @@ mod search_and_shell;
 #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn tool_search_result_includes_search_hint_and_schema_preview() {
-    let root = unique_tool_temp_dir("loong-tool-search-card-metadata");
+    let root = unique_tool_temp_dir("loongclaw-tool-search-card-metadata");
     std::fs::create_dir_all(&root).expect("create fixture root");
 
     let config = test_tool_runtime_config(root.clone());
@@ -1702,8 +1576,8 @@ fn tool_search_result_includes_search_hint_and_schema_preview() {
     let results = outcome.payload["results"].as_array().expect("results");
     let shell_entry = results
         .iter()
-        .find(|entry| entry["tool_id"] == "exec")
-        .expect("direct exec should be discoverable");
+        .find(|entry| entry["tool_id"] == "bash")
+        .expect("direct bash should be discoverable");
 
     assert!(shell_entry["search_hint"].as_str().is_some());
     assert!(shell_entry["schema_preview"].is_object());
@@ -1714,7 +1588,7 @@ fn tool_search_result_includes_search_hint_and_schema_preview() {
 #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn tool_search_accepts_keywords_array_payloads() {
-    let root = unique_tool_temp_dir("loong-tool-search-keywords-array");
+    let root = unique_tool_temp_dir("loongclaw-tool-search-keywords-array");
     std::fs::create_dir_all(&root).expect("create fixture root");
 
     let config = test_tool_runtime_config(root.clone());
@@ -1734,7 +1608,7 @@ fn tool_search_accepts_keywords_array_payloads() {
 
     assert!(!results.is_empty());
     assert_eq!(outcome.payload["query"], json!("run shell command"));
-    assert_eq!(results[0]["tool_id"], "exec");
+    assert_eq!(results[0]["tool_id"], "bash");
 
     std::fs::remove_dir_all(&root).ok();
 }
@@ -1742,7 +1616,7 @@ fn tool_search_accepts_keywords_array_payloads() {
 #[cfg(all(feature = "tool-file", feature = "tool-webfetch"))]
 #[test]
 fn tool_search_uses_schema_derived_terms_for_web_fetch_modes() {
-    let root = unique_tool_temp_dir("loong-tool-search-schema-derived");
+    let root = unique_tool_temp_dir("loongclaw-tool-search-schema-derived");
     std::fs::create_dir_all(&root).expect("create fixture root");
 
     let config = test_tool_runtime_config(root.clone());
@@ -1770,7 +1644,7 @@ fn tool_search_uses_schema_derived_terms_for_web_fetch_modes() {
 #[cfg(all(feature = "tool-file", feature = "tool-websearch"))]
 #[test]
 fn tool_search_matches_prompt_style_queries_across_tool_surfaces() {
-    let root = unique_tool_temp_dir("loong-tool-search-surface-prompts");
+    let root = unique_tool_temp_dir("loongclaw-tool-search-surface-prompts");
     let memory_dir = root.join("memory");
 
     std::fs::create_dir_all(&memory_dir).expect("create memory dir");
@@ -1782,8 +1656,7 @@ fn tool_search_matches_prompt_style_queries_across_tool_surfaces() {
         ("read repo file", "read"),
         ("search memory notes", "memory"),
         ("search the web", "web"),
-        ("install skill", "skills"),
-        ("switch provider", "agent"),
+        ("switch provider", "provider-switch"),
     ];
 
     for (query, expected_tool) in cases {
@@ -1825,7 +1698,7 @@ fn tool_search_matches_prompt_style_queries_across_tool_surfaces() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn tool_search_uses_coarse_listing_fallback_when_query_is_missing() {
-    let root = unique_tool_temp_dir("loong-tool-search-missing-query");
+    let root = unique_tool_temp_dir("loongclaw-tool-search-missing-query");
     std::fs::create_dir_all(&root).expect("create fixture root");
 
     let config = test_tool_runtime_config(root.clone());
@@ -1862,14 +1735,14 @@ fn tool_search_uses_coarse_listing_fallback_when_query_is_missing() {
 
 #[cfg(feature = "tool-file")]
 #[test]
-fn direct_write_routes_exact_edit_blocks_to_file_edit() {
-    let root = unique_tool_temp_dir("loong-direct-write-edit-blocks");
+fn direct_write_rejects_exact_edit_blocks() {
+    let root = unique_tool_temp_dir("loongclaw-direct-write-edit-blocks");
     std::fs::create_dir_all(&root).expect("create fixture root");
     let target = root.join("notes.txt");
     std::fs::write(&target, "alpha\nbeta\ngamma\n").expect("seed target file");
 
     let config = test_tool_runtime_config(root.clone());
-    let outcome = execute_tool_core_with_config(
+    let error = execute_tool_core_with_config(
         ToolCoreRequest {
             tool_name: "write".to_owned(),
             payload: json!({
@@ -1882,12 +1755,14 @@ fn direct_write_routes_exact_edit_blocks_to_file_edit() {
         },
         &config,
     )
-    .expect("direct write edit mode should succeed");
+    .expect_err("direct write should reject edit blocks");
 
-    assert_eq!(outcome.status, "ok");
-    assert_eq!(outcome.payload["edit_blocks_applied"], 2);
-    let updated = std::fs::read_to_string(&target).expect("read updated target");
-    assert_eq!(updated, "ALPHA\nbeta\nGAMMA\n");
+    assert!(
+        error.contains("content") || error.contains("edits") || error.contains("write"),
+        "write rejection should explain the whole-file contract: {error}"
+    );
+    let unchanged = std::fs::read_to_string(&target).expect("read unchanged target");
+    assert_eq!(unchanged, "alpha\nbeta\ngamma\n");
 
     std::fs::remove_dir_all(&root).ok();
 }
@@ -1895,7 +1770,7 @@ fn direct_write_routes_exact_edit_blocks_to_file_edit() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn tool_search_prefers_direct_write_for_write_queries() {
-    let root = unique_tool_temp_dir("loong-tool-search-write-query");
+    let root = unique_tool_temp_dir("loongclaw-tool-search-write-query");
     std::fs::create_dir_all(&root).expect("create fixture root");
 
     let config = test_tool_runtime_config(root.clone());
@@ -1924,7 +1799,7 @@ fn tool_search_prefers_direct_write_for_write_queries() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn tool_search_accepts_keywords_array_queries() {
-    let root = unique_tool_temp_dir("loong-tool-search-keywords-query");
+    let root = unique_tool_temp_dir("loongclaw-tool-search-keywords-query");
     std::fs::create_dir_all(&root).expect("create fixture root");
 
     let config = test_tool_runtime_config(root.clone());
@@ -1956,20 +1831,12 @@ fn tool_search_accepts_keywords_array_queries() {
 #[test]
 fn capability_snapshot_summarizes_hidden_tags_without_tool_names() {
     let snapshot = capability_snapshot();
-    let hidden_tag_line = snapshot
-        .lines()
-        .find(|line| line.starts_with("Hidden specialized tool tags currently discoverable:"))
-        .expect("hidden tool tag line");
-
-    assert!(
-        !hidden_tag_line.contains("provider.switch"),
-        "capability summary should expose tags, not tool names: {hidden_tag_line}"
-    );
+    assert!(!snapshot.contains("Hidden specialized tool tags currently discoverable:"));
 }
 
 #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
 #[test]
-fn runtime_discoverable_tool_surface_summary_groups_visible_direct_and_hidden_surfaces() {
+fn runtime_discoverable_tool_surface_summary_only_reports_direct_surfaces() {
     let root = unique_tool_temp_dir("loong-tool-surface-summary");
     std::fs::create_dir_all(&root).expect("create fixture root");
 
@@ -1979,18 +1846,9 @@ fn runtime_discoverable_tool_surface_summary_groups_visible_direct_and_hidden_su
         Some(&runtime_tool_view_for_runtime_config(&config)),
     );
 
-    assert!(summary.hidden_tool_count > 0);
-    assert!(summary.visible_direct_tools.contains(&"read".to_owned()));
-    assert!(summary.visible_direct_tools.contains(&"write".to_owned()));
-    assert!(summary.visible_direct_tools.contains(&"exec".to_owned()));
-    assert!(!summary.hidden_tags.is_empty());
-
-    let agent_surface = summary
-        .hidden_surfaces
-        .iter()
-        .find(|surface| surface.surface_id == "agent")
-        .expect("agent surface");
-    assert!(agent_surface.tool_ids.contains(&"agent".to_owned()));
+    assert_eq!(summary.hidden_tool_count, 0);
+    assert!(summary.hidden_tags.is_empty());
+    assert!(summary.hidden_surfaces.is_empty());
 
     std::fs::remove_dir_all(&root).ok();
 }
@@ -2018,10 +1876,9 @@ fn runtime_discoverable_tool_surface_summary_uses_provider_invokable_hidden_entr
     assert!(!provider_discoverable_names.contains("session_status"));
     assert!(!provider_discoverable_names.contains("delegate"));
     assert!(provider_discoverable_names.contains("provider.switch"));
-    assert_eq!(
-        summary.hidden_tool_count,
-        provider_discoverable_entries.len()
-    );
+    assert_eq!(summary.hidden_tool_count, 0);
+    assert!(summary.hidden_tags.is_empty());
+    assert!(summary.hidden_surfaces.is_empty());
 }
 
 #[cfg(feature = "tool-webfetch")]
@@ -2041,6 +1898,163 @@ fn direct_web_routes_low_level_request_fields_through_web_surface() {
         }))
         .expect("search-mode web routing should succeed"),
         "web.search"
+    );
+}
+
+#[test]
+fn direct_read_ignores_empty_mode_fields_and_accepts_glob_alias() {
+    assert_eq!(
+        super::routing::route_direct_tool_name(
+            "read",
+            &json!({
+                "pattern": "",
+                "path": "",
+                "query": "",
+                "glob": "README.md|AGENTS.md",
+                "root": ".",
+                "max_results": 20
+            })
+        )
+        .expect("glob alias should route through direct read"),
+        "read"
+    );
+}
+
+#[test]
+fn direct_read_prioritizes_path_over_incidental_search_fields() {
+    assert_eq!(
+        super::routing::route_direct_tool_name(
+            "read",
+            &json!({
+                "path": "CLAUDE.md",
+                "query": "",
+                "pattern": "",
+                "glob": "*.md",
+                "root": "",
+                "max_results": 20,
+                "max_bytes_per_file": 20000
+            })
+        )
+        .expect("path mode should win over incidental search fields"),
+        "read"
+    );
+}
+
+#[test]
+fn direct_read_glob_alias_executes_glob_search_with_pattern_rewrite() {
+    let root = unique_temp_dir("loong-direct-read-glob-alias");
+    std::fs::create_dir_all(root.join("docs")).expect("create docs dir");
+    std::fs::write(root.join("AGENTS.md"), "agent guidance").expect("write AGENTS fixture");
+    std::fs::write(root.join("docs/README.md"), "docs overview").expect("write docs fixture");
+    let config = test_tool_runtime_config(&root).into_inner();
+
+    let outcome = execute_tool_core_with_config(
+        ToolCoreRequest {
+            tool_name: "read".to_owned(),
+            payload: json!({
+                "path": "",
+                "query": "",
+                "pattern": "",
+                "glob": "README.md|AGENTS.md",
+                "root": ".",
+                "max_results": 20
+            }),
+        },
+        &config,
+    )
+    .expect("glob alias direct read should execute");
+
+    assert_eq!(outcome.payload["tool_name"], "read");
+    let matches = outcome.payload["matches"]
+        .as_array()
+        .expect("glob search matches");
+    assert!(
+        matches.iter().any(|entry| entry["path"] == "AGENTS.md"),
+        "glob alias should return AGENTS.md: {matches:?}"
+    );
+}
+
+#[test]
+fn direct_read_path_mode_executes_after_dropping_incidental_search_fields() {
+    let root = unique_temp_dir("loong-direct-read-path-priority");
+    std::fs::create_dir_all(&root).expect("create read-priority root");
+    std::fs::write(root.join("CLAUDE.md"), "claude guidance").expect("write CLAUDE fixture");
+    let config = test_tool_runtime_config(&root).into_inner();
+
+    let outcome = execute_tool_core_with_config(
+        ToolCoreRequest {
+            tool_name: "read".to_owned(),
+            payload: json!({
+                "path": "CLAUDE.md",
+                "query": "",
+                "pattern": "",
+                "glob": "*.md",
+                "root": "",
+                "max_results": 20,
+                "max_bytes_per_file": 20000
+            }),
+        },
+        &config,
+    )
+    .expect("path-priority direct read should execute");
+
+    assert_eq!(outcome.payload["tool_name"], "read");
+    assert_eq!(outcome.payload["content"], "claude guidance");
+}
+
+#[test]
+fn direct_write_executes_without_hopping_through_hidden_file_write() {
+    let root = unique_temp_dir("loong-direct-write");
+    std::fs::create_dir_all(&root).expect("create direct-write root");
+    let config = test_tool_runtime_config(&root).into_inner();
+
+    let outcome = execute_tool_core_with_config(
+        ToolCoreRequest {
+            tool_name: "write".to_owned(),
+            payload: json!({
+                "path": "notes.txt",
+                "content": "hello"
+            }),
+        },
+        &config,
+    )
+    .expect("direct write should execute");
+
+    assert_eq!(outcome.payload["tool_name"], "write");
+    assert_eq!(
+        std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+        "hello"
+    );
+}
+
+#[test]
+fn direct_edit_executes_without_hopping_through_hidden_file_edit() {
+    let root = unique_temp_dir("loong-direct-edit");
+    std::fs::create_dir_all(&root).expect("create direct-edit root");
+    std::fs::write(root.join("notes.txt"), "alpha\nbeta\n").expect("write edit fixture");
+    let config = test_tool_runtime_config(&root).into_inner();
+
+    let outcome = execute_tool_core_with_config(
+        ToolCoreRequest {
+            tool_name: "edit".to_owned(),
+            payload: json!({
+                "path": "notes.txt",
+                "edits": [
+                    {
+                        "old_text": "beta",
+                        "new_text": "gamma"
+                    }
+                ]
+            }),
+        },
+        &config,
+    )
+    .expect("direct edit should execute");
+
+    assert_eq!(outcome.payload["tool_name"], "edit");
+    assert_eq!(
+        std::fs::read_to_string(root.join("notes.txt")).unwrap(),
+        "alpha\ngamma\n"
     );
 }
 
@@ -2068,55 +2082,37 @@ fn direct_web_runtime_routing_keeps_network_mode_when_search_mode_is_unavailable
 
 #[cfg(feature = "tool-browser")]
 #[test]
-fn direct_browser_routes_managed_browser_actions_through_browser_surface() {
+fn direct_browse_routes_bounded_page_actions() {
     assert_eq!(
         route_direct_browser_tool_name(&json!({
-            "action": "start",
+            "action": "open",
             "url": "https://example.com"
         }))
-        .expect("managed browser start routing should succeed"),
-        "browser.companion.session.start"
-    );
-    assert_eq!(
-        route_direct_browser_tool_name(&json!({
-            "session_id": "browser-companion-1",
-            "selector": "#submit"
-        }))
-        .expect("managed browser click routing should succeed"),
-        "browser.companion.click"
+        .expect("browse open routing should succeed"),
+        "browser.open"
     );
     assert_eq!(
         route_direct_browser_tool_name(&json!({
             "session_id": "browser-1",
-            "mode": "selector_text",
-            "selector": "#headline"
+            "mode": "links"
         }))
-        .expect("selector text extraction should stay on the core browser surface"),
+        .expect("browse extract routing should succeed"),
         "browser.extract"
     );
     assert_eq!(
         route_direct_browser_tool_name(&json!({
-            "session_id": "browser-companion-1",
-            "selector": "#query",
-            "text": "hello"
+            "session_id": "browser-1",
+            "link_id": 1
         }))
-        .expect("managed browser type routing should succeed"),
-        "browser.companion.type"
-    );
-    assert_eq!(
-        route_direct_browser_tool_name(&json!({
-            "action": "stop",
-            "session_id": "browser-companion-1"
-        }))
-        .expect("managed browser stop routing should succeed"),
-        "browser.companion.session.stop"
+        .expect("browse click routing should succeed"),
+        "browser.click"
     );
 }
 
 #[cfg(feature = "tool-file")]
 #[test]
 fn tool_search_returns_coarse_fallback_for_zero_match_queries() {
-    let root = unique_tool_temp_dir("loong-tool-search-coarse-fallback");
+    let root = unique_tool_temp_dir("loongclaw-tool-search-coarse-fallback");
     std::fs::create_dir_all(&root).expect("create fixture root");
 
     let config = test_tool_runtime_config(root.clone());
@@ -2149,300 +2145,22 @@ fn tool_search_returns_coarse_fallback_for_zero_match_queries() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_tool_search_returns_runtime_ready_companion_entries() {
-    let root = std::env::temp_dir().join(format!(
-        "loong-tool-search-browser-companion-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let log_path = root.join("request.json");
-    let script_path = write_browser_companion_script(
-        &root,
-        "browser-companion-search",
-        r#"{"ok":true,"result":{"ready":true}}"#,
-        &log_path,
-    );
-    let config = browser_companion_runtime_config(&root, script_path.display().to_string());
-
-    let outcome = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "tool.search".to_owned(),
-            payload: json!({"query": "browser companion session navigate click", "limit": 8}),
-        },
-        &config,
-    )
-    .expect("tool search should succeed");
-
-    let results = outcome.payload["results"].as_array().expect("results");
-    assert!(
-        results.iter().any(|entry| entry["tool_id"] == "browser"),
-        "browser should absorb managed browser companion capabilities once runtime-ready: {results:?}"
-    );
-    assert!(
-        results
-            .iter()
-            .all(|entry| entry["tool_id"] != "browser-session-start"),
-        "managed browser primitives should stay collapsed beneath browser: {results:?}"
-    );
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_tools_split_read_and_write_execution_kinds() {
-    let read =
-        resolve_tool_execution("browser.companion.snapshot").expect("snapshot tool should resolve");
-    assert_eq!(read.canonical_name, "browser.companion.snapshot");
-    assert_eq!(read.execution_kind, ToolExecutionKind::Core);
-
-    let write =
-        resolve_tool_execution("browser.companion.click").expect("click tool should resolve");
-    assert_eq!(write.canonical_name, "browser.companion.click");
-    assert_eq!(write.execution_kind, ToolExecutionKind::App);
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_protocol_start_issues_managed_session_id_and_records_request() {
-    let _subprocess_guard = crate::test_support::acquire_subprocess_test_guard();
-    let root = unique_tool_temp_dir("loong-browser-companion-start");
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let log_path = root.join("request.json");
-    let script_path = write_browser_companion_script(
-        &root,
-        "browser-companion-ok",
-        r#"{"ok":true,"result":{"page_url":"https://example.com","title":"Example Domain"}}"#,
-        &log_path,
-    );
-    let config = browser_companion_runtime_config(&root, script_path.display().to_string());
-
-    let outcome = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.session.start".to_owned(),
-            payload: json!({
-                "url": "https://example.com"
-            }),
-        },
-        &config,
-    )
-    .expect("browser companion start should succeed");
-
-    assert_eq!(outcome.status, "ok");
-    assert_eq!(outcome.payload["adapter"], "browser-companion");
-    assert_eq!(
-        outcome.payload["tool_name"],
-        "browser.companion.session.start"
-    );
-    let session_id = outcome.payload["session_id"]
-        .as_str()
-        .expect("session id should be text");
-    assert!(
-        session_id.starts_with("browser-companion-"),
-        "session id should be issued by Loong: {session_id}"
-    );
-    assert_eq!(outcome.payload["result"]["page_url"], "https://example.com");
-
-    let request: Value = serde_json::from_str(
-        &std::fs::read_to_string(&log_path).expect("request log should exist"),
-    )
-    .expect("request log should be valid json");
-    assert_eq!(request["tool_name"], "browser.companion.session.start");
-    assert_eq!(request["operation"], "session.start");
-    assert_eq!(request["action_class"], "read");
-    assert_eq!(request["arguments"]["url"], "https://example.com");
-    assert_eq!(request["session_id"], session_id);
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_protocol_rejects_unknown_session_for_read_tools() {
-    let root = unique_tool_temp_dir("loong-browser-companion-unknown-session");
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let log_path = root.join("request.json");
-    let script_path = write_browser_companion_script(
-        &root,
-        "browser-companion-unused",
-        r#"{"ok":true,"result":{"page_url":"https://example.com"}}"#,
-        &log_path,
-    );
-    let config = browser_companion_runtime_config(&root, script_path.display().to_string());
-
-    let error = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.navigate".to_owned(),
-            payload: json!({
-                "session_id": "browser-companion-missing",
-                "url": "https://example.com/next"
-            }),
-        },
-        &config,
-    )
-    .expect_err("unknown companion session should fail closed");
-
-    assert!(
-        error.contains("browser_companion_unknown_session"),
-        "error={error}"
-    );
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_protocol_surfaces_invalid_json_from_command() {
-    let _subprocess_guard = crate::test_support::acquire_subprocess_test_guard();
-    let root = unique_tool_temp_dir("loong-browser-companion-invalid-json");
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let log_path = root.join("request.json");
-    let script_path = write_browser_companion_script(
-        &root,
-        "browser-companion-invalid-json",
-        "not-json",
-        &log_path,
-    );
-    let config = browser_companion_runtime_config(&root, script_path.display().to_string());
-
-    let error = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.session.start".to_owned(),
-            payload: json!({
-                "url": "https://example.com"
-            }),
-        },
-        &config,
-    )
-    .expect_err("invalid json should become a typed adapter failure");
-
-    assert!(
-        error.contains("browser_companion_protocol_invalid_json"),
-        "error={error}"
-    );
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_protocol_times_out_stalled_command() {
-    let _subprocess_guard = crate::test_support::acquire_subprocess_test_guard();
-    let root = unique_tool_temp_dir("loong-browser-companion-timeout");
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let script_path = write_browser_companion_sleep_script(&root, "browser-companion-timeout", 2);
-    let mut config = browser_companion_runtime_config(&root, script_path.display().to_string());
-    config.browser_companion.timeout_seconds = 1;
-
-    let error = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.session.start".to_owned(),
-            payload: json!({
-                "url": "https://example.com"
-            }),
-        },
-        &config,
-    )
-    .expect_err("hung command should time out");
-
-    assert!(error.contains("browser_companion_timeout"), "error={error}");
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-browser")]
-#[test]
-fn browser_companion_app_tool_click_uses_current_session_scope() {
-    let _subprocess_guard = crate::test_support::acquire_subprocess_test_guard();
-    let mut env = ScopedEnv::new();
-    let root = unique_tool_temp_dir("loong-browser-companion-app-click");
-    std::fs::create_dir_all(&root).expect("create fixture root");
-    let log_path = root.join("request.json");
-    let script_path = write_browser_companion_script(
-        &root,
-        "browser-companion-app-click",
-        r#"{"ok":true,"result":{"clicked":true}}"#,
-        &log_path,
-    );
-    let runtime_config = browser_companion_runtime_config(&root, script_path.display().to_string());
-    let start = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.session.start".to_owned(),
-            payload: json!({
-                "url": "https://example.com",
-                BROWSER_SESSION_SCOPE_FIELD: "root-session"
-            }),
-        },
-        &runtime_config,
-    )
-    .expect("browser companion start should succeed");
-    let session_id = start.payload["session_id"]
-        .as_str()
-        .expect("session id should exist")
-        .to_owned();
-
-    env.set("LOONG_BROWSER_COMPANION_READY", "true");
-
-    let mut tool_config = crate::config::ToolConfig::default();
-    tool_config.browser_companion.enabled = true;
-    tool_config.browser_companion.command = Some(script_path.display().to_string());
-
-    let outcome = execute_app_tool_with_config(
-        ToolCoreRequest {
-            tool_name: "browser.companion.click".to_owned(),
-            payload: json!({
-                "session_id": session_id,
-                "selector": "#submit"
-            }),
-        },
-        "root-session",
-        &crate::session::store::SessionStoreConfig::default(),
-        &tool_config,
-    )
-    .expect("browser companion click should succeed");
-
-    assert_eq!(outcome.status, "ok");
-    assert_eq!(outcome.payload["action_class"], "write");
-    assert_eq!(outcome.payload["result"]["clicked"], true);
-
-    let request: Value = serde_json::from_str(
-        &std::fs::read_to_string(&log_path).expect("request log should exist"),
-    )
-    .expect("request log should be valid json");
-    assert_eq!(request["operation"], "click");
-    assert_eq!(request["action_class"], "write");
-    assert_eq!(request["session_scope"], "root-session");
-    assert_eq!(request["arguments"]["selector"], "#submit");
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
 #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
 #[test]
 fn tool_search_reports_no_required_field_groups_for_bundled_skill_install() {
-    let descriptor = catalog::tool_catalog()
-        .descriptor("external_skills.install")
-        .expect("external_skills.install should exist in the catalog");
-    let searchable = searchable_entry_from_descriptor(descriptor);
-
     assert!(
-        descriptor.required_fields().is_empty(),
-        "schema-derived search should keep grouped requirements separate"
+        catalog::tool_catalog()
+            .descriptor("skills.install")
+            .is_none(),
+        "skills.install should stay out of the runtime tool catalog"
     );
-    assert!(
-        searchable.required_fields.is_empty(),
-        "search should not flatten grouped alternatives into required_fields"
-    );
-    assert_eq!(searchable.required_field_groups, Vec::<Vec<String>>::new());
 }
 
 #[cfg(feature = "memory-sqlite")]
 #[test]
 fn tool_search_respects_visible_tool_ids_from_runtime_context() {
     let root = std::env::temp_dir().join(format!(
-        "loong-tool-search-visible-filter-{}",
+        "loongclaw-tool-search-visible-filter-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&root).expect("create fixture root");
@@ -2501,7 +2219,7 @@ fn runtime_discoverable_tool_entries_intersect_injected_view_with_runtime_surfac
 #[test]
 fn tool_search_rejects_forged_visible_tool_ids_from_untrusted_payload() {
     let root = std::env::temp_dir().join(format!(
-        "loong-tool-search-visible-forged-{}",
+        "loongclaw-tool-search-visible-forged-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&root).expect("create fixture root");
@@ -2535,7 +2253,7 @@ fn tool_search_rejects_forged_visible_tool_ids_from_untrusted_payload() {
 #[test]
 fn web_fetch_respects_runtime_narrowing_from_trusted_internal_payload() {
     let root = std::env::temp_dir().join(format!(
-        "loong-web-fetch-runtime-narrowing-{}",
+        "loongclaw-web-fetch-runtime-narrowing-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&root).expect("create fixture root");
@@ -2571,7 +2289,7 @@ fn web_fetch_respects_runtime_narrowing_from_trusted_internal_payload() {
 #[test]
 fn web_fetch_denies_disjoint_allowlists_when_runtime_narrowing_intersection_is_empty() {
     let root = std::env::temp_dir().join(format!(
-        "loong-web-fetch-runtime-narrowing-disjoint-{}",
+        "loongclaw-web-fetch-runtime-narrowing-disjoint-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&root).expect("create fixture root");
@@ -2611,7 +2329,7 @@ fn web_fetch_denies_disjoint_allowlists_when_runtime_narrowing_intersection_is_e
 #[test]
 fn web_fetch_fail_closes_malformed_trusted_runtime_narrowing() {
     let root = std::env::temp_dir().join(format!(
-        "loong-web-fetch-runtime-narrowing-malformed-{}",
+        "loongclaw-web-fetch-runtime-narrowing-malformed-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&root).expect("create fixture root");
@@ -2643,7 +2361,7 @@ fn web_fetch_fail_closes_malformed_trusted_runtime_narrowing() {
 #[test]
 fn web_fetch_rejects_forged_runtime_narrowing_from_untrusted_payload() {
     let root = std::env::temp_dir().join(format!(
-        "loong-web-fetch-runtime-narrowing-forged-{}",
+        "loongclaw-web-fetch-runtime-narrowing-forged-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&root).expect("create fixture root");
@@ -2692,7 +2410,7 @@ fn tool_search_includes_feishu_tools_when_runtime_configured() {
     let outcome = execute_tool_core_with_config(
         ToolCoreRequest {
             tool_name: "tool.search".to_owned(),
-            payload: json!({"query": "feishu message search", "limit": 8}),
+            payload: json!({"exact_tool_id": "feishu.messages.search", "limit": 8}),
         },
         &config,
     )
@@ -2700,14 +2418,14 @@ fn tool_search_includes_feishu_tools_when_runtime_configured() {
 
     let results = outcome.payload["results"].as_array().expect("results");
     assert!(
-        results.iter().any(|entry| entry["tool_id"] == "channel"),
-        "feishu runtime tools should collapse beneath the channel surface: {results:?}"
-    );
-    assert!(
         results
             .iter()
-            .all(|entry| entry["tool_id"] != "feishu-messages-send"),
-        "feishu-specific ids should stay hidden behind the channel surface: {results:?}"
+            .any(|entry| entry["tool_id"] == "feishu-messages-search"),
+        "feishu runtime tools should surface their concrete discovery ids: {results:?}"
+    );
+    assert!(
+        results.iter().all(|entry| entry["tool_id"] != "channel"),
+        "grouped channel facade should no longer appear in search results: {results:?}"
     );
 }
 
@@ -2747,7 +2465,7 @@ fn tool_invoke_dispatches_feishu_discovered_tool_with_a_valid_lease() {
     let search = execute_tool_core_with_config(
         ToolCoreRequest {
             tool_name: "tool.search".to_owned(),
-            payload: json!({"query": "send feishu message", "limit": 8}),
+            payload: json!({"exact_tool_id": "feishu.messages.send", "limit": 8}),
         },
         &config,
     )
@@ -2757,17 +2475,16 @@ fn tool_invoke_dispatches_feishu_discovered_tool_with_a_valid_lease() {
         .as_array()
         .expect("results")
         .iter()
-        .find(|entry| entry["tool_id"] == "channel")
-        .expect("channel search result");
+        .find(|entry| entry["tool_id"] == "feishu-messages-send")
+        .expect("feishu send search result");
 
     let error = execute_tool_core_with_config(
         ToolCoreRequest {
             tool_name: "tool.invoke".to_owned(),
             payload: json!({
-                "tool_id": "channel",
+                "tool_id": result["tool_id"].clone(),
                 "lease": result["lease"].clone(),
                 "arguments": {
-                    "operation": "messages.send",
                     "text": "ship by invoke"
                 }
             }),
@@ -2786,67 +2503,13 @@ fn tool_invoke_dispatches_feishu_discovered_tool_with_a_valid_lease() {
 
 #[cfg(feature = "tool-file")]
 #[test]
-fn tool_invoke_dispatches_a_discovered_tool_with_a_valid_lease() {
-    use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock should be after epoch")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("loong-tool-invoke-{nanos}"));
-    fs::create_dir_all(&root).expect("create fixture root");
-    fs::write(root.join("README.md"), "tool invoke fixture").expect("write fixture");
-
-    let config = test_tool_runtime_config(root.clone());
-    let search = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "tool.search".to_owned(),
-            payload: json!({"query": "external skills policy"}),
-        },
-        &config,
-    )
-    .expect("tool search should succeed");
-
-    let result = search.payload["results"]
-        .as_array()
-        .expect("results")
-        .iter()
-        .find(|entry| entry["tool_id"] == "skills")
-        .expect("skills search result");
-
-    let outcome = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "tool.invoke".to_owned(),
-            payload: json!({
-                "tool_id": "skills",
-                "lease": result["lease"].clone(),
-                "arguments": {
-                    "operation": "policy",
-                    "action": "get"
-                }
-            }),
-        },
-        &config,
-    )
-    .expect("tool invoke should succeed");
-
-    assert_eq!(outcome.status, "ok");
-    assert_eq!(outcome.payload["action"], "get");
-    assert!(outcome.payload["policy"].is_object());
-
-    fs::remove_dir_all(&root).ok();
-}
-
-#[cfg(feature = "tool-file")]
-#[test]
 fn discovered_tool_lease_uses_current_catalog_digest() {
-    let root = unique_tool_temp_dir("loong-tool-lease-digest");
+    let root = unique_tool_temp_dir("loongclaw-tool-lease-digest");
     let config = test_tool_runtime_config(root.clone());
     let search = execute_tool_core_with_config(
         ToolCoreRequest {
             tool_name: "tool.search".to_owned(),
-            payload: json!({"query": "switch provider"}),
+            payload: json!({"exact_tool_id": "provider.switch"}),
         },
         &config,
     )
@@ -2856,9 +2519,9 @@ fn discovered_tool_lease_uses_current_catalog_digest() {
         .as_array()
         .expect("results")
         .iter()
-        .find(|entry| entry["tool_id"] == "agent")
+        .find(|entry| entry["tool_id"] == "provider-switch")
         .and_then(|entry| entry["lease"].as_str())
-        .expect("agent lease");
+        .expect("provider.switch lease");
     let lease_parts = lease.split_once('.').expect("lease separator");
     let encoded_claims = lease_parts.0;
     let claims_bytes = URL_SAFE_NO_PAD
@@ -2915,9 +2578,9 @@ fn tool_invoke_rejects_missing_outer_lease_field() {
         ToolCoreRequest {
             tool_name: "tool.invoke".to_owned(),
             payload: json!({
-                "tool_id": "skills",
+                "tool_id": "provider-switch",
                 "arguments": {
-                    "operation": "policy-status"
+                    "selector": "openai"
                 }
             }),
         },
@@ -2947,10 +2610,10 @@ fn tool_invoke_rejects_non_string_outer_lease_field() {
         ToolCoreRequest {
             tool_name: "tool.invoke".to_owned(),
             payload: json!({
-                "tool_id": "skills",
+                "tool_id": "provider-switch",
                 "lease": 123,
                 "arguments": {
-                    "operation": "policy-status"
+                    "selector": "openai"
                 }
             }),
         },
@@ -2969,8 +2632,10 @@ fn tool_invoke_rejects_non_string_outer_lease_field() {
 #[cfg(feature = "tool-file")]
 #[test]
 fn tool_invoke_rejects_leases_replayed_in_another_turn() {
-    let root =
-        std::env::temp_dir().join(format!("loong-tool-invoke-replay-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!(
+        "loongclaw-tool-invoke-replay-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&root).expect("create fixture root");
 
     let config = test_tool_runtime_config(root.clone());
@@ -2978,7 +2643,7 @@ fn tool_invoke_rejects_leases_replayed_in_another_turn() {
         ToolCoreRequest {
             tool_name: "tool.search".to_owned(),
             payload: json!({
-                "query": "external skills policy",
+                "exact_tool_id": "provider.switch",
                 TOOL_LEASE_SESSION_ID_FIELD: "session-a",
                 TOOL_LEASE_TURN_ID_FIELD: "turn-a"
             }),
@@ -2991,18 +2656,17 @@ fn tool_invoke_rejects_leases_replayed_in_another_turn() {
         .as_array()
         .expect("results")
         .iter()
-        .find(|entry| entry["tool_id"] == "skills")
-        .expect("skills search result");
+        .find(|entry| entry["tool_id"] == "provider-switch")
+        .expect("provider.switch search result");
 
     let error = execute_tool_core_with_config(
         ToolCoreRequest {
             tool_name: "tool.invoke".to_owned(),
             payload: json!({
-                "tool_id": "skills",
+                "tool_id": result["tool_id"].clone(),
                 "lease": result["lease"].clone(),
                 "arguments": {
-                    "operation": "policy",
-                    "action": "get"
+                    "selector": "openai"
                 },
                 TOOL_LEASE_SESSION_ID_FIELD: "session-a",
                 TOOL_LEASE_TURN_ID_FIELD: "turn-b"
@@ -3020,7 +2684,7 @@ fn tool_invoke_rejects_leases_replayed_in_another_turn() {
 #[test]
 fn tool_invoke_preserves_trusted_runtime_narrowing_for_inner_execution() {
     let root = std::env::temp_dir().join(format!(
-        "loong-tool-invoke-runtime-narrowing-{}",
+        "loongclaw-tool-invoke-runtime-narrowing-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(&root).expect("create fixture root");
@@ -3066,19 +2730,17 @@ fn tool_invoke_preserves_trusted_runtime_narrowing_for_inner_execution() {
 #[test]
 fn tool_invoke_rejects_forged_reserved_internal_context_inside_arguments() {
     let root = std::env::temp_dir().join(format!(
-        "loong-tool-invoke-inner-context-forged-{}",
+        "loongclaw-tool-invoke-inner-context-forged-{}",
         std::process::id()
     ));
-    let fixture_path = root.join("README.md");
-
     std::fs::create_dir_all(&root).expect("create fixture root");
-    std::fs::write(&fixture_path, "tool invoke fixture").expect("write fixture file");
 
     let config = test_tool_runtime_config(root.clone());
     let (tool_name, mut payload) = bridge_provider_tool_call_with_scope(
-        "file.read",
+        "config.import",
         json!({
-            "path": fixture_path.display().to_string()
+            "mode": "plan",
+            "input_path": "imports/demo"
         }),
         None,
         None,
@@ -3146,10 +2808,10 @@ fn tool_search_hides_app_only_discoverables_from_provider_visible_results() {
 }
 
 #[test]
-fn tool_search_exact_skill_id_returns_skills_surface_with_run_guidance() {
+fn tool_search_exact_skill_id_no_longer_surfaces_grouped_skills_facade() {
     use std::fs;
 
-    let root = unique_temp_dir("loong-tool-search-skill-exact");
+    let root = unique_temp_dir("loongclaw-tool-search-skill-exact");
     fs::create_dir_all(&root).expect("create fixture root");
     let skill_root = root.join("skills").join("agent-browser");
     fs::create_dir_all(&skill_root).expect("create skill root");
@@ -3162,7 +2824,7 @@ fn tool_search_exact_skill_id_returns_skills_surface_with_run_guidance() {
     let config = test_tool_runtime_config(&root);
     execute_tool_core_with_config(
         ToolCoreRequest {
-            tool_name: "external_skills.install".to_owned(),
+            tool_name: "skills.install".to_owned(),
             payload: json!({
                 "path": "skills/agent-browser"
             }),
@@ -3183,31 +2845,26 @@ fn tool_search_exact_skill_id_returns_skills_surface_with_run_guidance() {
     .expect("tool search should succeed");
 
     let results = search.payload["results"].as_array().expect("results");
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0]["tool_id"], "skills");
-    assert_eq!(search.payload["exact_tool_id"], "agent-browser");
-    assert!(search.payload["diagnostics"].is_null());
     assert!(
-        results[0]["summary"]
+        results.iter().all(|entry| !entry["tool_id"]
             .as_str()
-            .is_some_and(|summary| summary.contains("Matching installed skills: agent-browser")),
-        "search result should mention the matched installed skill: {results:?}"
+            .is_some_and(|tool_id| tool_id.starts_with("skills-"))),
+        "skill-management tools should stay out of model discovery results: {results:?}"
     );
-    assert!(
-        results[0]["usage_guidance"].as_str().is_some_and(
-            |guidance| guidance.contains(r#"{"operation":"run","skill_id":"agent-browser"}"#)
-        ),
-        "skills surface should advertise the explicit run flow: {results:?}"
+    assert_eq!(search.payload["exact_tool_id"], "agent-browser");
+    assert_eq!(
+        search.payload["diagnostics"]["reason"].as_str(),
+        Some("exact_tool_id_not_visible")
     );
 
     fs::remove_dir_all(&root).ok();
 }
 
 #[test]
-fn tool_invoke_skills_surface_requires_operation_when_skill_id_is_present() {
+fn tool_search_query_for_installed_skill_no_longer_returns_grouped_skills_card() {
     use std::fs;
 
-    let root = unique_temp_dir("loong-tool-search-skill-operation");
+    let root = unique_temp_dir("loongclaw-tool-search-skill-operation");
     fs::create_dir_all(&root).expect("create fixture root");
     let skill_root = root.join("skills").join("agent-browser");
     fs::create_dir_all(&skill_root).expect("create skill root");
@@ -3220,7 +2877,7 @@ fn tool_invoke_skills_surface_requires_operation_when_skill_id_is_present() {
     let config = test_tool_runtime_config(&root);
     execute_tool_core_with_config(
         ToolCoreRequest {
-            tool_name: "external_skills.install".to_owned(),
+            tool_name: "skills.install".to_owned(),
             payload: json!({
                 "path": "skills/agent-browser"
             }),
@@ -3239,32 +2896,12 @@ fn tool_invoke_skills_surface_requires_operation_when_skill_id_is_present() {
         &config,
     )
     .expect("tool search should succeed");
-    let lease = search.payload["results"]
-        .as_array()
-        .expect("results")
-        .iter()
-        .find(|entry| entry["tool_id"] == "skills")
-        .and_then(|entry| entry["lease"].as_str())
-        .expect("skills lease");
-
-    let error = execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "tool.invoke".to_owned(),
-            payload: json!({
-                "tool_id": "skills",
-                "lease": lease,
-                "arguments": {
-                    "skill_id": "agent-browser"
-                }
-            }),
-        },
-        &config,
-    )
-    .expect_err("skill_id without operation should fail closed");
-
+    let results = search.payload["results"].as_array().expect("results");
     assert!(
-        error.contains("tool_not_found:") && error.contains("skills"),
-        "skill_id without operation should fail closed instead of silently inspecting: {error}"
+        results.iter().all(|entry| !entry["tool_id"]
+            .as_str()
+            .is_some_and(|tool_id| tool_id.starts_with("skills-"))),
+        "skill-management tools should stay out of query results: {results:?}"
     );
 
     fs::remove_dir_all(&root).ok();
@@ -3277,7 +2914,7 @@ fn tool_search_hides_tools_exceeding_granted_capabilities() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock should be after epoch");
     let nanos = duration.as_nanos();
-    let root = std::env::temp_dir().join(format!("loong-tool-search-cap-filter-{nanos}"));
+    let root = std::env::temp_dir().join(format!("loongclaw-tool-search-cap-filter-{nanos}"));
     std::fs::create_dir_all(&root).expect("create fixture root");
 
     let config = test_tool_runtime_config(root.clone());
@@ -3316,7 +2953,7 @@ fn tool_search_hides_bash_exec_without_side_effect_capabilities() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock should be after epoch");
     let nanos = duration.as_nanos();
-    let root = std::env::temp_dir().join(format!("loong-tool-search-bash-cap-filter-{nanos}"));
+    let root = std::env::temp_dir().join(format!("loongclaw-tool-search-bash-cap-filter-{nanos}"));
     std::fs::create_dir_all(&root).expect("create fixture root");
 
     let mut config = test_tool_runtime_config(root.clone());
@@ -3351,10 +2988,6 @@ fn is_known_tool_name_accepts_canonical_and_alias_forms() {
     assert!(is_known_tool_name("config_import"));
     assert!(is_known_tool_name("claw.migrate"));
     assert!(is_known_tool_name("claw_migrate"));
-    assert!(is_known_tool_name("external_skills.policy"));
-    assert!(is_known_tool_name("external_skills_policy"));
-    assert!(is_known_tool_name("external_skills.fetch"));
-    assert!(is_known_tool_name("external_skills_fetch"));
     assert!(is_known_tool_name("file.read"));
     assert!(is_known_tool_name("file_read"));
     assert!(is_known_tool_name("file.write"));
@@ -3408,8 +3041,8 @@ fn is_known_tool_name_accepts_canonical_and_alias_forms() {
     assert!(is_known_tool_name("feishu_calendar_list"));
     assert!(is_known_tool_name("feishu.calendar.freebusy"));
     assert!(is_known_tool_name("feishu_calendar_freebusy"));
-    assert!(is_known_tool_name("agent"));
-    assert!(is_known_tool_name("skills"));
+    assert!(!is_known_tool_name("agent"));
+    assert!(!is_known_tool_name("skills"));
     assert!(!is_known_tool_name("nonexistent.tool"));
 }
 
@@ -3431,21 +3064,14 @@ fn tool_registry_with_config_includes_feishu_tools_when_runtime_configured() {
     let names = entries
         .iter()
         .map(|entry| entry.name.clone())
-        .collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>();
 
-    assert!(names.contains(&"feishu.whoami".to_owned()));
-    assert!(names.contains(&"feishu.doc.create".to_owned()));
-    assert!(names.contains(&"feishu.doc.append".to_owned()));
-    assert!(names.contains(&"feishu.doc.read".to_owned()));
-    assert!(names.contains(&"feishu.messages.history".to_owned()));
-    assert!(names.contains(&"feishu.messages.get".to_owned()));
-    assert!(names.contains(&"feishu.messages.resource.get".to_owned()));
-    assert!(names.contains(&"feishu.messages.search".to_owned()));
-    assert!(names.contains(&"feishu.messages.send".to_owned()));
-    assert!(names.contains(&"feishu.messages.reply".to_owned()));
-    assert!(names.contains(&"feishu.card.update".to_owned()));
-    assert!(names.contains(&"feishu.calendar.list".to_owned()));
-    assert!(names.contains(&"feishu.calendar.freebusy".to_owned()));
+    let expected =
+        visible_direct_tool_states_for_view(&runtime_tool_view_for_runtime_config(&config))
+            .into_iter()
+            .map(|state| state.surface_id)
+            .collect::<BTreeSet<_>>();
+    assert_eq!(names, expected);
 }
 
 #[cfg(feature = "feishu-integration")]
@@ -3470,14 +3096,15 @@ fn provider_tool_definitions_with_config_keeps_direct_surface_when_feishu_runtim
         .filter_map(Value::as_str)
         .collect::<Vec<_>>();
 
-    assert!(names.contains(&"browser"));
-    assert!(names.contains(&"exec"));
+    assert!(names.contains(&"bash"));
+    assert!(names.contains(&"browse"));
+    assert!(names.contains(&"edit"));
     assert!(names.contains(&"read"));
-    assert!(names.contains(&"tool_invoke"));
-    assert!(names.contains(&"tool_search"));
     assert!(names.contains(&"web"));
     assert!(names.contains(&"write"));
-    assert_eq!(names.len(), 7);
+    assert!(!names.contains(&"tool_invoke"));
+    assert!(!names.contains(&"tool_search"));
+    assert_eq!(names.len(), 6);
 }
 
 #[cfg(feature = "feishu-integration")]
@@ -3514,7 +3141,7 @@ fn feishu_tool_metadata_catalog_is_self_consistent() {
 #[cfg(all(feature = "tool-file", feature = "tool-websearch"))]
 #[test]
 fn tool_search_creates_tool_lease_secret_under_scoped_runtime_home() {
-    let root = unique_tool_temp_dir("loong-tool-search-home-override");
+    let root = unique_tool_temp_dir("loongclaw-tool-search-home-override");
     let memory_dir = root.join("memory");
 
     std::fs::create_dir_all(&memory_dir).expect("create memory dir");
@@ -4199,7 +3826,7 @@ fn unique_feishu_tool_temp_dir(label: &str) -> std::path::PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     std::env::temp_dir().join(format!(
-        "loong-tool-feishu-{label}-{}",
+        "loongclaw-tool-feishu-{label}-{}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
@@ -4335,7 +3962,7 @@ async fn feishu_doc_read_tool_uses_selected_grant_and_user_token() {
 
     fn unique_temp_dir(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "loong-tool-feishu-{label}-{}",
+            "loongclaw-tool-feishu-{label}-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
@@ -12304,9 +11931,9 @@ fn provider_switch_tool_updates_target_config_and_reports_active_profile() {
         std::env::temp_dir().join(format!("{prefix}-{nanos}"))
     }
 
-    let root = unique_temp_dir("loong-tool-provider-switch");
+    let root = unique_temp_dir("loongclaw-tool-provider-switch");
     fs::create_dir_all(&root).expect("create fixture root");
-    let config_path = root.join("loong.toml");
+    let config_path = root.join("loongclaw.toml");
 
     let mut config = crate::config::LoongConfig::default();
     let mut openai =
@@ -12341,7 +11968,7 @@ fn provider_switch_tool_updates_target_config_and_reports_active_profile() {
         shell_allow: BTreeSet::new(),
         file_root: Some(root.clone()),
         config_path: Some(config_path.clone()),
-        external_skills: Default::default(),
+        skills: Default::default(),
         ..runtime_config::ToolRuntimeConfig::default()
     };
     let outcome = execute_tool_core_with_config(
@@ -12349,7 +11976,7 @@ fn provider_switch_tool_updates_target_config_and_reports_active_profile() {
             tool_name: "provider.switch".to_owned(),
             payload: json!({
                 "selector": "deepseek",
-                "config_path": "loong.toml"
+                "config_path": "loongclaw.toml"
             }),
         },
         &runtime_config,
@@ -12385,9 +12012,9 @@ fn provider_switch_tool_accepts_unique_model_selector() {
         std::env::temp_dir().join(format!("{prefix}-{nanos}"))
     }
 
-    let root = unique_temp_dir("loong-tool-provider-switch-model");
+    let root = unique_temp_dir("loongclaw-tool-provider-switch-model");
     fs::create_dir_all(&root).expect("create fixture root");
-    let config_path = root.join("loong.toml");
+    let config_path = root.join("loongclaw.toml");
 
     let mut config = crate::config::LoongConfig::default();
     let mut openai =
@@ -12422,7 +12049,7 @@ fn provider_switch_tool_accepts_unique_model_selector() {
         shell_allow: BTreeSet::new(),
         file_root: Some(root.clone()),
         config_path: Some(config_path.clone()),
-        external_skills: Default::default(),
+        skills: Default::default(),
         ..runtime_config::ToolRuntimeConfig::default()
     };
     let outcome = execute_tool_core_with_config(
@@ -12464,9 +12091,9 @@ fn provider_switch_without_selector_reports_current_provider_state() {
         std::env::temp_dir().join(format!("{prefix}-{nanos}"))
     }
 
-    let root = unique_temp_dir("loong-tool-provider-switch-inspect");
+    let root = unique_temp_dir("loongclaw-tool-provider-switch-inspect");
     fs::create_dir_all(&root).expect("create fixture root");
-    let config_path = root.join("loong.toml");
+    let config_path = root.join("loongclaw.toml");
 
     let mut config = crate::config::LoongConfig::default();
     let mut openai =
@@ -12489,7 +12116,7 @@ fn provider_switch_without_selector_reports_current_provider_state() {
         shell_allow: BTreeSet::new(),
         file_root: Some(root.clone()),
         config_path: Some(config_path.clone()),
-        external_skills: Default::default(),
+        skills: Default::default(),
         ..runtime_config::ToolRuntimeConfig::default()
     };
     let outcome = execute_tool_core_with_config(
@@ -12555,7 +12182,7 @@ fn config_import_plan_mode_returns_nativeized_preview() {
         fs::write(path, content).expect("write fixture");
     }
 
-    let root = unique_temp_dir("loong-tool-import-plan");
+    let root = unique_temp_dir("loongclaw-tool-import-plan");
     fs::create_dir_all(&root).expect("create fixture root");
     write_file(
         &root,
@@ -12638,7 +12265,7 @@ fn config_import_apply_mode_writes_target_config() {
         fs::write(path, content).expect("write fixture");
     }
 
-    let root = unique_temp_dir("loong-tool-import-apply");
+    let root = unique_temp_dir("loongclaw-tool-import-apply");
     fs::create_dir_all(&root).expect("create fixture root");
     write_file(
         &root,
@@ -12651,7 +12278,7 @@ fn config_import_apply_mode_writes_target_config() {
         "# Identity\n\n- Motto: your nanobot agent for deploys\n",
     );
 
-    let output_path = root.join("generated").join("loong.toml");
+    let output_path = root.join("generated").join("loongclaw.toml");
     let config = runtime_config::ToolRuntimeConfig {
         file_root: Some(root.clone()),
         ..runtime_config::ToolRuntimeConfig::default()
@@ -12666,7 +12293,7 @@ fn config_import_apply_mode_writes_target_config() {
                     "mode": "apply",
                     "source": "nanobot",
                     "input_path": ".",
-                    "output_path": "generated/loong.toml",
+                    "output_path": "generated/loongclaw.toml",
                     "force": true
                 }),
             },
@@ -12728,7 +12355,7 @@ fn config_import_discover_mode_returns_detected_sources() {
         fs::write(path, content).expect("write fixture");
     }
 
-    let root = unique_temp_dir("loong-tool-import-discover");
+    let root = unique_temp_dir("loongclaw-tool-import-discover");
     fs::create_dir_all(&root).expect("create fixture root");
 
     let openclaw_root = root.join("openclaw-workspace");
@@ -12791,7 +12418,7 @@ fn config_import_plan_many_mode_returns_source_summaries_and_recommendation() {
         fs::write(path, content).expect("write fixture");
     }
 
-    let root = unique_temp_dir("loong-tool-import-plan-many");
+    let root = unique_temp_dir("loongclaw-tool-import-plan-many");
     fs::create_dir_all(&root).expect("create fixture root");
 
     let openclaw_root = root.join("openclaw-workspace");
@@ -12863,7 +12490,7 @@ fn config_import_merge_profiles_mode_preserves_prompt_owner() {
         fs::write(path, content).expect("write fixture");
     }
 
-    let root = unique_temp_dir("loong-tool-import-merge-profiles");
+    let root = unique_temp_dir("loongclaw-tool-import-merge-profiles");
     fs::create_dir_all(&root).expect("create fixture root");
 
     let openclaw_root = root.join("openclaw-workspace");
@@ -12920,7 +12547,7 @@ fn config_import_merge_profiles_mode_preserves_prompt_owner() {
 }
 
 #[test]
-fn config_import_map_external_skills_mode_returns_mapping_plan() {
+fn config_import_map_skills_mode_returns_mapping_plan() {
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -12943,7 +12570,7 @@ fn config_import_map_external_skills_mode_returns_mapping_plan() {
         fs::write(path, content).expect("write fixture");
     }
 
-    let root = unique_temp_dir("loong-tool-import-map-external-skills");
+    let root = unique_temp_dir("loongclaw-tool-import-map-external-skills");
     fs::create_dir_all(&root).expect("create fixture root");
     write_file(&root, "SKILLS.md", "# Skills\n\n- custom/skill-a\n");
     fs::create_dir_all(root.join(".codex/skills")).expect("create codex skills dir");
@@ -12956,16 +12583,16 @@ fn config_import_map_external_skills_mode_returns_mapping_plan() {
         ToolCoreRequest {
             tool_name: "config.import".to_owned(),
             payload: json!({
-                "mode": "map_external_skills",
+                "mode": "map_skills",
                 "input_path": "."
             }),
         },
         &config,
     )
-    .expect("config import map_external_skills should succeed");
+    .expect("config import map_skills should succeed");
 
     assert_eq!(outcome.status, "ok");
-    assert_eq!(outcome.payload["mode"], "map_external_skills");
+    assert_eq!(outcome.payload["mode"], "map_skills");
     assert_eq!(outcome.payload["result"]["artifact_count"], 2);
     assert_eq!(
         outcome.payload["result"]["declared_skills"][0],
@@ -13009,7 +12636,7 @@ fn config_import_apply_selected_mode_writes_manifest_and_backup() {
         fs::write(path, content).expect("write fixture");
     }
 
-    let root = unique_temp_dir("loong-tool-import-apply-selected");
+    let root = unique_temp_dir("loongclaw-tool-import-apply-selected");
     fs::create_dir_all(&root).expect("create fixture root");
 
     let openclaw_root = root.join("openclaw-workspace");
@@ -13025,7 +12652,7 @@ fn config_import_apply_selected_mode_writes_manifest_and_backup() {
         "# Identity\n\n- role: release copilot\n- tone: steady\n",
     );
 
-    let output_path = root.join("loong.toml");
+    let output_path = root.join("loongclaw.toml");
     let original_body = crate::config::render(&crate::config::LoongConfig::default())
         .expect("render default config");
     fs::write(&output_path, &original_body).expect("write original config");
@@ -13040,7 +12667,7 @@ fn config_import_apply_selected_mode_writes_manifest_and_backup() {
             payload: json!({
                 "mode": "apply_selected",
                 "input_path": ".",
-                "output_path": "loong.toml",
+                "output_path": "loongclaw.toml",
                 "source_id": "openclaw"
             }),
         },
@@ -13071,7 +12698,7 @@ fn config_import_apply_selected_mode_writes_manifest_and_backup() {
 }
 
 #[test]
-fn config_import_apply_selected_mode_can_apply_external_skills_plan() {
+fn config_import_apply_selected_mode_can_apply_skills_plan() {
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -13094,7 +12721,7 @@ fn config_import_apply_selected_mode_can_apply_external_skills_plan() {
         fs::write(path, content).expect("write fixture");
     }
 
-    let root = unique_temp_dir("loong-tool-import-apply-selected-external");
+    let root = unique_temp_dir("loongclaw-tool-import-apply-selected-external");
     fs::create_dir_all(&root).expect("create fixture root");
 
     let openclaw_root = root.join("openclaw-workspace");
@@ -13116,7 +12743,7 @@ fn config_import_apply_selected_mode_can_apply_external_skills_plan() {
         "# Release Guard\n\nUse this skill when release discipline matters.\n",
     );
 
-    let output_path = root.join("loong.toml");
+    let output_path = root.join("loongclaw.toml");
 
     let config = runtime_config::ToolRuntimeConfig {
         file_root: Some(root.clone()),
@@ -13128,14 +12755,14 @@ fn config_import_apply_selected_mode_can_apply_external_skills_plan() {
             payload: json!({
                 "mode": "apply_selected",
                 "input_path": ".",
-                "output_path": "loong.toml",
+                "output_path": "loongclaw.toml",
                 "source_id": "openclaw",
-                "apply_external_skills_plan": true
+                "apply_skills_plan": true
             }),
         },
         &config,
     )
-    .expect("config import apply_selected with external skills should succeed");
+    .expect("config import apply_selected with skills should succeed");
 
     assert_eq!(outcome.status, "ok");
     assert_eq!(
@@ -13155,15 +12782,22 @@ fn config_import_apply_selected_mode_can_apply_external_skills_plan() {
         json!(["release-guard"])
     );
     assert!(
-        outcome.payload["result"]["external_skills_manifest_path"]
+        outcome.payload["apply_skills_plan"]
+            .as_bool()
+            .unwrap_or(false),
+        "canonical apply_skills_plan should be present"
+    );
+    assert!(
+        outcome.payload["result"]["skills_manifest_path"]
             .as_str()
             .is_some(),
-        "external skills manifest path should exist"
+        "canonical skills_manifest_path should exist"
     );
     let raw = fs::read_to_string(&output_path).expect("read output config");
     assert!(raw.contains("Imported External Skills Artifacts"));
     assert!(
-        root.join("external-skills-installed")
+        root.join(crate::config::HOME_DIR_NAME)
+            .join("skills")
             .join("release-guard")
             .join("SKILL.md")
             .exists(),
@@ -13197,7 +12831,7 @@ fn config_import_rollback_last_apply_restores_original_config() {
         fs::write(path, content).expect("write fixture");
     }
 
-    let root = unique_temp_dir("loong-tool-import-rollback-selected");
+    let root = unique_temp_dir("loongclaw-tool-import-rollback-selected");
     fs::create_dir_all(&root).expect("create fixture root");
 
     let openclaw_root = root.join("openclaw-workspace");
@@ -13213,7 +12847,7 @@ fn config_import_rollback_last_apply_restores_original_config() {
         "# Identity\n\n- role: release copilot\n- tone: steady\n",
     );
 
-    let output_path = root.join("loong.toml");
+    let output_path = root.join("loongclaw.toml");
     let original_body = crate::config::render(&crate::config::LoongConfig::default())
         .expect("render default config");
     fs::write(&output_path, &original_body).expect("write original config");
@@ -13228,7 +12862,7 @@ fn config_import_rollback_last_apply_restores_original_config() {
             payload: json!({
                 "mode": "apply_selected",
                 "input_path": ".",
-                "output_path": "loong.toml",
+                "output_path": "loongclaw.toml",
                 "source_id": "openclaw"
             }),
         },
@@ -13241,7 +12875,7 @@ fn config_import_rollback_last_apply_restores_original_config() {
             tool_name: "config.import".to_owned(),
             payload: json!({
                 "mode": "rollback_last_apply",
-                "output_path": "loong.toml"
+                "output_path": "loongclaw.toml"
             }),
         },
         &config,

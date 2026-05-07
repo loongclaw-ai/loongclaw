@@ -1,4 +1,16 @@
+fn direct_metadata_alias(name: &str) -> Option<&'static str> {
+    match name {
+        "file.write" => Some("write"),
+        "file.edit" => Some("edit"),
+        _ => None,
+    }
+}
+
 pub(super) fn tool_argument_hint(name: &str) -> &'static str {
+    if let Some(alias) = direct_metadata_alias(name) {
+        return tool_argument_hint(alias);
+    }
+
     if let Some(argument_hint) = crate::tools::tool_surface::direct_tool_argument_hint(name) {
         return argument_hint;
     }
@@ -109,53 +121,44 @@ pub(super) fn tool_argument_hint(name: &str) -> &'static str {
             "account_id?:string,open_id?:string,receive_id:string,receive_id_type?:string,text?:string,post?:object,image_key?:string,file_key?:string,card?:object,markdown?:string"
         }
         "feishu.whoami" => "account_id?:string,open_id?:string",
-        "tool.search" => "query?:string,exact_tool_id?:string,limit?:integer",
-        "tool.invoke" => "tool_id:string,lease:string,arguments:object",
         "read" => {
             "path?:string,offset?:integer,limit?:integer,max_bytes?:integer,query?:string,pattern?:string,root?:string,glob?:string,max_results?:integer,max_bytes_per_file?:integer,case_sensitive?:boolean,include_directories?:boolean"
         }
-        "write" => {
-            "path:string,content?:string,create_dirs?:boolean,overwrite?:boolean,edits?:array,old_string?:string,new_string?:string,replace_all?:boolean"
-        }
-        "exec" => "command?:string,script?:string,args?:string[],timeout_ms?:integer,cwd?:string",
+        "write" => "path:string,content:string,create_dirs?:boolean,overwrite?:boolean",
+        "edit" => "path:string,edits:array",
+        "bash" => "command:string,timeout_ms?:integer,cwd?:string",
         "web" => {
             "url?:string,mode?:string,max_bytes?:integer,query?:string,provider?:string,max_results?:integer"
         }
-        "browser" => {
-            "url?:string,max_bytes?:integer,session_id?:string,mode?:string,selector?:string,limit?:integer,link_id?:integer"
+        "browse" => {
+            "action?:string,url?:string,session_id?:string,mode?:string,selector?:string,link_id?:integer,limit?:integer,max_bytes?:integer"
         }
         "memory" => "query?:string,max_results?:integer,path?:string,from?:integer,lines?:integer",
         "config.import" => {
-            "input_path?:string,output_path?:string,mode?:string,source?:string,source_id?:string,primary_source_id?:string,safe_profile_merge?:boolean,apply_external_skills_plan?:boolean,force?:boolean"
+            "input_path?:string,output_path?:string,mode?:string,source?:string,source_id?:string,primary_source_id?:string,safe_profile_merge?:boolean,apply_skills_plan?:boolean,force?:boolean"
         }
-        "external_skills.fetch" => {
+        "skills.fetch" => {
             "reference?:string,url?:string,approval_granted?:boolean,save_as?:string,max_bytes?:integer"
         }
-        "external_skills.resolve" => "reference:string",
-        "external_skills.search" => "query:string,limit:integer",
-        "external_skills.recommend" => "query:string,limit:integer",
-        "external_skills.source_search" => "query:string,max_results?:integer,sources?:string[]",
-        "external_skills.inspect" => "skill_id:string",
-        "external_skills.install" => {
+        "skills.resolve" => "reference:string",
+        "skills.search" => "query:string,limit:integer",
+        "skills.recommend" => "query:string,limit:integer",
+        "skills.source_search" => "query:string,max_results?:integer,sources?:string[]",
+        "skills.inspect" => "skill_id:string",
+        "skills.install" => {
             "path?:string,bundled_skill_id?:string,skill_id?:string,source_skill_id?:string,security_decision?:string,replace?:boolean"
         }
-        "external_skills.invoke" => "skill_id:string",
-        "external_skills.list" => "",
-        "external_skills.policy" => {
+        "skills.list" => "",
+        "skills.policy" => {
             "action?:string,enabled?:boolean,allowed_domains?:string[],blocked_domains?:string[]"
         }
-        "external_skills.remove" => "skill_id:string",
-        "browser.companion.session.start" => "url:string",
-        "browser.companion.navigate" => "session_id:string,url:string",
-        "browser.companion.snapshot" => "session_id:string,mode?:string",
-        "browser.companion.wait" => "session_id:string,condition?:string,timeout_ms?:integer",
-        "browser.companion.session.stop" => "session_id:string",
-        "browser.companion.click" => "session_id:string,selector:string",
-        "browser.companion.type" => "session_id:string,selector:string,text:string",
+        "skills.remove" => "skill_id:string",
+        "browser.open" => "url:string,max_bytes?:integer",
+        "browser.extract" => "session_id:string,mode?:string,selector?:string,limit?:integer",
+        "browser.click" => "session_id:string,link_id:integer",
         "http.request" => {
             "url:string,method?:string,headers?:object,body?:string,content_type?:string,max_bytes?:integer"
         }
-        "file.read" => "path:string,offset?:integer,limit?:integer,max_bytes?:integer",
         "glob.search" => {
             "pattern:string,root?:string,max_results?:integer,include_directories?:boolean"
         }
@@ -164,10 +167,6 @@ pub(super) fn tool_argument_hint(name: &str) -> &'static str {
         }
         "memory_search" => "query:string,max_results?:integer",
         "memory_get" => "path:string,from?:integer,lines?:integer",
-        "file.write" => "path:string,content:string,create_dirs?:boolean,overwrite?:boolean",
-        "file.edit" => {
-            "path:string,edits?:array,old_string?:string,new_string?:string,replace_all?:boolean"
-        }
         "shell.exec" => "command:string,args?:string[],timeout_ms?:integer,cwd?:string",
         "bash.exec" => "command:string,cwd?:string,timeout_ms?:integer",
         "provider.switch" => "selector?:string",
@@ -202,32 +201,23 @@ pub(super) fn tool_argument_hint(name: &str) -> &'static str {
 }
 
 pub(super) fn tool_search_hint(name: &str, fallback: &'static str) -> &'static str {
+    if let Some(alias) = direct_metadata_alias(name) {
+        return tool_search_hint(alias, fallback);
+    }
+
     if let Some(search_hint) = crate::tools::tool_surface::direct_tool_search_hint(name) {
         return search_hint;
     }
 
     match name {
-        "tool.search" => {
-            "discover a specialized tool when the visible direct tools do not fit, or refresh a known tool card"
-        }
-        "tool.invoke" => "run a discovered specialized tool with the lease returned by tool.search",
         "http.request" => {
             "send a bounded http request, inspect status and headers, fetch text or binary responses"
-        }
-        "file.read" => {
-            "read a workspace file, inspect file contents, or page through a file window"
         }
         "glob.search" => {
             "find workspace files by glob pattern, list files in a directory, browse folder contents, search repo paths, match files under a root"
         }
         "content.search" => {
             "search workspace file contents, find text in repo files, grep text in the project"
-        }
-        "file.write" => {
-            "write a workspace file, save file content, create or overwrite a repo file"
-        }
-        "file.edit" => {
-            "edit a workspace file, patch file content, or apply exact replacement blocks in a repo file"
         }
         "shell.exec" => {
             "run a shell command, execute a terminal command, bash, zsh, powershell, cli"
@@ -244,6 +234,10 @@ pub(super) fn tool_search_hint(name: &str, fallback: &'static str) -> &'static s
 }
 
 pub(super) fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'static str)] {
+    if let Some(alias) = direct_metadata_alias(name) {
+        return tool_parameter_types(alias);
+    }
+
     if let Some(parameter_types) = crate::tools::tool_surface::direct_tool_parameter_types(name) {
         return parameter_types;
     }
@@ -536,16 +530,6 @@ pub(super) fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'sta
             ("markdown", "string"),
         ],
         "feishu.whoami" => &[("account_id", "string"), ("open_id", "string")],
-        "tool.search" => &[
-            ("query", "string"),
-            ("exact_tool_id", "string"),
-            ("limit", "integer"),
-        ],
-        "tool.invoke" => &[
-            ("tool_id", "string"),
-            ("lease", "string"),
-            ("arguments", "object"),
-        ],
         "config.import" => &[
             ("input_path", "string"),
             ("output_path", "string"),
@@ -554,28 +538,26 @@ pub(super) fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'sta
             ("source_id", "string"),
             ("primary_source_id", "string"),
             ("safe_profile_merge", "boolean"),
-            ("apply_external_skills_plan", "boolean"),
+            ("apply_skills_plan", "boolean"),
             ("force", "boolean"),
         ],
-        "external_skills.fetch" => &[
+        "skills.fetch" => &[
             ("reference", "string"),
             ("url", "string"),
             ("approval_granted", "boolean"),
             ("save_as", "string"),
             ("max_bytes", "integer"),
         ],
-        "external_skills.resolve" => &[("reference", "string")],
-        "external_skills.search" => &[("query", "string"), ("limit", "integer")],
-        "external_skills.recommend" => &[("query", "string"), ("limit", "integer")],
-        "external_skills.source_search" => &[
+        "skills.resolve" => &[("reference", "string")],
+        "skills.search" => &[("query", "string"), ("limit", "integer")],
+        "skills.recommend" => &[("query", "string"), ("limit", "integer")],
+        "skills.source_search" => &[
             ("query", "string"),
             ("max_results", "integer"),
             ("sources", "array"),
         ],
-        "external_skills.inspect" | "external_skills.invoke" | "external_skills.remove" => {
-            &[("skill_id", "string")]
-        }
-        "external_skills.install" => &[
+        "skills.inspect" | "skills.remove" => &[("skill_id", "string")],
+        "skills.install" => &[
             ("path", "string"),
             ("bundled_skill_id", "string"),
             ("skill_id", "string"),
@@ -583,22 +565,15 @@ pub(super) fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'sta
             ("security_decision", "string"),
             ("replace", "boolean"),
         ],
-        "external_skills.list" => &[],
-        "browser.companion.session.start" => &[("url", "string")],
-        "browser.companion.navigate" => &[("session_id", "string"), ("url", "string")],
-        "browser.companion.snapshot" => &[("session_id", "string"), ("mode", "string")],
-        "browser.companion.wait" => &[
+        "skills.list" => &[],
+        "browser.open" => &[("url", "string"), ("max_bytes", "integer")],
+        "browser.extract" => &[
             ("session_id", "string"),
-            ("condition", "string"),
-            ("timeout_ms", "integer"),
-        ],
-        "browser.companion.session.stop" => &[("session_id", "string")],
-        "browser.companion.click" => &[("session_id", "string"), ("selector", "string")],
-        "browser.companion.type" => &[
-            ("session_id", "string"),
+            ("mode", "string"),
             ("selector", "string"),
-            ("text", "string"),
+            ("limit", "integer"),
         ],
+        "browser.click" => &[("session_id", "string"), ("link_id", "integer")],
         "http.request" => &[
             ("url", "string"),
             ("method", "string"),
@@ -607,17 +582,11 @@ pub(super) fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'sta
             ("content_type", "string"),
             ("max_bytes", "integer"),
         ],
-        "external_skills.policy" => &[
+        "skills.policy" => &[
             ("action", "string"),
             ("enabled", "boolean"),
             ("allowed_domains", "array"),
             ("blocked_domains", "array"),
-        ],
-        "file.read" => &[
-            ("path", "string"),
-            ("offset", "integer"),
-            ("limit", "integer"),
-            ("max_bytes", "integer"),
         ],
         "glob.search" => &[
             ("pattern", "string"),
@@ -638,19 +607,6 @@ pub(super) fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'sta
             ("path", "string"),
             ("from", "integer"),
             ("lines", "integer"),
-        ],
-        "file.write" => &[
-            ("path", "string"),
-            ("content", "string"),
-            ("create_dirs", "boolean"),
-            ("overwrite", "boolean"),
-        ],
-        "file.edit" => &[
-            ("path", "string"),
-            ("edits", "array"),
-            ("old_string", "string"),
-            ("new_string", "string"),
-            ("replace_all", "boolean"),
         ],
         "shell.exec" => &[
             ("command", "string"),
@@ -750,6 +706,10 @@ pub(super) fn tool_parameter_types(name: &str) -> &'static [(&'static str, &'sta
 }
 
 pub(super) fn tool_required_fields(name: &str) -> &'static [&'static str] {
+    if let Some(alias) = direct_metadata_alias(name) {
+        return tool_required_fields(alias);
+    }
+
     if let Some(required_fields) = crate::tools::tool_surface::direct_tool_required_fields(name) {
         return required_fields;
     }
@@ -788,33 +748,22 @@ pub(super) fn tool_required_fields(name: &str) -> &'static [&'static str] {
         "feishu.messages.reply" => &["message_id"],
         "feishu.messages.search" => &["query"],
         "feishu.messages.send" => &["receive_id"],
-        "tool.search" => &[],
-        "tool.invoke" => &["tool_id", "lease", "arguments"],
-        "external_skills.fetch" => &[],
-        "external_skills.resolve" => &["reference"],
-        "external_skills.search" => &["query", "limit"],
-        "external_skills.recommend" => &["query", "limit"],
-        "external_skills.source_search" => &["query"],
-        "external_skills.inspect" | "external_skills.invoke" | "external_skills.remove" => {
-            &["skill_id"]
-        }
+        "skills.fetch" => &[],
+        "skills.resolve" => &["reference"],
+        "skills.search" => &["query", "limit"],
+        "skills.recommend" => &["query", "limit"],
+        "skills.source_search" => &["query"],
+        "skills.inspect" | "skills.remove" => &["skill_id"],
         // Grouped requirements are the source of truth for this tool's anyOf shape.
-        "external_skills.install" => &[],
-        "browser.companion.session.start" => &["url"],
-        "browser.companion.navigate" => &["session_id", "url"],
-        "browser.companion.snapshot"
-        | "browser.companion.wait"
-        | "browser.companion.session.stop" => &["session_id"],
-        "browser.companion.click" => &["session_id", "selector"],
-        "browser.companion.type" => &["session_id", "selector", "text"],
+        "skills.install" => &[],
+        "browser.open" => &["url"],
+        "browser.extract" => &["session_id"],
+        "browser.click" => &["session_id", "link_id"],
         "http.request" => &["url"],
-        "file.read" => &["path"],
         "glob.search" => &["pattern"],
         "content.search" => &["query"],
         "memory_search" => &["query"],
         "memory_get" => &["path"],
-        "file.write" => &["path", "content"],
-        "file.edit" => &["path"],
         "shell.exec" => &["command"],
         "bash.exec" => &["command"],
         "delegate" | "delegate_async" => &["task"],
@@ -840,6 +789,10 @@ pub(super) fn tool_required_fields(name: &str) -> &'static [&'static str] {
 }
 
 pub(super) fn tool_tags(name: &str) -> &'static [&'static str] {
+    if let Some(alias) = direct_metadata_alias(name) {
+        return tool_tags(alias);
+    }
+
     if let Some(tags) = crate::tools::tool_surface::direct_tool_tags(name) {
         return tags;
     }
@@ -884,30 +837,21 @@ pub(super) fn tool_tags(name: &str) -> &'static [&'static str] {
         "feishu.messages.resource.get" => &["feishu", "messages", "resource", "file"],
         "feishu.messages.send" | "feishu.messages.reply" => &["feishu", "messages", "write"],
         "feishu.whoami" => &["feishu", "identity", "read"],
-        "tool.search" => &["core", "discover", "search"],
-        "tool.invoke" => &["core", "dispatch", "invoke"],
         "config.import" => &["config", "import", "migration", "workspace", "legacy"],
-        "external_skills.fetch" => &["skills", "download", "external", "fetch"],
-        "external_skills.resolve" => &["skills", "resolve", "normalize", "external"],
-        "external_skills.search" => &["skills", "search", "inventory", "discover"],
-        "external_skills.recommend" => &["skills", "recommend", "inventory", "discover"],
-        "external_skills.source_search" => &["skills", "search", "discover", "external"],
-        "external_skills.inspect" => &["skills", "inspect", "metadata"],
-        "external_skills.install" => &["skills", "install", "package"],
-        "external_skills.invoke" => &["skills", "invoke", "instructions"],
-        "external_skills.list" => &["skills", "list", "discover"],
-        "external_skills.policy" => &["skills", "policy", "security"],
-        "external_skills.remove" => &["skills", "remove", "uninstall"],
-        "browser.companion.session.start"
-        | "browser.companion.navigate"
-        | "browser.companion.snapshot"
-        | "browser.companion.wait"
-        | "browser.companion.session.stop" => &["browser", "companion", "session", "read"],
-        "browser.companion.click" | "browser.companion.type" => {
-            &["browser", "companion", "write", "approval"]
-        }
+        "skills.fetch" => &["skills", "download", "external", "fetch"],
+        "skills.resolve" => &["skills", "resolve", "normalize", "external"],
+        "skills.search" => &["skills", "search", "inventory", "discover"],
+        "skills.recommend" => &["skills", "recommend", "inventory", "discover"],
+        "skills.source_search" => &["skills", "search", "discover", "external"],
+        "skills.inspect" => &["skills", "inspect", "metadata"],
+        "skills.install" => &["skills", "install", "package"],
+        "skills.list" => &["skills", "list", "discover"],
+        "skills.policy" => &["skills", "policy", "security"],
+        "skills.remove" => &["skills", "remove", "uninstall"],
+        "browse" => &["browse", "page", "extract", "links"],
+        "browser.open" | "browser.extract" => &["browser", "page", "read"],
+        "browser.click" => &["browser", "page", "navigate"],
         "http.request" => &["http", "request", "web", "network", "external"],
-        "file.read" => &["file", "read", "filesystem", "repo"],
         "glob.search" => &[
             "file",
             "search",
@@ -922,8 +866,6 @@ pub(super) fn tool_tags(name: &str) -> &'static [&'static str] {
         "content.search" => &["file", "search", "content", "filesystem", "repo"],
         "memory_search" => &["memory", "search", "recall", "durable", "workspace"],
         "memory_get" => &["memory", "read", "recall", "durable", "workspace"],
-        "file.write" => &["file", "write", "filesystem"],
-        "file.edit" => &["file", "edit", "filesystem", "exact", "replace"],
         "shell.exec" => &["shell", "command", "process", "exec"],
         "bash.exec" => &["bash", "command", "process", "exec"],
         "provider.switch" => &["provider", "switch", "model", "runtime"],

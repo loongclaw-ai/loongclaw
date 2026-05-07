@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use serde_json::Value;
 
 use super::tool_result_compaction::compact_tool_search_payload_summary_str;
@@ -8,16 +6,6 @@ use super::tool_result_line::ToolResultLine;
 pub(crate) const FILE_READ_FOLLOWUP_CONTENT_PREVIEW_CHARS: usize = 384;
 pub(crate) const SHELL_FOLLOWUP_STDIO_PREVIEW_CHARS: usize = 384;
 pub(crate) const SHELL_FOLLOWUP_STDIO_OMISSION_MARKER: &str = "\n[... omitted ...]\n";
-
-pub(crate) fn reduce_followup_payload_for_model<'a>(label: &str, text: &'a str) -> Cow<'a, str> {
-    if label != "tool_result" {
-        return Cow::Borrowed(text);
-    }
-
-    reduce_tool_result_text_for_model(text)
-        .map(Cow::Owned)
-        .unwrap_or(Cow::Borrowed(text))
-}
 
 pub(crate) fn reduce_tool_result_text_for_model(text: &str) -> Option<String> {
     let mut changed = false;
@@ -53,14 +41,14 @@ fn reduce_tool_result_line_for_model(line: &str) -> String {
     let reduction = if payload_summary.is_empty() {
         None
     } else {
-        match canonical_tool_name {
-            "file.read" => {
+        match visible_tool_name.as_str() {
+            "read" => {
                 let Ok(payload_json) = serde_json::from_str::<Value>(payload_summary) else {
                     return line.to_owned();
                 };
                 reduce_file_read_payload_summary(&payload_json).map(|summary| (summary, true))
             }
-            "shell.exec" => {
+            "bash" => {
                 let Ok(mut payload_json) = serde_json::from_str::<Value>(payload_summary) else {
                     return line.to_owned();
                 };

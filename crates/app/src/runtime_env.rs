@@ -1,6 +1,10 @@
 use std::path::Path;
 
 use crate::config::LoongConfig;
+use crate::tools::runtime_config::{
+    SKILLS_ALLOWED_DOMAINS_ENV, SKILLS_AUTO_EXPOSE_INSTALLED_ENV, SKILLS_BLOCKED_DOMAINS_ENV,
+    SKILLS_ENABLED_ENV, SKILLS_INSTALL_ROOT_ENV, SKILLS_REQUIRE_DOWNLOAD_APPROVAL_ENV,
+};
 
 /// Mirror config-backed runtime knobs into process environment and singleton
 /// runtime caches.
@@ -13,11 +17,12 @@ pub fn initialize_runtime_environment(config: &LoongConfig, resolved_config_path
     match resolved_config_path {
         Some(path) => {
             let value = path.display().to_string();
-            set_env_var("LOONG_CONFIG_PATH", value.clone());
             set_env_var("LOONG_CONFIG_PATH", value);
+            if let Some(loong_home) = resolved_loong_home_for_config_path(path) {
+                set_env_var("LOONG_HOME", loong_home.display().to_string());
+            }
         }
         None => {
-            remove_env_var("LOONG_CONFIG_PATH");
             remove_env_var("LOONG_CONFIG_PATH");
         }
     }
@@ -99,24 +104,6 @@ pub fn initialize_runtime_environment(config: &LoongConfig, resolved_config_path
         config.tools.browser.max_text_chars.to_string(),
     );
     set_env_var(
-        "LOONG_BROWSER_COMPANION_ENABLED",
-        bool_env(config.tools.browser_companion.enabled),
-    );
-    set_env_var(
-        "LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS",
-        config.tools.browser_companion.timeout_seconds.to_string(),
-    );
-    match normalized_optional_str(config.tools.browser_companion.command.as_deref()) {
-        Some(command) => set_env_var("LOONG_BROWSER_COMPANION_COMMAND", command),
-        None => remove_env_var("LOONG_BROWSER_COMPANION_COMMAND"),
-    }
-    match normalized_optional_str(config.tools.browser_companion.expected_version.as_deref()) {
-        Some(expected_version) => {
-            set_env_var("LOONG_BROWSER_COMPANION_EXPECTED_VERSION", expected_version)
-        }
-        None => remove_env_var("LOONG_BROWSER_COMPANION_EXPECTED_VERSION"),
-    }
-    set_env_var(
         "LOONG_WEB_FETCH_ENABLED",
         bool_env(config.tools.web.enabled),
     );
@@ -145,37 +132,44 @@ pub fn initialize_runtime_environment(config: &LoongConfig, resolved_config_path
         config.tools.web.max_redirects.to_string(),
     );
     set_env_var(
-        "LOONG_EXTERNAL_SKILLS_ENABLED",
-        bool_env(config.external_skills.enabled),
+        "LOONG_WEB_SEARCH_ENABLED",
+        bool_env(config.tools.web_search.enabled),
     );
     set_env_var(
-        "LOONG_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL",
-        bool_env(config.external_skills.require_download_approval),
+        "LOONG_WEB_SEARCH_PROVIDER",
+        crate::config::normalize_web_search_provider(
+            config.tools.web_search.default_provider.as_str(),
+        )
+        .unwrap_or(crate::config::DEFAULT_WEB_SEARCH_PROVIDER),
     );
     set_env_var(
-        "LOONG_EXTERNAL_SKILLS_ALLOWED_DOMAINS",
-        config
-            .external_skills
-            .normalized_allowed_domains()
-            .join(","),
+        "LOONG_WEB_SEARCH_TIMEOUT_SECONDS",
+        config.tools.web_search.timeout_seconds.to_string(),
     );
     set_env_var(
-        "LOONG_EXTERNAL_SKILLS_BLOCKED_DOMAINS",
-        config
-            .external_skills
-            .normalized_blocked_domains()
-            .join(","),
+        "LOONG_WEB_SEARCH_MAX_RESULTS",
+        config.tools.web_search.max_results.to_string(),
     );
-    match config.external_skills.resolved_install_root() {
-        Some(path) => set_env_var(
-            "LOONG_EXTERNAL_SKILLS_INSTALL_ROOT",
-            path.display().to_string(),
-        ),
-        None => remove_env_var("LOONG_EXTERNAL_SKILLS_INSTALL_ROOT"),
+    set_env_var(SKILLS_ENABLED_ENV, bool_env(config.skills.enabled));
+    set_env_var(
+        SKILLS_REQUIRE_DOWNLOAD_APPROVAL_ENV,
+        bool_env(config.skills.require_download_approval),
+    );
+    set_env_var(
+        SKILLS_ALLOWED_DOMAINS_ENV,
+        config.skills.normalized_allowed_domains().join(","),
+    );
+    set_env_var(
+        SKILLS_BLOCKED_DOMAINS_ENV,
+        config.skills.normalized_blocked_domains().join(","),
+    );
+    match config.skills.resolved_install_root() {
+        Some(path) => set_env_var(SKILLS_INSTALL_ROOT_ENV, path.display().to_string()),
+        None => remove_env_var(SKILLS_INSTALL_ROOT_ENV),
     }
     set_env_var(
-        "LOONG_EXTERNAL_SKILLS_AUTO_EXPOSE_INSTALLED",
-        bool_env(config.external_skills.auto_expose_installed),
+        SKILLS_AUTO_EXPOSE_INSTALLED_ENV,
+        bool_env(config.skills.auto_expose_installed),
     );
 
     let tool_rt = crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(
@@ -193,16 +187,18 @@ fn bool_env(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
-fn normalized_optional_str(raw: Option<&str>) -> Option<&str> {
-    raw.map(str::trim).filter(|value| !value.is_empty())
-}
-
 fn set_env_var(key: &str, value: impl AsRef<std::ffi::OsStr>) {
     crate::process_env::set_var(key, value);
 }
 
 fn remove_env_var(key: &str) {
     crate::process_env::remove_var(key);
+}
+
+fn resolved_loong_home_for_config_path(config_path: &Path) -> Option<&Path> {
+    config_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
 }
 
 #[cfg(test)]
@@ -217,6 +213,7 @@ mod tests {
     fn clear_runtime_environment_exports(env: &mut ScopedEnv) {
         for key in [
             "LOONG_CONFIG_PATH",
+            "LOONG_HOME",
             "LOONG_MEMORY_BACKEND",
             "LOONG_MEMORY_PROFILE",
             "LOONG_SQLITE_PATH",
@@ -229,20 +226,16 @@ mod tests {
             "LOONG_FILE_ROOT",
             "LOONG_WORKSPACE_ROOT",
             "LOONG_TOOL_SESSIONS_ALLOW_MUTATION",
-            "LOONG_EXTERNAL_SKILLS_ENABLED",
-            "LOONG_EXTERNAL_SKILLS_REQUIRE_DOWNLOAD_APPROVAL",
-            "LOONG_EXTERNAL_SKILLS_ALLOWED_DOMAINS",
-            "LOONG_EXTERNAL_SKILLS_BLOCKED_DOMAINS",
-            "LOONG_EXTERNAL_SKILLS_INSTALL_ROOT",
-            "LOONG_EXTERNAL_SKILLS_AUTO_EXPOSE_INSTALLED",
+            SKILLS_ENABLED_ENV,
+            SKILLS_REQUIRE_DOWNLOAD_APPROVAL_ENV,
+            SKILLS_ALLOWED_DOMAINS_ENV,
+            SKILLS_BLOCKED_DOMAINS_ENV,
+            SKILLS_INSTALL_ROOT_ENV,
+            SKILLS_AUTO_EXPOSE_INSTALLED_ENV,
             "LOONG_BROWSER_ENABLED",
             "LOONG_BROWSER_MAX_SESSIONS",
             "LOONG_BROWSER_MAX_LINKS",
             "LOONG_BROWSER_MAX_TEXT_CHARS",
-            "LOONG_BROWSER_COMPANION_ENABLED",
-            "LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS",
-            "LOONG_BROWSER_COMPANION_COMMAND",
-            "LOONG_BROWSER_COMPANION_EXPECTED_VERSION",
             "LOONG_WEB_FETCH_ENABLED",
             "LOONG_WEB_FETCH_ALLOW_PRIVATE_HOSTS",
             "LOONG_WEB_FETCH_ALLOWED_DOMAINS",
@@ -250,6 +243,10 @@ mod tests {
             "LOONG_WEB_FETCH_TIMEOUT_SECONDS",
             "LOONG_WEB_FETCH_MAX_BYTES",
             "LOONG_WEB_FETCH_MAX_REDIRECTS",
+            "LOONG_WEB_SEARCH_ENABLED",
+            "LOONG_WEB_SEARCH_PROVIDER",
+            "LOONG_WEB_SEARCH_TIMEOUT_SECONDS",
+            "LOONG_WEB_SEARCH_MAX_RESULTS",
         ] {
             env.remove(key);
         }
@@ -269,9 +266,6 @@ mod tests {
         config.tools.browser.max_sessions = 4;
         config.tools.browser.max_links = 12;
         config.tools.browser.max_text_chars = 2048;
-        config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some("loong-browser-companion".to_owned());
-        config.tools.browser_companion.expected_version = Some("1.2.3".to_owned());
         config.tools.web.enabled = false;
         config.tools.web.allow_private_hosts = true;
         config.tools.web.allowed_domains = vec!["docs.example.com".to_owned()];
@@ -279,8 +273,12 @@ mod tests {
         config.tools.web.timeout_seconds = 9;
         config.tools.web.max_bytes = 262_144;
         config.tools.web.max_redirects = 1;
-        config.external_skills.enabled = true;
-        config.external_skills.allowed_domains = vec!["skills.sh".to_owned()];
+        config.tools.web_search.enabled = false;
+        config.tools.web_search.default_provider = "DDG".to_owned();
+        config.tools.web_search.timeout_seconds = 17;
+        config.tools.web_search.max_results = 5;
+        config.skills.enabled = true;
+        config.skills.allowed_domains = vec!["skills.sh".to_owned()];
         let config_path = PathBuf::from("/tmp/loong-runtime-env.toml");
 
         initialize_runtime_environment(&config, Some(&config_path));
@@ -289,6 +287,7 @@ mod tests {
             std::env::var("LOONG_CONFIG_PATH").ok().as_deref(),
             Some("/tmp/loong-runtime-env.toml")
         );
+        assert_eq!(std::env::var("LOONG_HOME").ok().as_deref(), Some("/tmp"));
         assert_eq!(
             std::env::var("LOONG_MEMORY_PROFILE").ok().as_deref(),
             Some("window_plus_summary")
@@ -323,15 +322,11 @@ mod tests {
             Some("true")
         );
         assert_eq!(
-            std::env::var("LOONG_EXTERNAL_SKILLS_ENABLED")
-                .ok()
-                .as_deref(),
+            std::env::var(SKILLS_ENABLED_ENV).ok().as_deref(),
             Some("true")
         );
         assert_eq!(
-            std::env::var("LOONG_EXTERNAL_SKILLS_ALLOWED_DOMAINS")
-                .ok()
-                .as_deref(),
+            std::env::var(SKILLS_ALLOWED_DOMAINS_ENV).ok().as_deref(),
             Some("skills.sh")
         );
         assert_eq!(
@@ -353,28 +348,10 @@ mod tests {
             Some("2048")
         );
         assert_eq!(
-            std::env::var("LOONG_BROWSER_COMPANION_ENABLED")
+            std::env::var("LOONG_WEB_FETCH_TIMEOUT_SECONDS")
                 .ok()
                 .as_deref(),
-            Some("true")
-        );
-        assert_eq!(
-            std::env::var("LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS")
-                .ok()
-                .as_deref(),
-            Some("30")
-        );
-        assert_eq!(
-            std::env::var("LOONG_BROWSER_COMPANION_COMMAND")
-                .ok()
-                .as_deref(),
-            Some("loong-browser-companion")
-        );
-        assert_eq!(
-            std::env::var("LOONG_BROWSER_COMPANION_EXPECTED_VERSION")
-                .ok()
-                .as_deref(),
-            Some("1.2.3")
+            Some("9")
         );
         assert_eq!(
             std::env::var("LOONG_WEB_FETCH_ENABLED").ok().as_deref(),
@@ -414,30 +391,25 @@ mod tests {
                 .as_deref(),
             Some("1")
         );
-    }
-
-    #[test]
-    fn initialize_runtime_environment_drops_blank_browser_companion_metadata() {
-        let mut env = ScopedEnv::new();
-        clear_runtime_environment_exports(&mut env);
-        let mut config = LoongConfig::default();
-        config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.timeout_seconds = 7;
-        config.tools.browser_companion.command = Some("   ".to_owned());
-        config.tools.browser_companion.expected_version = Some("\n\t".to_owned());
-
-        initialize_runtime_environment(&config, None);
-
         assert_eq!(
-            std::env::var("LOONG_BROWSER_COMPANION_TIMEOUT_SECONDS")
+            std::env::var("LOONG_WEB_SEARCH_ENABLED").ok().as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            std::env::var("LOONG_WEB_SEARCH_PROVIDER").ok().as_deref(),
+            Some("duckduckgo")
+        );
+        assert_eq!(
+            std::env::var("LOONG_WEB_SEARCH_TIMEOUT_SECONDS")
                 .ok()
                 .as_deref(),
-            Some("7")
+            Some("17")
         );
-        assert_eq!(std::env::var("LOONG_BROWSER_COMPANION_COMMAND").ok(), None);
         assert_eq!(
-            std::env::var("LOONG_BROWSER_COMPANION_EXPECTED_VERSION").ok(),
-            None
+            std::env::var("LOONG_WEB_SEARCH_MAX_RESULTS")
+                .ok()
+                .as_deref(),
+            Some("5")
         );
     }
 
@@ -451,5 +423,21 @@ mod tests {
         initialize_runtime_environment(&config, None);
 
         assert_eq!(std::env::var("LOONG_FILE_ROOT").ok(), None);
+    }
+
+    #[test]
+    fn initialize_runtime_environment_updates_loong_home_from_resolved_config_parent() {
+        let mut env = ScopedEnv::new();
+        clear_runtime_environment_exports(&mut env);
+        env.set("LOONG_HOME", "/tmp/old-home");
+        let config = LoongConfig::default();
+        let config_path = PathBuf::from("/tmp/demo-home/config.toml");
+
+        initialize_runtime_environment(&config, Some(&config_path));
+
+        assert_eq!(
+            std::env::var("LOONG_HOME").ok().as_deref(),
+            Some("/tmp/demo-home")
+        );
     }
 }

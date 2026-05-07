@@ -23,37 +23,26 @@ use metadata_support::{
 #[path = "catalog_core_definition_support.rs"]
 mod core_definition_support;
 use core_definition_support::{
-    direct_browser_definition, direct_exec_definition, direct_memory_definition,
-    direct_read_definition, direct_web_definition, direct_write_definition, tool_invoke_definition,
-    tool_search_definition,
+    direct_bash_definition, direct_browser_definition, direct_edit_definition,
+    direct_memory_definition, direct_read_definition, direct_web_definition,
+    direct_write_definition,
 };
 #[path = "catalog_browser_definition_support.rs"]
 mod browser_definition_support;
 use browser_definition_support::{
-    browser_click_definition, browser_companion_click_definition,
-    browser_companion_navigate_definition, browser_companion_session_start_definition,
-    browser_companion_session_stop_definition, browser_companion_snapshot_definition,
-    browser_companion_type_definition, browser_companion_wait_definition,
-    browser_extract_definition, browser_open_definition,
+    browser_click_definition, browser_extract_definition, browser_open_definition,
 };
-#[path = "catalog_external_skills_definition_support.rs"]
-mod external_skills_definition_support;
-use external_skills_definition_support::{
-    config_import_definition, external_skills_fetch_definition, external_skills_inspect_definition,
-    external_skills_install_definition, external_skills_invoke_definition,
-    external_skills_list_definition, external_skills_policy_definition,
-    external_skills_recommend_definition, external_skills_remove_definition,
-    external_skills_resolve_definition, external_skills_search_definition,
-    external_skills_source_search_definition, provider_switch_definition,
-};
+#[path = "catalog_skills_definition_support.rs"]
+mod skills_definition_support;
+use skills_definition_support::{config_import_definition, provider_switch_definition};
 #[path = "catalog_io_definition_support.rs"]
 mod io_definition_support;
 #[cfg(feature = "tool-websearch")]
 use io_definition_support::web_search_definition;
 use io_definition_support::{
-    bash_exec_definition, content_search_definition, file_edit_definition, file_read_definition,
-    file_write_definition, glob_search_definition, http_request_definition, memory_get_definition,
-    memory_search_definition, shell_exec_definition, web_fetch_definition,
+    bash_exec_definition, content_search_definition, glob_search_definition,
+    http_request_definition, memory_get_definition, memory_search_definition,
+    shell_exec_definition, web_fetch_definition,
 };
 #[path = "catalog_session_definition_support.rs"]
 mod session_definition_support;
@@ -288,7 +277,6 @@ pub enum ToolVisibilityGate {
     Feishu,
     Delegate,
     Browser,
-    BrowserCompanion,
     BashRuntime,
     ExternalSkills,
     MemorySearchCorpus,
@@ -316,7 +304,7 @@ pub struct ToolDescriptor {
 fn primary_surface_id(raw: &str) -> bool {
     matches!(
         raw,
-        "read" | "write" | "exec" | "web" | "browser" | "memory" | "agent" | "skills" | "channel"
+        "read" | "write" | "edit" | "bash" | "web" | "browse" | "memory"
     )
 }
 
@@ -519,13 +507,11 @@ pub struct ToolCatalog {
     descriptor_indices: BTreeMap<&'static str, usize>,
     resolved_name_indices: BTreeMap<String, usize>,
     all_entries: Box<[ToolCatalogEntry]>,
-    provider_exposed_entries: Box<[ToolCatalogEntry]>,
     catalog_digest: String,
 }
 
 struct ToolCatalogEntryCaches {
     all_entries: Box<[ToolCatalogEntry]>,
-    provider_exposed_entries: Box<[ToolCatalogEntry]>,
 }
 
 #[cfg(feature = "memory-sqlite")]
@@ -581,10 +567,6 @@ impl ToolCatalog {
         &self.all_entries
     }
 
-    fn provider_exposed_entries(&self) -> &[ToolCatalogEntry] {
-        &self.provider_exposed_entries
-    }
-
     fn catalog_digest(&self) -> &str {
         self.catalog_digest.as_str()
     }
@@ -626,13 +608,6 @@ fn declared_concurrency_class(tool_name: &str) -> ToolConcurrencyClass {
         "read"
         | "web"
         | "memory"
-        | "tool.search"
-        | "external_skills.resolve"
-        | "external_skills.search"
-        | "external_skills.recommend"
-        | "external_skills.source_search"
-        | "external_skills.inspect"
-        | "external_skills.list"
         | "approval_request_status"
         | "approval_requests_list"
         | "session_artifacts"
@@ -652,25 +627,18 @@ fn declared_concurrency_class(tool_name: &str) -> ToolConcurrencyClass {
         | "tasks_search"
         | "sessions_history"
         | "sessions_list"
-        | "file.read"
         | "glob.search"
         | "content.search"
         | "memory_search"
         | "memory_get"
-        | "browser.companion.snapshot"
-        | "browser.companion.wait"
         | "browser.extract"
         | "web.fetch"
         | "web.search" => Some(ToolConcurrencyClass::ReadOnly),
         "write"
-        | "exec"
-        | "browser"
+        | "edit"
+        | "bash"
+        | "browse"
         | "config.import"
-        | "external_skills.fetch"
-        | "external_skills.install"
-        | "external_skills.invoke"
-        | "external_skills.policy"
-        | "external_skills.remove"
         | "provider.switch"
         | "approval_request_resolve"
         | "delegate"
@@ -693,11 +661,6 @@ fn declared_concurrency_class(tool_name: &str) -> ToolConcurrencyClass {
         | "shell.exec"
         | "bash.exec"
         | "browser.click"
-        | "browser.companion.click"
-        | "browser.companion.navigate"
-        | "browser.companion.session.start"
-        | "browser.companion.session.stop"
-        | "browser.companion.type"
         | "browser.open" => Some(ToolConcurrencyClass::Mutating),
         _ => None,
     };
@@ -722,38 +685,10 @@ fn annotate_tool_concurrency_classes(descriptors: &mut [ToolDescriptor]) {
 fn build_tool_catalog() -> ToolCatalog {
     let mut descriptors = vec![
         ToolDescriptor {
-            name: "tool.search",
-            provider_name: "tool_search",
-            aliases: &[],
-            description: "Discover hidden specialized tools relevant to the current task.",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Gateway,
-            visibility_gate: ToolVisibilityGate::Always,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: PARALLEL_SAFE_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: tool_search_definition,
-        },
-        ToolDescriptor {
-            name: "tool.invoke",
-            provider_name: "tool_invoke",
-            aliases: &[],
-            description: "Invoke a discovered hidden specialized tool using a valid lease from tool_search.",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Gateway,
-            visibility_gate: ToolVisibilityGate::Always,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: tool_invoke_definition,
-        },
-        ToolDescriptor {
             name: "read",
             provider_name: "read",
-            aliases: &[],
-            description: "Read workspace files, page through large files, search file contents, or list matching paths",
+            aliases: &["file.read", "file_read"],
+            description: "Read accessible files under the current runtime file root, page through large files, search file contents, or list matching paths",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Direct,
@@ -766,8 +701,8 @@ fn build_tool_catalog() -> ToolCatalog {
         ToolDescriptor {
             name: "write",
             provider_name: "write",
-            aliases: &[],
-            description: "Write workspace files or apply one or more exact text edits",
+            aliases: &["file.write", "file_write"],
+            description: "Write files under the current runtime file root or replace full file contents",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Direct,
@@ -778,10 +713,10 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: direct_write_definition,
         },
         ToolDescriptor {
-            name: "exec",
-            provider_name: "exec",
-            aliases: &[],
-            description: "Run guarded workspace commands or raw shell scripts",
+            name: "edit",
+            provider_name: "edit",
+            aliases: &["file.edit", "file_edit"],
+            description: "Apply one or more exact text edits to a file",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Direct,
@@ -789,7 +724,21 @@ fn build_tool_catalog() -> ToolCatalog {
             capability_action_class: CapabilityActionClass::ExecuteExisting,
             policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
             concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: direct_exec_definition,
+            provider_definition_builder: direct_edit_definition,
+        },
+        ToolDescriptor {
+            name: "bash",
+            provider_name: "bash",
+            aliases: &[],
+            description: "Run a guarded bash command from the current runtime file root. Prefer portable macOS/BSD-safe commands over GNU-only flags.",
+            execution_kind: ToolExecutionKind::Core,
+            availability: ToolAvailability::Runtime,
+            exposure: ToolExposureClass::Direct,
+            visibility_gate: ToolVisibilityGate::Always,
+            capability_action_class: CapabilityActionClass::ExecuteExisting,
+            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
+            concurrency_class: ToolConcurrencyClass::Unknown,
+            provider_definition_builder: direct_bash_definition,
         },
         ToolDescriptor {
             name: "web",
@@ -806,10 +755,10 @@ fn build_tool_catalog() -> ToolCatalog {
             provider_definition_builder: direct_web_definition,
         },
         ToolDescriptor {
-            name: "browser",
-            provider_name: "browser",
-            aliases: &[],
-            description: "Open pages, extract content, or follow discovered links",
+            name: "browse",
+            provider_name: "browse",
+            aliases: &["browser"],
+            description: "Open a page, extract text or links, or follow discovered page links",
             execution_kind: ToolExecutionKind::Core,
             availability: ToolAvailability::Runtime,
             exposure: ToolExposureClass::Direct,
@@ -846,160 +795,6 @@ fn build_tool_catalog() -> ToolCatalog {
             policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
             concurrency_class: ToolConcurrencyClass::Unknown,
             provider_definition_builder: config_import_definition,
-        },
-        ToolDescriptor {
-            name: "external_skills.fetch",
-            provider_name: "external_skills_fetch",
-            aliases: &[],
-            description: "Download external skills artifacts with domain policy and approval guards",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::CapabilityFetch,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_fetch_definition,
-        },
-        ToolDescriptor {
-            name: "external_skills.resolve",
-            provider_name: "external_skills_resolve",
-            aliases: &[],
-            description: "Normalize an external skill reference into a source-aware candidate",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_resolve_definition,
-        },
-        ToolDescriptor {
-            name: "external_skills.search",
-            provider_name: "external_skills_search",
-            aliases: &[],
-            description: "Search the resolved external-skills inventory for active and shadowed matches",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_search_definition,
-        },
-        ToolDescriptor {
-            name: "external_skills.recommend",
-            provider_name: "external_skills_recommend",
-            aliases: &[],
-            description: "Recommend the best-fit resolved external skills for an operator goal",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_recommend_definition,
-        },
-        ToolDescriptor {
-            name: "external_skills.source_search",
-            provider_name: "external_skills_source_search",
-            aliases: &[],
-            description: "Search preferred external skill ecosystems and return normalized source-aware candidates",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_source_search_definition,
-        },
-        ToolDescriptor {
-            name: "external_skills.inspect",
-            provider_name: "external_skills_inspect",
-            aliases: &[],
-            description: "Read metadata for a resolved external skill across managed, user, and project scopes",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_inspect_definition,
-        },
-        ToolDescriptor {
-            name: "external_skills.install",
-            provider_name: "external_skills_install",
-            aliases: &[],
-            description: "Install a managed external skill from a local directory or archive",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::CapabilityInstall,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_install_definition,
-        },
-        ToolDescriptor {
-            name: "external_skills.invoke",
-            provider_name: "external_skills_invoke",
-            aliases: &[],
-            description: "Load a resolved external skill into the conversation loop",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::CapabilityLoad,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_invoke_definition,
-        },
-        ToolDescriptor {
-            name: "external_skills.list",
-            provider_name: "external_skills_list",
-            aliases: &[],
-            description: "List resolved external skills across managed, user, and project scopes",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::Discover,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_list_definition,
-        },
-        ToolDescriptor {
-            name: "external_skills.policy",
-            provider_name: "external_skills_policy",
-            aliases: &[],
-            description: "Read/update external skills domain allow/block policy at runtime",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::Always,
-            capability_action_class: CapabilityActionClass::PolicyMutation,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_policy_definition,
-        },
-        ToolDescriptor {
-            name: "external_skills.remove",
-            provider_name: "external_skills_remove",
-            aliases: &[],
-            description: "Remove an installed external skill from the managed runtime",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::ExternalSkills,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: ELEVATED_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: external_skills_remove_definition,
         },
         ToolDescriptor {
             name: "provider.switch",
@@ -1781,20 +1576,6 @@ fn build_tool_catalog() -> ToolCatalog {
     #[cfg(feature = "tool-file")]
     {
         descriptors.push(ToolDescriptor {
-            name: "file.read",
-            provider_name: "file_read",
-            aliases: &[],
-            description: "Read file contents",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::Always,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: PARALLEL_SAFE_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: file_read_definition,
-        });
-        descriptors.push(ToolDescriptor {
             name: "glob.search",
             provider_name: "glob_search",
             aliases: &[],
@@ -1850,34 +1631,6 @@ fn build_tool_catalog() -> ToolCatalog {
             concurrency_class: ToolConcurrencyClass::Unknown,
             provider_definition_builder: memory_get_definition,
         });
-        descriptors.push(ToolDescriptor {
-            name: "file.write",
-            provider_name: "file_write",
-            aliases: &[],
-            description: "Write file contents",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::Always,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: file_write_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "file.edit",
-            provider_name: "file_edit",
-            aliases: &[],
-            description: "Apply one or more exact text edits to a file",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::Always,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: file_edit_definition,
-        });
     }
 
     #[cfg(feature = "tool-shell")]
@@ -1931,104 +1684,6 @@ fn build_tool_catalog() -> ToolCatalog {
             policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
             concurrency_class: ToolConcurrencyClass::Unknown,
             provider_definition_builder: browser_click_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "browser.companion.click",
-            provider_name: "browser_companion_click",
-            aliases: &["browser_companion_click"],
-            description: "Click a page element inside a governed browser companion session after policy review",
-            execution_kind: ToolExecutionKind::App,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_click_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "browser.companion.navigate",
-            provider_name: "browser_companion_navigate",
-            aliases: &["browser_companion_navigate"],
-            description: "Navigate a governed browser companion session to a target URL",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_navigate_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "browser.companion.session.start",
-            provider_name: "browser_companion_session_start",
-            aliases: &["browser_companion_session_start"],
-            description: "Start a governed browser companion session at a target URL",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_session_start_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "browser.companion.session.stop",
-            provider_name: "browser_companion_session_stop",
-            aliases: &["browser_companion_session_stop"],
-            description: "Stop a governed browser companion session and release companion-side state",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_session_stop_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "browser.companion.snapshot",
-            provider_name: "browser_companion_snapshot",
-            aliases: &["browser_companion_snapshot"],
-            description: "Capture a readable snapshot of the current browser companion page",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_snapshot_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "browser.companion.type",
-            provider_name: "browser_companion_type",
-            aliases: &["browser_companion_type"],
-            description: "Type text into a page element inside a governed browser companion session after policy review",
-            execution_kind: ToolExecutionKind::App,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: HIGH_RISK_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_type_definition,
-        });
-        descriptors.push(ToolDescriptor {
-            name: "browser.companion.wait",
-            provider_name: "browser_companion_wait",
-            aliases: &["browser_companion_wait"],
-            description: "Wait inside a governed browser companion session for a condition or timeout window",
-            execution_kind: ToolExecutionKind::Core,
-            availability: ToolAvailability::Runtime,
-            exposure: ToolExposureClass::Discoverable,
-            visibility_gate: ToolVisibilityGate::BrowserCompanion,
-            capability_action_class: CapabilityActionClass::ExecuteExisting,
-            policy: DEFAULT_TOOL_POLICY_DESCRIPTOR,
-            concurrency_class: ToolConcurrencyClass::Unknown,
-            provider_definition_builder: browser_companion_wait_definition,
         });
         descriptors.push(ToolDescriptor {
             name: "browser.extract",
@@ -2124,7 +1779,6 @@ fn build_tool_catalog() -> ToolCatalog {
     let resolved_name_indices = build_resolved_name_indices(descriptors.as_slice());
     let entry_caches = build_tool_catalog_entry_caches(descriptors.as_slice());
     let all_entries = entry_caches.all_entries;
-    let provider_exposed_entries = entry_caches.provider_exposed_entries;
     let catalog_digest = build_tool_catalog_digest(all_entries.as_ref());
 
     ToolCatalog {
@@ -2132,7 +1786,6 @@ fn build_tool_catalog() -> ToolCatalog {
         descriptor_indices,
         resolved_name_indices,
         all_entries,
-        provider_exposed_entries,
         catalog_digest,
     }
 }
@@ -2184,21 +1837,14 @@ fn build_resolved_name_indices(descriptors: &[ToolDescriptor]) -> BTreeMap<Strin
 
 fn build_tool_catalog_entry_caches(descriptors: &[ToolDescriptor]) -> ToolCatalogEntryCaches {
     let mut all_entries = Vec::new();
-    let mut provider_exposed_entries = Vec::new();
 
     for descriptor in descriptors {
         let entry = descriptor_to_entry(descriptor);
-
-        if descriptor.is_provider_exposed() {
-            provider_exposed_entries.push(entry);
-        }
-
         all_entries.push(entry);
     }
 
     ToolCatalogEntryCaches {
         all_entries: all_entries.into_boxed_slice(),
-        provider_exposed_entries: provider_exposed_entries.into_boxed_slice(),
     }
 }
 
@@ -2223,12 +1869,12 @@ pub fn runtime_tool_view() -> ToolView {
 }
 
 pub fn runtime_tool_view_for_config(config: &ToolConfig) -> ToolView {
-    runtime_tool_view_for_config_with_external_skills(config, false)
+    runtime_tool_view_for_config_with_skills(config, false)
 }
 
-pub fn runtime_tool_view_for_config_with_external_skills(
+pub fn runtime_tool_view_for_config_with_skills(
     config: &ToolConfig,
-    external_skills_enabled: bool,
+    skills_enabled: bool,
 ) -> ToolView {
     let catalog = tool_catalog();
     ToolView::from_tool_names(
@@ -2240,7 +1886,7 @@ pub fn runtime_tool_view_for_config_with_external_skills(
                 tool_visibility_gate_enabled_for_runtime_view(
                     descriptor.visibility_gate,
                     config,
-                    external_skills_enabled,
+                    skills_enabled,
                 )
             })
             .map(|descriptor| descriptor.name),
@@ -2422,7 +2068,6 @@ fn tool_visibility_gate_enabled_for_delegate_child(
         | ToolVisibilityGate::Feishu
         | ToolVisibilityGate::Delegate
         | ToolVisibilityGate::Browser
-        | ToolVisibilityGate::BrowserCompanion
         | ToolVisibilityGate::ExternalSkills
         | ToolVisibilityGate::MemorySearchCorpus
         | ToolVisibilityGate::MemoryFileRoot
@@ -2433,8 +2078,14 @@ fn tool_visibility_gate_enabled_for_delegate_child(
     }
 }
 
+#[cfg(test)]
 pub fn provider_exposed_tool_catalog() -> Vec<ToolCatalogEntry> {
-    tool_catalog().provider_exposed_entries().to_vec()
+    tool_catalog()
+        .all_entries()
+        .iter()
+        .filter(|entry| entry.is_provider_exposed())
+        .cloned()
+        .collect()
 }
 
 pub fn all_tool_catalog() -> Vec<ToolCatalogEntry> {
@@ -2473,7 +2124,7 @@ fn descriptor_to_entry(descriptor: &ToolDescriptor) -> ToolCatalogEntry {
 fn tool_visibility_gate_enabled_for_runtime_view(
     gate: ToolVisibilityGate,
     config: &ToolConfig,
-    external_skills_enabled: bool,
+    skills_enabled: bool,
 ) -> bool {
     match gate {
         ToolVisibilityGate::Always => true,
@@ -2487,9 +2138,8 @@ fn tool_visibility_gate_enabled_for_runtime_view(
         ToolVisibilityGate::Feishu => false,
         ToolVisibilityGate::Delegate => config.delegate.enabled,
         ToolVisibilityGate::Browser => config.browser.enabled,
-        ToolVisibilityGate::BrowserCompanion => false,
         ToolVisibilityGate::BashRuntime => false,
-        ToolVisibilityGate::ExternalSkills => external_skills_enabled,
+        ToolVisibilityGate::ExternalSkills => skills_enabled,
         ToolVisibilityGate::MemorySearchCorpus => config
             .file_root
             .as_deref()
@@ -2544,9 +2194,8 @@ fn tool_visibility_gate_enabled_for_runtime_policy(
         }
         ToolVisibilityGate::Delegate => config.delegate_enabled,
         ToolVisibilityGate::Browser => config.browser.enabled,
-        ToolVisibilityGate::BrowserCompanion => config.browser_companion.is_runtime_ready(),
         ToolVisibilityGate::BashRuntime => config.bash_exec.is_discoverable(),
-        ToolVisibilityGate::ExternalSkills => config.external_skills.enabled,
+        ToolVisibilityGate::ExternalSkills => config.skills.enabled,
         ToolVisibilityGate::MemorySearchCorpus => {
             #[cfg(feature = "tool-file")]
             {

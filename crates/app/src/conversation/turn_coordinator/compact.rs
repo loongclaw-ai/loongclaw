@@ -1,12 +1,10 @@
 use super::*;
-use crate::conversation::ContextCompactionDiagnostics;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextCompactionReport {
     pub status: AnalyticsTurnCheckpointProgressStatus,
     pub estimated_tokens_before: Option<usize>,
     pub estimated_tokens_after: Option<usize>,
-    pub diagnostics: Option<ContextCompactionDiagnostics>,
 }
 
 impl ContextCompactionReport {

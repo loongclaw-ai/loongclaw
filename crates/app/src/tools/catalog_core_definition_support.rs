@@ -2,35 +2,6 @@ use serde_json::{Map, Value, json};
 
 use super::ToolDescriptor;
 
-pub(super) fn tool_search_definition(descriptor: &ToolDescriptor) -> Value {
-    json!({
-        "type": "function",
-        "function": {
-            "name": descriptor.provider_name,
-            "description": "Discover a specialized tool when the direct tools do not fit the task.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Short capability phrase for the specialized tool you need. Match the prompt snippets shown in the system prompt."
-                    },
-                    "exact_tool_id": {
-                        "type": "string",
-                        "description": "Optional exact tool id to refresh a known visible tool card."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Optional maximum number of search results to return."
-                    }
-                },
-                "required": [],
-                "additionalProperties": false
-            }
-        }
-    })
-}
-
 pub(super) fn direct_read_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
@@ -157,46 +128,43 @@ pub(super) fn direct_write_definition(descriptor: &ToolDescriptor) -> Value {
                     "overwrite": {
                         "type": "boolean",
                         "description": "Allow replacing an existing file. Defaults to false."
-                    },
-                    "edits": {
-                        "type": "array",
-                        "description": "One or more exact text replacement blocks matched against the original file. Merge nearby edits instead of sending overlapping blocks.",
-                        "items": exact_edit_block_definition(),
-                        "minItems": 1
-                    },
-                    "old_string": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Legacy single-block exact edit field. Prefer `edits` for new requests."
-                    },
-                    "new_string": {
-                        "type": "string",
-                        "description": "Legacy replacement text paired with `old_string`. Prefer `edits` for new requests."
-                    },
-                    "replace_all": {
-                        "type": "boolean",
-                        "description": "Legacy single-block mode only. Replace all matches instead of requiring a unique match. Defaults to false."
                     }
                 },
-                "required": ["path"],
-                "anyOf": [
-                    {
-                        "required": ["content"]
-                    },
-                    {
-                        "required": ["edits"]
-                    },
-                    {
-                        "required": ["old_string", "new_string"]
-                    }
-                ],
+                "required": ["path", "content"],
                 "additionalProperties": false
             }
         }
     })
 }
 
-pub(super) fn direct_exec_definition(descriptor: &ToolDescriptor) -> Value {
+pub(super) fn direct_edit_definition(descriptor: &ToolDescriptor) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": descriptor.provider_name,
+            "description": descriptor.description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Target file path."
+                    },
+                    "edits": {
+                        "type": "array",
+                        "description": "One or more exact text replacement blocks matched against the original file. Merge nearby edits instead of sending overlapping blocks.",
+                        "items": exact_edit_block_definition(),
+                        "minItems": 1
+                    }
+                },
+                "required": ["path", "edits"],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+pub(super) fn direct_bash_definition(descriptor: &ToolDescriptor) -> Value {
     json!({
         "type": "function",
         "function": {
@@ -207,16 +175,7 @@ pub(super) fn direct_exec_definition(descriptor: &ToolDescriptor) -> Value {
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "Executable command or simple shell command. Routes to argv mode unless it clearly uses shell syntax."
-                    },
-                    "script": {
-                        "type": "string",
-                        "description": "Raw shell or bash script text. Use this for pipes, redirects, chaining, or multi-line commands."
-                    },
-                    "args": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional command arguments for argv mode."
+                        "description": "Bash command string to run in the workspace."
                     },
                     "timeout_ms": {
                         "type": "integer",
@@ -229,14 +188,7 @@ pub(super) fn direct_exec_definition(descriptor: &ToolDescriptor) -> Value {
                         "description": "Optional working directory."
                     }
                 },
-                "anyOf": [
-                    {
-                        "required": ["command"]
-                    },
-                    {
-                        "required": ["script"]
-                    }
-                ],
+                "required": ["command"],
                 "additionalProperties": false
             }
         }
@@ -362,54 +314,45 @@ pub(super) fn direct_browser_definition(descriptor: &ToolDescriptor) -> Value {
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["open", "extract", "click"],
+                        "description": "Optional bounded page-browser action override. Leave it unset for the default route."
+                    },
                     "url": {
                         "type": "string",
-                        "description": "Open a page or continue a browser session at this HTTP or HTTPS URL."
-                    },
-                    "max_bytes": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": crate::config::MAX_WEB_FETCH_MAX_BYTES,
-                        "description": "Optional byte limit used when opening a page."
+                        "description": "HTTP or HTTPS URL to open in a bounded browser page session."
                     },
                     "session_id": {
                         "type": "string",
-                        "description": "Existing browser session identifier for follow-up reads or interactions."
+                        "description": "Existing bounded browser session identifier for follow-up extraction or link traversal."
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["page_text", "title", "links", "selector_text", "summary", "html"],
-                        "description": "Read mode for browser inspection."
+                        "enum": ["page_text", "title", "links", "selector_text"],
+                        "description": "Extraction mode used with `session_id`. Defaults to `page_text`."
                     },
                     "selector": {
                         "type": "string",
-                        "description": "CSS selector for focused extraction or browser interaction."
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": crate::config::MAX_BROWSER_MAX_LINKS,
-                        "description": "Maximum extracted items when the browser result returns a list."
+                        "description": "Optional CSS selector used only with `selector_text` extraction."
                     },
                     "link_id": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": crate::config::MAX_BROWSER_MAX_LINKS,
-                        "description": "One-based link identifier returned by the current page snapshot."
+                        "description": "One-based link identifier returned by `browser.open` or `browser.extract` in `links` mode."
                     },
-                    "text": {
-                        "type": "string",
-                        "description": "Text to type into the selected element."
-                    },
-                    "condition": {
-                        "type": "string",
-                        "description": "Optional wait condition for browser session progress."
-                    },
-                    "timeout_ms": {
+                    "limit": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 30000,
-                        "description": "Optional wait timeout in milliseconds."
+                        "maximum": crate::config::MAX_BROWSER_MAX_LINKS,
+                        "description": "Optional list limit used for `links` or `selector_text` extraction."
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": crate::config::MAX_WEB_FETCH_MAX_BYTES,
+                        "description": "Optional per-call read limit in bytes when opening a page."
                     }
                 },
                 "anyOf": [
@@ -421,15 +364,6 @@ pub(super) fn direct_browser_definition(descriptor: &ToolDescriptor) -> Value {
                     },
                     {
                         "required": ["session_id", "link_id"]
-                    },
-                    {
-                        "required": ["session_id", "selector"]
-                    },
-                    {
-                        "required": ["session_id", "selector", "text"]
-                    },
-                    {
-                        "required": ["session_id", "url"]
                     }
                 ],
                 "additionalProperties": false
@@ -481,35 +415,6 @@ pub(super) fn direct_memory_definition(descriptor: &ToolDescriptor) -> Value {
                         "required": ["path"]
                     }
                 ],
-                "additionalProperties": false
-            }
-        }
-    })
-}
-
-pub(super) fn tool_invoke_definition(descriptor: &ToolDescriptor) -> Value {
-    json!({
-        "type": "function",
-        "function": {
-            "name": descriptor.provider_name,
-            "description": "Invoke a discovered non-core tool using a valid lease from tool_search.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "tool_id": {
-                        "type": "string",
-                        "description": "Canonical id of the discovered tool."
-                    },
-                    "lease": {
-                        "type": "string",
-                        "description": "Short-lived lease returned by tool_search."
-                    },
-                    "arguments": {
-                        "type": "object",
-                        "description": "Arguments for the discovered tool payload."
-                    }
-                },
-                "required": ["tool_id", "lease", "arguments"],
                 "additionalProperties": false
             }
         }

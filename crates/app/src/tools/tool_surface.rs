@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -6,9 +7,10 @@ use super::ToolView;
 
 pub(crate) const DIRECT_READ_TOOL_NAME: &str = "read";
 pub(crate) const DIRECT_WRITE_TOOL_NAME: &str = "write";
-pub(crate) const DIRECT_EXEC_TOOL_NAME: &str = "exec";
+pub(crate) const DIRECT_EDIT_TOOL_NAME: &str = "edit";
+pub(crate) const DIRECT_BASH_TOOL_NAME: &str = "bash";
 pub(crate) const DIRECT_WEB_TOOL_NAME: &str = "web";
-pub(crate) const DIRECT_BROWSER_TOOL_NAME: &str = "browser";
+pub(crate) const DIRECT_BROWSER_TOOL_NAME: &str = "browse";
 pub(crate) const DIRECT_MEMORY_TOOL_NAME: &str = "memory";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +92,30 @@ impl DirectWebRuntimeModes {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DirectBrowserRuntimeModes {
+    pub(crate) page_inspection_available: bool,
+}
+
+impl DirectBrowserRuntimeModes {
+    pub(crate) fn from_view(view: &ToolView) -> Self {
+        Self {
+            page_inspection_available: browser_page_inspection_available_in_view(view),
+        }
+    }
+
+    pub(crate) fn provider_description(self) -> Option<&'static str> {
+        self.page_inspection_available
+            .then_some("Open a page, extract text or links, or follow discovered page links")
+    }
+}
+
+pub(crate) fn browser_page_inspection_available_in_view(view: &ToolView) -> bool {
+    view.contains("browser.open")
+        || view.contains("browser.extract")
+        || view.contains("browser.click")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolSurfaceDescriptor {
     pub(crate) id: &'static str,
     pub(crate) prompt_snippet: &'static str,
@@ -115,13 +141,6 @@ impl ToolSurfaceState {
     pub fn tool_count(&self) -> usize {
         self.tool_ids.len()
     }
-
-    pub(crate) fn render_prompt_line(&self) -> String {
-        format!(
-            "- {} (hidden surface): {} {}",
-            self.surface_id, self.prompt_snippet, self.usage_guidance
-        )
-    }
 }
 
 impl ToolSurfaceDescriptor {
@@ -136,17 +155,25 @@ impl ToolSurfaceDescriptor {
 }
 
 const READ_GUIDELINES: &[&str] = &[
-    "Use read for repo inspection before shelling out.",
+    "Use read for filesystem inspection before shelling out.",
     "Use `offset` and `limit` to page through large files instead of reading everything at once.",
+    "Use read to inspect or verify file contents, not to claim that a file was changed.",
 ];
 const WRITE_GUIDELINES: &[&str] = &[
-    "Use write for new files or whole-file rewrites.",
-    "For surgical changes, use exact edit mode with `edits`, or legacy `old_string` and `new_string` when needed.",
+    "Use write for new files and whole-file writes.",
+    "Use edit for surgical replacements instead of pushing exact-edit blocks through write.",
+    "When the user explicitly asks to create or overwrite a file, use write instead of staying in read-only inspection mode.",
 ];
-const EXEC_GUIDELINES: &[&str] = &[
-    "Use exec for normal command-line work.",
-    "Use `script` when the task needs shell syntax, pipelines, redirects, or multiple commands.",
-    "If exec output is truncated, prefer `details.handoff.recommended_payload` with `read`; if needed, inspect `details.handoff.recipes.*` for alternate first-page / last-page / wider-byte windows.",
+const EDIT_GUIDELINES: &[&str] = &[
+    "Use edit for exact text replacements inside an existing file.",
+    "Prefer one or more exact edit blocks over whole-file rewrite when the change is surgical.",
+    "When the user explicitly asks to modify an existing file, use edit once you know the target path and intended replacement.",
+];
+const BASH_GUIDELINES: &[&str] = &[
+    "Use bash for guarded shell commands from the current runtime file root.",
+    "Keep the command in one string, even when it uses pipes, redirects, or chaining.",
+    "Prefer portable commands that work on macOS and BSD userlands; avoid GNU-only flags such as `find -printf`.",
+    "If bash output is truncated, prefer `details.handoff.recommended_payload` with `read`; if needed, inspect `details.handoff.recipes.*` for alternate first-page / last-page / wider-byte windows.",
 ];
 const WEB_GUIDELINES: &[&str] = &[
     "Use web for public docs, APIs, and references.",
@@ -154,27 +181,14 @@ const WEB_GUIDELINES: &[&str] = &[
     "Prefer plain fetch or search before dropping to low-level request fields.",
 ];
 const BROWSER_GUIDELINES: &[&str] = &[
-    "Use browser when page structure or interaction matters.",
-    "Keep managed browser session work under `browser` instead of teaching a long tail of sub-tool names.",
-    "Prefer `web` for simple URL fetches that do not need live page interaction.",
+    "Use browser for bounded page inspection: open a page, extract text or links, or follow one discovered link.",
+    "For richer browser automation such as form filling, DOM clicks, login flows, and waits, load the `agent-browser` skill and run its CLI workflow through bash.",
+    "Use web for simple fetches, APIs, and public docs when you do not need a bounded page session.",
 ];
 const MEMORY_GUIDELINES: &[&str] = &[
     "Use memory for persisted notes and cross-session recall.",
     "Prefer read for normal workspace files and memory only for durable note content.",
 ];
-const AGENT_GUIDELINES: &[&str] = &[
-    "Use agent only for Loong's own approvals, sessions, delegation, provider routing, or config work.",
-    "Prefer a direct tool first; reach for agent when the task is about runtime control rather than user data.",
-];
-const SKILLS_GUIDELINES: &[&str] = &[
-    "Use skills when the task is about discovering, installing, or running external skills.",
-    "Keep capability-expansion work under skills instead of mixing it with normal repo editing or runtime control.",
-];
-const CHANNEL_GUIDELINES: &[&str] = &[
-    "Keep channel-specific work on the channel lane instead of folding it into core runtime surfaces.",
-    "Treat Feishu-style tools as add-ons that remain structurally separable from Loong core.",
-];
-
 const READ_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
     ("path", "string"),
     ("offset", "integer"),
@@ -194,15 +208,10 @@ const WRITE_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
     ("content", "string"),
     ("create_dirs", "boolean"),
     ("overwrite", "boolean"),
-    ("edits", "array"),
-    ("old_string", "string"),
-    ("new_string", "string"),
-    ("replace_all", "boolean"),
 ];
-const EXEC_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
+const EDIT_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[("path", "string"), ("edits", "array")];
+const BASH_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
     ("command", "string"),
-    ("script", "string"),
-    ("args", "array"),
     ("timeout_ms", "integer"),
     ("cwd", "string"),
 ];
@@ -215,16 +224,14 @@ const WEB_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
     ("max_results", "integer"),
 ];
 const BROWSER_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
+    ("action", "string"),
     ("url", "string"),
-    ("max_bytes", "integer"),
     ("session_id", "string"),
     ("mode", "string"),
     ("selector", "string"),
-    ("limit", "integer"),
     ("link_id", "integer"),
-    ("text", "string"),
-    ("condition", "string"),
-    ("timeout_ms", "integer"),
+    ("limit", "integer"),
+    ("max_bytes", "integer"),
 ];
 const MEMORY_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
     ("query", "string"),
@@ -235,8 +242,9 @@ const MEMORY_DIRECT_PARAMETER_TYPES: &[(&str, &str)] = &[
 ];
 
 const READ_COVERED_TOOL_NAMES: &[&str] = &["file.read", "glob.search", "content.search"];
-const WRITE_COVERED_TOOL_NAMES: &[&str] = &["file.write", "file.edit"];
-const EXEC_COVERED_TOOL_NAMES: &[&str] = &["shell.exec", "bash.exec"];
+const WRITE_COVERED_TOOL_NAMES: &[&str] = &["file.write"];
+const EDIT_COVERED_TOOL_NAMES: &[&str] = &["file.edit"];
+const BASH_COVERED_TOOL_NAMES: &[&str] = &["shell.exec", "bash.exec"];
 const WEB_COVERED_TOOL_NAMES: &[&str] = &["web.fetch", "web.search", "http.request"];
 const BROWSER_COVERED_TOOL_NAMES: &[&str] = &["browser.open", "browser.extract", "browser.click"];
 const MEMORY_COVERED_TOOL_NAMES: &[&str] = &["memory_search", "memory_get"];
@@ -249,18 +257,25 @@ const READ_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadat
     tags: &["surface", "read", "file", "search"],
 };
 const WRITE_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata {
-    argument_hint: "path:string,content?:string,create_dirs?:boolean,overwrite?:boolean,edits?:array,old_string?:string,new_string?:string,replace_all?:boolean",
-    search_hint: "create a file or apply one or more exact text edits through one direct tool",
+    argument_hint: "path:string,content:string,create_dirs?:boolean,overwrite?:boolean",
+    search_hint: "create a file or replace a file with complete content through one direct write tool",
     parameter_types: WRITE_DIRECT_PARAMETER_TYPES,
-    required_fields: &["path"],
-    tags: &["surface", "write", "file", "edit"],
+    required_fields: &["path", "content"],
+    tags: &["surface", "write", "file", "replace"],
 };
-const EXEC_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata {
-    argument_hint: "command?:string,script?:string,args?:string[],timeout_ms?:integer,cwd?:string",
-    search_hint: "run one command, or execute a raw shell or bash script, through one direct tool",
-    parameter_types: EXEC_DIRECT_PARAMETER_TYPES,
-    required_fields: &[],
-    tags: &["surface", "exec", "shell", "command"],
+const EDIT_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata {
+    argument_hint: "path:string,edits:array",
+    search_hint: "apply one or more exact text edits to an existing file through one direct edit tool",
+    parameter_types: EDIT_DIRECT_PARAMETER_TYPES,
+    required_fields: &["path", "edits"],
+    tags: &["surface", "edit", "file", "patch"],
+};
+const BASH_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata {
+    argument_hint: "command:string,timeout_ms?:integer,cwd?:string",
+    search_hint: "run one guarded bash command through one direct bash tool",
+    parameter_types: BASH_DIRECT_PARAMETER_TYPES,
+    required_fields: &["command"],
+    tags: &["surface", "bash", "shell", "command"],
 };
 const WEB_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata {
     argument_hint: "url?:string,mode?:string,max_bytes?:integer,query?:string,provider?:string,max_results?:integer",
@@ -270,11 +285,11 @@ const WEB_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata
     tags: &["surface", "web", "fetch", "search"],
 };
 const BROWSER_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata {
-    argument_hint: "url?:string,max_bytes?:integer,session_id?:string,mode?:string,selector?:string,limit?:integer,link_id?:integer,text?:string,condition?:string,timeout_ms?:integer",
-    search_hint: "open pages, inspect structure, follow links, wait on page state, or interact with browser sessions through one direct tool",
+    argument_hint: "action?:string,url?:string,session_id?:string,mode?:string,selector?:string,link_id?:integer,limit?:integer,max_bytes?:integer",
+    search_hint: "open a page, extract text or links from a bounded page session, or follow one discovered link through one direct browser tool",
     parameter_types: BROWSER_DIRECT_PARAMETER_TYPES,
     required_fields: &[],
-    tags: &["surface", "browser", "navigation", "extract"],
+    tags: &["surface", "browse", "page", "extract"],
 };
 const MEMORY_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetadata {
     argument_hint: "query?:string,max_results?:integer,path?:string,from?:integer,lines?:integer",
@@ -286,8 +301,8 @@ const MEMORY_DIRECT_METADATA: DirectToolSurfaceMetadata = DirectToolSurfaceMetad
 
 const READ_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
     id: "read",
-    prompt_snippet: "read files, page through large files, search repo text, or list matching paths.",
-    prompt_guidance: "Use read for normal repo inspection and file pagination.",
+    prompt_snippet: "inspect file contents, page through large files, search repo text, or list matching paths.",
+    prompt_guidance: "Use read for repo inspection, evidence gathering, and post-mutation verification.",
     prompt_guidelines: READ_GUIDELINES,
     direct_tool_name: Some(DIRECT_READ_TOOL_NAME),
     covered_tool_names: READ_COVERED_TOOL_NAMES,
@@ -298,8 +313,8 @@ const READ_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
 
 const WRITE_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
     id: "write",
-    prompt_snippet: "create files or apply exact text edits.",
-    prompt_guidance: "Use write for normal patching and file creation.",
+    prompt_snippet: "create files or replace full file contents when the task requires a real file mutation.",
+    prompt_guidance: "Use write for whole-file writes, file creation, and explicit overwrite tasks.",
     prompt_guidelines: WRITE_GUIDELINES,
     direct_tool_name: Some(DIRECT_WRITE_TOOL_NAME),
     covered_tool_names: WRITE_COVERED_TOOL_NAMES,
@@ -308,14 +323,26 @@ const WRITE_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
     hidden_search_argument_hint: None,
 };
 
-const EXEC_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
-    id: "exec",
-    prompt_snippet: "run commands or raw shell scripts in the workspace.",
-    prompt_guidance: "Use exec for normal command-line work, including simple scripts.",
-    prompt_guidelines: EXEC_GUIDELINES,
-    direct_tool_name: Some(DIRECT_EXEC_TOOL_NAME),
-    covered_tool_names: EXEC_COVERED_TOOL_NAMES,
-    direct_metadata: Some(EXEC_DIRECT_METADATA),
+const EDIT_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
+    id: "edit",
+    prompt_snippet: "apply exact text edits to an existing file when the task requires changing existing contents.",
+    prompt_guidance: "Use edit for surgical file changes after you know the target path and replacement.",
+    prompt_guidelines: EDIT_GUIDELINES,
+    direct_tool_name: Some(DIRECT_EDIT_TOOL_NAME),
+    covered_tool_names: EDIT_COVERED_TOOL_NAMES,
+    direct_metadata: Some(EDIT_DIRECT_METADATA),
+    hidden_search_summary: None,
+    hidden_search_argument_hint: None,
+};
+
+const BASH_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
+    id: "bash",
+    prompt_snippet: "run a guarded bash command in the workspace.",
+    prompt_guidance: "Use bash for normal command-line work.",
+    prompt_guidelines: BASH_GUIDELINES,
+    direct_tool_name: Some(DIRECT_BASH_TOOL_NAME),
+    covered_tool_names: BASH_COVERED_TOOL_NAMES,
+    direct_metadata: Some(BASH_DIRECT_METADATA),
     hidden_search_summary: None,
     hidden_search_argument_hint: None,
 };
@@ -333,9 +360,9 @@ const WEB_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
 };
 
 const BROWSER_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
-    id: "browser",
-    prompt_snippet: "open pages, inspect page structure, and drive browser sessions.",
-    prompt_guidance: "Use browser when the task depends on page structure or interaction.",
+    id: "browse",
+    prompt_snippet: "open a page, extract text or links, or follow one discovered page link.",
+    prompt_guidance: "Use browser for bounded page inspection and link traversal. Use the agent-browser skill for richer browser automation.",
     prompt_guidelines: BROWSER_GUIDELINES,
     direct_tool_name: Some(DIRECT_BROWSER_TOOL_NAME),
     covered_tool_names: BROWSER_COVERED_TOOL_NAMES,
@@ -356,69 +383,14 @@ const MEMORY_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
     hidden_search_argument_hint: None,
 };
 
-// `agent` and `skills` are grouped hidden facades for Loong core behavior.
-// `channel` is also grouped, but it remains an addon lane instead of being
-// folded into the core runtime-control vocabulary.
-const AGENT_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
-    id: "agent",
-    prompt_snippet: "inspect approvals, sessions, delegation, model routing, or config state.",
-    prompt_guidance: "Use this when the task is about Loong's own runtime, setup, or control flow.",
-    prompt_guidelines: AGENT_GUIDELINES,
-    direct_tool_name: None,
-    covered_tool_names: &[],
-    direct_metadata: None,
-    hidden_search_summary: Some(
-        "Inspect approvals, sessions, delegation, provider routing, or config migration through one hidden control tool.",
-    ),
-    hidden_search_argument_hint: Some(
-        "operation?:string,session_id?:string,approval_request_id?:string,decision?:string,task?:string,selector?:string,query?:string,text?:string,input?:string,input_path?:string,output_path?:string",
-    ),
-};
-
-const SKILLS_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
-    id: "skills",
-    prompt_snippet: "search, inspect, install, run, or manage external skills.",
-    prompt_guidance: "Use this when the task is about capability expansion.",
-    prompt_guidelines: SKILLS_GUIDELINES,
-    direct_tool_name: None,
-    covered_tool_names: &[],
-    direct_metadata: None,
-    hidden_search_summary: Some(
-        "Search, inspect, install, fetch, run, remove, or manage external skills through one hidden capability tool.",
-    ),
-    hidden_search_argument_hint: Some(
-        "operation?:string,query?:string,skill_id?:string,reference?:string,url?:string,path?:string,limit?:integer",
-    ),
-};
-
-// Keep channel-specific tools out of the core hidden facades. For example,
-// Feishu belongs to the addon/channel lane instead of `agent` or `skills`.
-const CHANNEL_SURFACE: ToolSurfaceDescriptor = ToolSurfaceDescriptor {
-    id: "channel",
-    prompt_snippet: "operate channel-specific tools such as Feishu.",
-    prompt_guidance: "Use this only when the task explicitly targets that channel.",
-    prompt_guidelines: CHANNEL_GUIDELINES,
-    direct_tool_name: None,
-    covered_tool_names: &[],
-    direct_metadata: None,
-    hidden_search_summary: Some(
-        "Operate channel-specific capabilities such as Feishu through one separate addon tool.",
-    ),
-    hidden_search_argument_hint: Some(
-        "operation:string,account_id?:string,open_id?:string,receive_id?:string,message_id?:string,url?:string,query?:string",
-    ),
-};
-
 const ALL_TOOL_SURFACES: &[ToolSurfaceDescriptor] = &[
     READ_SURFACE,
     WRITE_SURFACE,
-    EXEC_SURFACE,
+    EDIT_SURFACE,
+    BASH_SURFACE,
     WEB_SURFACE,
     BROWSER_SURFACE,
     MEMORY_SURFACE,
-    AGENT_SURFACE,
-    SKILLS_SURFACE,
-    CHANNEL_SURFACE,
 ];
 
 fn dotted_variant(raw: &str) -> String {
@@ -448,18 +420,7 @@ fn generic_discovery_tool_name_for_tool_name(tool_name: &str) -> String {
     discovery_name.replace('_', "-")
 }
 
-fn browser_surface_matches_tool_name(tool_name: &str) -> bool {
-    matches_surface_name(tool_name, "browser.open")
-        || matches_surface_name(tool_name, "browser.extract")
-        || matches_surface_name(tool_name, "browser.click")
-        || tool_name.starts_with("browser.companion.")
-}
-
 fn surface_covers_tool_name(surface: &ToolSurfaceDescriptor, tool_name: &str) -> bool {
-    if surface.id == DIRECT_BROWSER_TOOL_NAME {
-        return browser_surface_matches_tool_name(tool_name);
-    }
-
     surface
         .covered_tool_names
         .iter()
@@ -467,10 +428,6 @@ fn surface_covers_tool_name(surface: &ToolSurfaceDescriptor, tool_name: &str) ->
 }
 
 fn surface_has_visible_covered_tool(surface: &ToolSurfaceDescriptor, view: &ToolView) -> bool {
-    if surface.id == DIRECT_BROWSER_TOOL_NAME {
-        return view.tool_names().any(browser_surface_matches_tool_name);
-    }
-
     surface
         .covered_tool_names
         .iter()
@@ -512,57 +469,7 @@ pub(crate) fn tool_surface_for_name(tool_name: &str) -> Option<&'static ToolSurf
         return Some(surface);
     }
 
-    let surface = if tool_name == "agent"
-        || matches_surface_name(tool_name, "approval_requests_list")
-        || matches_surface_name(tool_name, "approval_request_status")
-        || matches_surface_name(tool_name, "approval_request_resolve")
-        || tool_name.starts_with("session_")
-        || tool_name.starts_with("sessions_")
-        || matches_surface_name(tool_name, "session_events")
-        || matches_surface_name(tool_name, "session_search")
-        || matches_surface_name(tool_name, "session_status")
-        || matches_surface_name(tool_name, "session_wait")
-        || matches_surface_name(tool_name, "session_archive")
-        || matches_surface_name(tool_name, "session_cancel")
-        || matches_surface_name(tool_name, "session_continue")
-        || matches_surface_name(tool_name, "session_recover")
-        || matches_surface_name(tool_name, "session_tool_policy_status")
-        || matches_surface_name(tool_name, "session_tool_policy_set")
-        || matches_surface_name(tool_name, "session_tool_policy_clear")
-        || matches_surface_name(tool_name, "sessions_history")
-        || matches_surface_name(tool_name, "sessions_list")
-        || matches_surface_name(tool_name, "sessions_send")
-        || tool_name == "delegate"
-        || matches_surface_name(tool_name, "delegate_async")
-        || matches_surface_name(tool_name, "provider.switch")
-        || matches_surface_name(tool_name, "config.import")
-    {
-        &AGENT_SURFACE
-    } else if tool_name == "skills"
-        || tool_name.starts_with("external_skills.")
-        || matches_surface_name(tool_name, "external_skills.fetch")
-        || matches_surface_name(tool_name, "external_skills.resolve")
-        || matches_surface_name(tool_name, "external_skills.search")
-        || matches_surface_name(tool_name, "external_skills.recommend")
-        || matches_surface_name(tool_name, "external_skills.source_search")
-        || matches_surface_name(tool_name, "external_skills.inspect")
-        || matches_surface_name(tool_name, "external_skills.install")
-        || matches_surface_name(tool_name, "external_skills.invoke")
-        || matches_surface_name(tool_name, "external_skills.list")
-        || matches_surface_name(tool_name, "external_skills.policy")
-        || matches_surface_name(tool_name, "external_skills.remove")
-    {
-        &SKILLS_SURFACE
-    } else if tool_name == "channel"
-        || tool_name.starts_with("feishu.")
-        || matches_surface_name(tool_name, "feishu.whoami")
-    {
-        &CHANNEL_SURFACE
-    } else {
-        return None;
-    };
-
-    Some(surface)
+    None
 }
 
 pub(crate) fn tool_surface_id_for_name(tool_name: &str) -> Option<&'static str> {
@@ -615,16 +522,6 @@ pub(crate) fn tool_surface_prompt_guidelines_for_id(
     Some(surface.prompt_guidelines)
 }
 
-pub(crate) fn hidden_surface_search_summary(surface_id: &str) -> Option<&'static str> {
-    let surface = tool_surface_descriptor_for_id(surface_id)?;
-    surface.hidden_search_summary
-}
-
-pub(crate) fn hidden_surface_search_argument_hint(surface_id: &str) -> Option<&'static str> {
-    let surface = tool_surface_descriptor_for_id(surface_id)?;
-    surface.hidden_search_argument_hint
-}
-
 fn direct_tool_surface_metadata(tool_name: &str) -> Option<DirectToolSurfaceMetadata> {
     let surface = tool_surface_for_name(tool_name)?;
     let direct_tool_name = surface.direct_tool_name?;
@@ -661,36 +558,14 @@ pub(crate) fn direct_tool_tags(tool_name: &str) -> Option<&'static [&'static str
     Some(metadata.tags)
 }
 
-pub(crate) fn hidden_facade_tool_name_for_hidden_tool(tool_name: &str) -> Option<&'static str> {
-    // Keep the addon boundary explicit, but still collapse channel tools into
-    // their own grouped facade so the model does not learn a long tail of ids.
-    if matches_surface_name(tool_name, "approval_requests_list")
-        || matches_surface_name(tool_name, "approval_request_status")
-        || matches_surface_name(tool_name, "approval_request_resolve")
-        || tool_name.starts_with("session_")
-        || tool_name.starts_with("sessions_")
-        || tool_name.starts_with("task_")
-        || tool_name.starts_with("tasks_")
-        || matches_surface_name(tool_name, "delegate")
-        || matches_surface_name(tool_name, "delegate_async")
-        || matches_surface_name(tool_name, "provider.switch")
-        || matches_surface_name(tool_name, "config.import")
-    {
-        return Some("agent");
-    }
-
-    if tool_name.starts_with("external_skills.") {
-        return Some("skills");
-    }
-
-    if tool_name.starts_with("feishu.") {
-        return Some("channel");
-    }
-
+pub(crate) fn hidden_facade_tool_name_for_hidden_tool(_tool_name: &str) -> Option<&'static str> {
     None
 }
 
 pub(crate) fn direct_tool_name_for_hidden_tool(tool_name: &str) -> Option<&'static str> {
+    if matches_surface_name(tool_name, "shell.exec") {
+        return Some(DIRECT_BASH_TOOL_NAME);
+    }
     let surface = direct_surface_descriptor_for_tool_name(tool_name)?;
     let direct_tool_name = surface.direct_tool_name?;
     if matches_surface_name(tool_name, direct_tool_name) {
@@ -733,6 +608,10 @@ pub(crate) fn direct_web_runtime_modes_for_view(view: &ToolView) -> DirectWebRun
     DirectWebRuntimeModes::from_view(view)
 }
 
+pub(crate) fn direct_browser_runtime_modes_for_view(view: &ToolView) -> DirectBrowserRuntimeModes {
+    DirectBrowserRuntimeModes::from_view(view)
+}
+
 fn web_surface_state_for_view(surface: ToolSurfaceDescriptor, view: &ToolView) -> ToolSurfaceState {
     let web_runtime_modes = direct_web_runtime_modes_for_view(view);
     let (prompt_snippet, usage_guidance) = web_runtime_modes.prompt_state(surface);
@@ -746,6 +625,10 @@ fn web_surface_state_for_view(surface: ToolSurfaceDescriptor, view: &ToolView) -
 }
 
 pub(crate) fn direct_tool_visible_in_view(tool_name: &str, view: &ToolView) -> bool {
+    if matches!(tool_name, "read" | "write" | "edit") && view.contains(tool_name) {
+        return true;
+    }
+
     let Some(surface) = direct_surface_descriptor_for_direct_tool_name(tool_name) else {
         return false;
     };
@@ -764,6 +647,7 @@ pub(crate) fn hidden_tool_is_covered_by_visible_direct_tool(
     direct_tool_visible_in_view(direct_tool_name, view)
 }
 
+#[cfg(test)]
 pub(crate) fn tool_surface_visible_in_view(surface_id: &str, view: &ToolView) -> bool {
     let Some(surface) = tool_surface_descriptor_for_id(surface_id) else {
         return false;
@@ -779,6 +663,7 @@ pub(crate) fn tool_surface_visible_in_view(surface_id: &str, view: &ToolView) ->
     })
 }
 
+#[cfg(test)]
 pub(crate) fn active_discoverable_tool_surface_states<'a>(
     tool_names: impl IntoIterator<Item = &'a str>,
 ) -> Vec<ToolSurfaceState> {
@@ -814,9 +699,9 @@ mod tests {
     #[test]
     fn visible_direct_tool_states_follow_runtime_view() {
         let view = ToolView::from_tool_names([
-            "file.read",
-            "file.write",
-            "file.edit",
+            "read",
+            "write",
+            "edit",
             "shell.exec",
             "web.fetch",
             "memory_search",
@@ -828,11 +713,23 @@ mod tests {
             .map(|state| state.surface_id.as_str())
             .collect();
 
-        assert_eq!(state_ids, vec!["read", "write", "exec", "web", "memory"]);
+        assert_eq!(
+            state_ids,
+            vec!["read", "write", "edit", "bash", "web", "memory"]
+        );
     }
 
     #[test]
-    fn hidden_surface_states_group_tools_deterministically() {
+    fn direct_tool_visibility_accepts_direct_file_allowlist_names() {
+        let view = ToolView::from_tool_names(["read", "write", "edit"]);
+
+        assert!(direct_tool_visible_in_view("read", &view));
+        assert!(direct_tool_visible_in_view("write", &view));
+        assert!(direct_tool_visible_in_view("edit", &view));
+    }
+
+    #[test]
+    fn active_discoverable_states_only_track_direct_surfaces() {
         let states = active_discoverable_tool_surface_states([
             "bash.exec",
             "provider.switch",
@@ -840,11 +737,9 @@ mod tests {
             "delegate_async",
         ]);
 
-        assert_eq!(states.len(), 2);
-        assert_eq!(states[0].surface_id, "exec");
-        assert_eq!(states[0].tool_ids, vec!["exec"]);
-        assert_eq!(states[1].surface_id, "agent");
-        assert_eq!(states[1].tool_ids, vec!["agent"]);
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].surface_id, "bash");
+        assert_eq!(states[0].tool_ids, vec!["bash"]);
     }
 
     #[test]
@@ -852,7 +747,7 @@ mod tests {
         let view = ToolView::from_tool_names([
             "shell.exec",
             "browser.open",
-            "browser.companion.snapshot",
+            "browser.extract",
             "http.request",
         ]);
 
@@ -865,7 +760,7 @@ mod tests {
             &view
         ));
         assert!(hidden_tool_is_covered_by_visible_direct_tool(
-            "browser.companion.snapshot",
+            "browser.extract",
             &view
         ));
         assert!(hidden_tool_is_covered_by_visible_direct_tool(
@@ -881,11 +776,16 @@ mod tests {
     #[test]
     fn direct_surface_metadata_stays_definition_first() {
         let exec_parameter_types =
-            direct_tool_parameter_types(DIRECT_EXEC_TOOL_NAME).expect("exec parameter types");
-        assert!(exec_parameter_types.contains(&("script", "string")));
+            direct_tool_parameter_types(DIRECT_BASH_TOOL_NAME).expect("bash parameter types");
+        assert!(exec_parameter_types.contains(&("command", "string")));
+        assert!(!exec_parameter_types.contains(&("script", "string")));
         assert_eq!(
             direct_tool_required_fields(DIRECT_WRITE_TOOL_NAME),
-            Some(["path"].as_slice())
+            Some(["path", "content"].as_slice())
+        );
+        assert_eq!(
+            direct_tool_required_fields("edit"),
+            Some(["path", "edits"].as_slice())
         );
         assert_eq!(
             direct_tool_tags(DIRECT_WEB_TOOL_NAME),
@@ -903,13 +803,13 @@ mod tests {
         );
         assert!(
             direct_tool_search_hint(DIRECT_BROWSER_TOOL_NAME)
-                .expect("browser search hint")
-                .contains("browser sessions")
+                .expect("page search hint")
+                .contains("bounded page session")
         );
         assert!(
             direct_tool_parameter_types(DIRECT_BROWSER_TOOL_NAME)
                 .expect("browser parameter types")
-                .contains(&("text", "string"))
+                .contains(&("link_id", "integer"))
         );
         assert_eq!(direct_tool_argument_hint("shell.exec"), None);
     }
@@ -922,41 +822,46 @@ mod tests {
         );
         assert_eq!(
             discovery_tool_name_for_tool_name("bash.exec"),
-            DIRECT_EXEC_TOOL_NAME
+            DIRECT_BASH_TOOL_NAME
         );
+        assert_eq!(discovery_tool_name_for_tool_name("file.edit"), "edit");
         assert_eq!(
-            discovery_tool_name_for_tool_name("browser.companion.session.start"),
+            discovery_tool_name_for_tool_name("browser.extract"),
             DIRECT_BROWSER_TOOL_NAME
         );
         assert_eq!(
-            discovery_tool_name_for_tool_name("external_skills.install"),
-            "skills"
+            discovery_tool_name_for_tool_name("browser.open"),
+            DIRECT_BROWSER_TOOL_NAME
+        );
+        assert_eq!(
+            discovery_tool_name_for_tool_name("skills.install"),
+            "skills-install"
         );
         assert_eq!(
             discovery_tool_name_for_tool_name("provider.switch"),
-            "agent"
+            "provider-switch"
         );
         assert_eq!(
             discovery_tool_name_for_tool_name("feishu.messages.send"),
-            "channel"
+            "feishu-messages-send"
         );
     }
 
     #[test]
-    fn surface_visibility_checks_support_grouped_hidden_and_direct_paths() {
+    fn surface_visibility_checks_only_report_direct_paths() {
         let view = ToolView::from_tool_names([
             "file.read",
             "shell.exec",
-            "browser.companion.snapshot",
+            "browser.extract",
             "provider.switch",
             "feishu.messages.send",
         ]);
 
         assert!(tool_surface_visible_in_view("read", &view));
-        assert!(tool_surface_visible_in_view("exec", &view));
-        assert!(tool_surface_visible_in_view("browser", &view));
-        assert!(tool_surface_visible_in_view("agent", &view));
-        assert!(tool_surface_visible_in_view("channel", &view));
+        assert!(tool_surface_visible_in_view("bash", &view));
+        assert!(tool_surface_visible_in_view("browse", &view));
+        assert!(!tool_surface_visible_in_view("agent", &view));
+        assert!(!tool_surface_visible_in_view("channel", &view));
         assert!(!tool_surface_visible_in_view("skills", &view));
     }
 
@@ -992,14 +897,13 @@ mod tests {
     }
 
     #[test]
-    fn channel_surface_stays_separate_from_core_hidden_facades() {
-        assert_eq!(
-            tool_surface_id_for_name("feishu.messages.send"),
-            Some("channel")
-        );
+    fn grouped_hidden_tools_no_longer_claim_surface_ids() {
+        assert_eq!(tool_surface_id_for_name("feishu.messages.send"), None);
+        assert_eq!(tool_surface_id_for_name("provider.switch"), None);
+        assert_eq!(tool_surface_id_for_name("skills.install"), None);
         assert_eq!(
             hidden_facade_tool_name_for_hidden_tool("feishu.messages.send"),
-            Some("channel")
+            None
         );
     }
 }

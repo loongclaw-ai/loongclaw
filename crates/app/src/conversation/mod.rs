@@ -1,4 +1,4 @@
-mod active_external_skills;
+mod active_skills;
 pub mod analytics;
 mod announce;
 mod approval_resolution;
@@ -28,9 +28,7 @@ mod session_address;
 mod session_history;
 mod session_state;
 mod subagent;
-mod tool_discovery_state;
 mod tool_input_contract;
-mod tool_loop_supervisor;
 mod tool_result_compaction;
 mod tool_result_line;
 mod tool_result_reduction;
@@ -39,7 +37,6 @@ mod turn_budget;
 mod turn_checkpoint;
 mod turn_coordinator;
 pub mod turn_engine;
-mod turn_loop;
 mod turn_middleware;
 mod turn_middleware_registry;
 mod turn_observer;
@@ -48,17 +45,11 @@ pub(crate) mod workspace_isolation;
 
 pub(crate) const FAST_LANE_PARALLEL_TOOL_EXECUTION_ENABLED: bool = true;
 pub(crate) const FAST_LANE_PARALLEL_TOOL_EXECUTION_MAX_IN_FLIGHT: usize = 4;
-pub(crate) const FAST_LANE_MAX_TOOL_STEPS_PER_TURN: usize = 5;
-pub(crate) const SAFE_LANE_MAX_TOOL_STEPS_PER_TURN: usize = 2;
 pub(crate) const SAFE_LANE_NODE_MAX_ATTEMPTS: u8 = 1;
 pub(crate) const SAFE_LANE_REPLAN_MAX_ROUNDS: u8 = 16;
 pub(crate) const SAFE_LANE_REPLAN_MAX_NODE_ATTEMPTS: u8 = 4;
 pub(crate) const TURN_LOOP_MAX_CONSECUTIVE_SAME_TOOL: usize = 10;
 pub(crate) const TURN_LOOP_MAX_DISCOVERY_FOLLOWUP_ROUNDS: usize = 12;
-pub(crate) const TURN_LOOP_MAX_PING_PONG_CYCLES: usize = 2;
-pub(crate) const TURN_LOOP_MAX_REPEATED_TOOL_CALL_ROUNDS: usize = 2;
-pub(crate) const TURN_LOOP_MAX_ROUNDS: usize = 6;
-pub(crate) const TURN_LOOP_MAX_SAME_TOOL_FAILURE_ROUNDS: usize = 3;
 pub(crate) const TURN_LOOP_MAX_TOTAL_TOOL_CALLS: usize = 200;
 pub(crate) const TOOL_RESULT_PAYLOAD_SUMMARY_LIMIT_CHARS: usize = 2_048;
 
@@ -76,7 +67,7 @@ pub use analytics::{
 pub(crate) use compaction::{COMPACTED_SUMMARY_PREFIX, is_compacted_summary_content};
 pub(crate) use compaction_diagnostics::ContextCompactionDiagnostics;
 #[cfg(feature = "memory-sqlite")]
-pub(crate) use compaction_snapshot::{CompactionSessionSnapshot, load_compaction_session_snapshot};
+pub(crate) use compaction_snapshot::load_compaction_session_snapshot;
 pub use context_engine::{
     AssembledConversationContext, CONTEXT_ENGINE_API_VERSION, ContextArtifactDescriptor,
     ContextArtifactKind, ContextEngineBootstrapResult, ContextEngineCapability,
@@ -145,7 +136,6 @@ pub use subagent::{
     ConstrainedSubagentRole, ConstrainedSubagentRuntimeBinding, ConstrainedSubagentTerminalReason,
     DelegateBuiltinProfile, coordination_actions_for_subagent_handle, subagent_surface_fields,
 };
-pub(crate) use tool_discovery_state::latest_tool_discovery_state_from_assistant_contents;
 pub use turn_budget::SafeLaneFailureRouteReason;
 pub(crate) use turn_checkpoint::{TurnCheckpointDiagnostics, TurnCheckpointRecoveryAssessment};
 pub use turn_checkpoint::{
@@ -153,17 +143,16 @@ pub use turn_checkpoint::{
     TurnCheckpointTailRepairRuntimeProbe, TurnCheckpointTailRepairSource,
     TurnCheckpointTailRepairStatus,
 };
-pub(crate) use turn_coordinator::ContextCompactionReport;
 #[cfg(feature = "memory-sqlite")]
 pub(crate) use turn_coordinator::run_started_delegate_child_turn_with_runtime;
 pub use turn_coordinator::{
-    ConversationTurnCoordinator, ConversationTurnOutcome, spawn_background_delegate_with_runtime,
+    ContextCompactionReport, ConversationTurnCoordinator, ConversationTurnOutcome,
+    spawn_background_delegate_with_runtime,
 };
 pub use turn_engine::{
     AppToolDispatcher, DefaultAppToolDispatcher, NoopAppToolDispatcher, ProviderTurn, ToolDecision,
     ToolIntent, ToolOutcome, TurnEngine, TurnFailure, TurnFailureKind, TurnResult,
 };
-pub use turn_loop::ConversationTurnLoop;
 pub use turn_middleware::{
     ConversationTurnMiddleware, SYSTEM_PROMPT_ADDITION_TURN_MIDDLEWARE_ID,
     SYSTEM_PROMPT_TOOL_VIEW_TURN_MIDDLEWARE_ID, TURN_MIDDLEWARE_API_VERSION,

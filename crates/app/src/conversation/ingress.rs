@@ -108,35 +108,6 @@ pub(crate) fn inject_internal_tool_ingress(
     };
     let canonical_name = crate::tools::canonical_tool_name(tool_name);
 
-    // When tool.invoke wraps a Feishu tool directly or through the grouped
-    // `channel` facade, inject internal context into the nested `arguments`
-    // object rather than the top-level payload.
-    if canonical_name == "tool.invoke" {
-        let inner_is_feishu = crate::tools::invoked_discoverable_tool_request(&payload)
-            .is_some_and(|(name, _arguments)| name.starts_with("feishu."));
-        if inner_is_feishu {
-            let Value::Object(mut outer) = payload else {
-                return InjectedToolPayload {
-                    payload,
-                    trusted_internal_context: false,
-                };
-            };
-            let arguments = outer
-                .remove("arguments")
-                .unwrap_or_else(|| Value::Object(Map::new()));
-            let injected_arguments = inject_feishu_internal_context(arguments, ingress);
-            outer.insert("arguments".to_owned(), injected_arguments.payload);
-            return InjectedToolPayload {
-                payload: Value::Object(outer),
-                trusted_internal_context: injected_arguments.trusted_internal_context,
-            };
-        }
-        return InjectedToolPayload {
-            payload,
-            trusted_internal_context: false,
-        };
-    }
-
     if !canonical_name.starts_with("feishu.") {
         return InjectedToolPayload {
             payload,
@@ -453,16 +424,12 @@ mod tests {
             injected.payload[crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY]["ingress"]["channel"]["conversation_id"],
             "oc_callback"
         );
-        assert!(grouped_invoke.trusted_internal_context);
-        assert_eq!(
-            grouped_invoke.payload["arguments"][crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY]["feishu_callback"]
-                ["callback_token"],
-            "callback-secret-1"
-        );
-        assert_eq!(
-            grouped_invoke.payload["arguments"][crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY]["ingress"]
-                ["channel"]["conversation_id"],
-            "oc_callback"
+        assert!(!grouped_invoke.trusted_internal_context);
+        assert!(
+            grouped_invoke
+                .payload
+                .get(crate::tools::LOONG_INTERNAL_TOOL_CONTEXT_KEY)
+                .is_none()
         );
         assert!(!untouched.trusted_internal_context);
         assert!(

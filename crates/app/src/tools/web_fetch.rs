@@ -1,5 +1,15 @@
 use loong_contracts::{ToolCoreOutcome, ToolCoreRequest};
-#[cfg(feature = "tool-webfetch")]
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
+use scraper::{ElementRef, Html, Selector};
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 use serde_json::{Map, Value, json};
 
 #[cfg_attr(not(feature = "tool-webfetch"), allow(dead_code))]
@@ -116,19 +126,32 @@ fn execute_web_fetch_tool_enabled(
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .map(|value| value.to_owned());
-            budget.reject_if_content_length_exceeds(
-                response.content_length(),
-                "web.fetch response",
-            )?;
-
+            let mut truncated = response
+                .content_length()
+                .is_some_and(|value| value > max_bytes as u64);
             let mut body = Vec::new();
             let mut stream = response.bytes_stream();
             use futures_util::StreamExt;
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk
                     .map_err(|error| format!("failed to read web.fetch response body: {error}"))?;
-                budget.try_consume(chunk.len(), "web.fetch response")?;
-                body.extend_from_slice(&chunk);
+                let remaining = max_bytes.saturating_sub(budget.consumed());
+                if remaining == 0 {
+                    truncated = true;
+                    break;
+                }
+                let chunk_len = chunk.len().min(remaining);
+                if chunk_len < chunk.len() {
+                    truncated = true;
+                }
+                budget.try_consume(chunk_len, "web.fetch response")?;
+                let prefix = chunk
+                    .get(..chunk_len)
+                    .ok_or_else(|| "failed to clip web.fetch response chunk".to_owned())?;
+                body.extend_from_slice(prefix);
+                if truncated {
+                    break;
+                }
             }
 
             let raw_text = String::from_utf8_lossy(&body).into_owned();
@@ -145,9 +168,43 @@ fn execute_web_fetch_tool_enabled(
             let title = is_html
                 .then(|| extract_html_title(raw_text.as_str()))
                 .flatten();
+            let summary = is_html
+                .then(|| extract_html_summary(raw_text.as_str()))
+                .flatten();
             let content = match mode {
-                RenderMode::ReadableText if is_html => extract_readable_text_from_html(&raw_text),
+                RenderMode::ReadableText if is_html => {
+                    let readable = extract_readable_text_from_html(&raw_text);
+                    compose_html_readable_content(summary.as_deref(), readable)
+                }
                 RenderMode::ReadableText | RenderMode::RawText => raw_text.trim().to_owned(),
+            };
+            let continuation = if truncated {
+                Some(json!({
+                    "state": "truncated_page",
+                    "is_terminal": false,
+                    "recommended_tool": "web",
+                    "recommended_payload": {
+                        "url": current_url.as_str(),
+                        "mode": "raw_text",
+                        "max_bytes": max_bytes,
+                    },
+                    "note": "The fetched page was truncated before enough evidence could be gathered. Continue with a narrower or higher-budget web fetch before finalizing."
+                }))
+            } else if is_html
+                && html_page_has_insufficient_evidence(summary.as_deref(), content.as_str())
+            {
+                Some(json!({
+                    "state": "insufficient_page_evidence",
+                    "is_terminal": false,
+                    "recommended_tool": "web",
+                    "recommended_payload": {
+                        "url": current_url.as_str(),
+                        "mode": mode.as_str(),
+                    },
+                    "note": "The fetched page still looks like shell or navigation content. Continue with a narrower or more focused fetch before finalizing."
+                }))
+            } else {
+                None
             };
 
             return Ok(ToolCoreOutcome {
@@ -163,8 +220,11 @@ fn execute_web_fetch_tool_enabled(
                     "mode": mode.as_str(),
                     "content": content,
                     "title": title,
+                    "summary": summary,
                     "bytes_downloaded": budget.consumed(),
+                    "truncated": truncated,
                     "redirect_count": redirect_count,
+                    "continuation": continuation,
                 }),
             });
         }
@@ -338,13 +398,106 @@ pub(crate) fn extract_html_title(html: &str) -> Option<String> {
     feature = "tool-browser",
     feature = "tool-websearch"
 ))]
+pub(crate) fn extract_html_summary(html: &str) -> Option<String> {
+    let document = Html::parse_document(html);
+    let selector = Selector::parse(
+        "meta[name='description'], meta[property='og:description'], meta[name='twitter:description']",
+    )
+    .ok()?;
+
+    document
+        .select(&selector)
+        .filter_map(|element: ElementRef<'_>| element.value().attr("content"))
+        .map(|value: &str| collapse_whitespace(&decode_basic_entities(value.trim())))
+        .find(|value: &String| !value.is_empty())
+}
+
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
 pub(crate) fn extract_readable_text_from_html(html: &str) -> String {
+    if let Some(main_text) = extract_primary_html_text(html) {
+        return main_text;
+    }
+
     let mut sanitized = strip_tag_block(html, "script");
     sanitized = strip_tag_block(&sanitized, "style");
     sanitized = strip_tag_block(&sanitized, "noscript");
     sanitized = strip_tag_block(&sanitized, "head");
+    sanitized = strip_tag_block(&sanitized, "nav");
+    sanitized = strip_tag_block(&sanitized, "header");
+    sanitized = strip_tag_block(&sanitized, "footer");
+    sanitized = strip_tag_block(&sanitized, "aside");
     let text = strip_tags(&sanitized);
     collapse_whitespace(&decode_basic_entities(&text))
+}
+
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
+pub(crate) fn compose_html_readable_content(summary: Option<&str>, readable: String) -> String {
+    let readable = readable.trim().to_owned();
+    let Some(summary) = summary.map(str::trim).filter(|value| !value.is_empty()) else {
+        return readable;
+    };
+    if readable.is_empty() {
+        return summary.to_owned();
+    }
+    if readable.contains(summary) {
+        return readable;
+    }
+
+    format!("Summary: {summary}\n\n{readable}")
+}
+
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
+pub(crate) fn html_page_has_insufficient_evidence(
+    summary: Option<&str>,
+    rendered_content: &str,
+) -> bool {
+    let summary = summary.map(str::trim).filter(|value| !value.is_empty());
+    let rendered = rendered_content.trim();
+    if rendered.is_empty() {
+        return true;
+    }
+
+    let rendered_chars = rendered.chars().count();
+    let summary_chars = summary.map(|value| value.chars().count()).unwrap_or(0);
+    let expected_prefix = summary.map(|value| format!("Summary: {value}"));
+    let rendered_is_summary_only = expected_prefix
+        .as_deref()
+        .is_some_and(|prefix| rendered == prefix);
+    let rendered_is_too_short = rendered_chars <= summary_chars.saturating_add(24);
+
+    rendered_is_summary_only || rendered_is_too_short
+}
+
+#[cfg(any(
+    feature = "tool-webfetch",
+    feature = "tool-browser",
+    feature = "tool-websearch"
+))]
+fn extract_primary_html_text(html: &str) -> Option<String> {
+    let document = Html::parse_document(html);
+    let selector = Selector::parse("main, article, [role='main']").ok()?;
+
+    document
+        .select(&selector)
+        .filter_map(|element: ElementRef<'_>| {
+            let text = collapse_whitespace(&decode_basic_entities(
+                &element.text().collect::<Vec<_>>().join(" "),
+            ));
+            (text.chars().count() >= 48).then_some(text)
+        })
+        .next()
 }
 
 #[cfg(any(
@@ -554,12 +707,29 @@ mod tests {
     }
 
     #[test]
-    fn web_fetch_rejects_private_hosts_by_default() {
-        let error = execute_web_fetch_tool_with_config(
+    fn web_fetch_allows_private_hosts_in_yolo_default_mode() {
+        let outcome = execute_web_fetch_tool_with_config(
             request(json!({"url": "http://127.0.0.1:8080"})),
             &super::super::runtime_config::ToolRuntimeConfig::default(),
+        );
+        assert!(
+            outcome.is_err(),
+            "the local fixture still lacks a listener, but the yolo default should no longer fail at the private-host guard"
+        );
+        let error = outcome.expect_err("localhost fixture should still fail without a listener");
+        assert!(!error.contains("private or special-use"));
+    }
+
+    #[test]
+    fn web_fetch_rejects_private_hosts_when_runtime_policy_disables_them() {
+        let mut config = super::super::runtime_config::ToolRuntimeConfig::default();
+        config.web_fetch.allow_private_hosts = false;
+
+        let error = execute_web_fetch_tool_with_config(
+            request(json!({"url": "http://127.0.0.1:8080"})),
+            &config,
         )
-        .expect_err("private host should be blocked");
+        .expect_err("private host should be blocked when the runtime policy disables it");
 
         assert!(error.contains("private or special-use"));
     }
@@ -615,6 +785,7 @@ mod tests {
         assert_eq!(outcome.payload["tool_name"], "web.fetch");
         assert_eq!(outcome.payload["mode"], "readable_text");
         assert_eq!(outcome.payload["title"], "Demo Page");
+        assert_eq!(outcome.payload["summary"], Value::Null);
         let content = outcome.payload["content"]
             .as_str()
             .expect("content should be string");
@@ -624,18 +795,109 @@ mod tests {
     }
 
     #[test]
-    fn web_fetch_enforces_max_bytes_limit() {
+    fn web_fetch_promotes_meta_description_into_summary_and_readable_content() {
+        let url = spawn_http_server(|_request| {
+            ok_response(
+                "text/html; charset=utf-8",
+                "<html><head><title>Profile</title><meta name=\"description\" content=\"Short profile summary for the target page.\"></head><body><header>Marketing nav</header><main><h1>Profile</h1><p>Main profile content with links and details.</p></main></body></html>",
+            )
+        });
+
+        let outcome = super::super::execute_tool_core_with_config(
+            request(json!({"url": url})),
+            &local_runtime_config(),
+        )
+        .expect("local HTML fixture should fetch");
+
+        assert_eq!(
+            outcome.payload["summary"],
+            "Short profile summary for the target page."
+        );
+        let content = outcome.payload["content"]
+            .as_str()
+            .expect("content should be string");
+        assert!(content.starts_with("Summary: Short profile summary for the target page."));
+        assert!(content.contains("Main profile content with links and details."));
+        assert!(!content.contains("Marketing nav"));
+    }
+
+    #[test]
+    fn web_fetch_marks_shell_heavy_page_as_insufficient_evidence() {
+        let url = spawn_http_server(|_request| {
+            ok_response(
+                "text/html; charset=utf-8",
+                "<html><head><title>Profile</title><meta name=\"description\" content=\"Short profile summary for the target page.\"></head><body><header>Marketing nav</header><nav>Docs Pricing Sign in</nav><footer>Footer links and policies</footer></body></html>",
+            )
+        });
+
+        let outcome = super::super::execute_tool_core_with_config(
+            request(json!({"url": url})),
+            &local_runtime_config(),
+        )
+        .expect("shell-heavy HTML fixture should fetch");
+
+        assert_eq!(outcome.payload["truncated"], json!(false));
+        assert_eq!(
+            outcome.payload["continuation"]["state"],
+            "insufficient_page_evidence"
+        );
+        assert_eq!(outcome.payload["continuation"]["is_terminal"], json!(false));
+        assert_eq!(outcome.payload["continuation"]["recommended_tool"], "web");
+        assert_eq!(
+            outcome.payload["continuation"]["recommended_payload"]["url"],
+            outcome.payload["final_url"]
+        );
+    }
+
+    #[test]
+    fn web_fetch_readable_text_prefers_main_content_over_navigation_shell() {
+        let readable = extract_readable_text_from_html(
+            "<html><body><header>Global Nav Settings Pricing Docs</header><main><h1>Profile</h1><p>Focused page content for the target resource.</p></main><footer>footer links</footer></body></html>",
+        );
+
+        assert!(readable.contains("Focused page content for the target resource."));
+        assert!(!readable.contains("Global Nav Settings Pricing Docs"));
+        assert!(!readable.contains("footer links"));
+    }
+
+    #[test]
+    fn web_fetch_readable_text_fallback_strips_common_boilerplate_regions() {
+        let readable = extract_readable_text_from_html(
+            "<html><body><nav>site nav</nav><header>marketing header</header><section><h1>Release notes</h1><p>Actual content body.</p></section><aside>sidebar noise</aside><footer>footer noise</footer></body></html>",
+        );
+
+        assert!(readable.contains("Release notes Actual content body."));
+        assert!(!readable.contains("site nav"));
+        assert!(!readable.contains("marketing header"));
+        assert!(!readable.contains("sidebar noise"));
+        assert!(!readable.contains("footer noise"));
+    }
+
+    #[test]
+    fn web_fetch_truncates_when_response_exceeds_max_bytes_limit() {
         let body = "x".repeat(128);
         let url = spawn_http_server(move |_request| ok_response("text/plain", &body));
         let mut config = local_runtime_config();
         config.web_fetch.max_bytes = 32;
 
-        let error = execute_web_fetch_tool_with_config(request(json!({"url": url})), &config)
-            .expect_err("oversized body should be rejected");
+        let outcome = execute_web_fetch_tool_with_config(request(json!({"url": url})), &config)
+            .expect("oversized body should be truncated");
 
-        assert!(
-            error.contains("max_bytes limit"),
-            "expected max_bytes error, got: {error}"
+        assert_eq!(outcome.payload["truncated"], json!(true));
+        let content = outcome.payload["content"]
+            .as_str()
+            .expect("content should be string");
+        assert_eq!(content.len(), 32);
+        assert_eq!(outcome.payload["continuation"]["state"], "truncated_page");
+        assert_eq!(outcome.payload["continuation"]["is_terminal"], json!(false));
+        assert_eq!(outcome.payload["continuation"]["recommended_tool"], "web");
+        assert_eq!(
+            outcome.payload["continuation"]["recommended_payload"]["url"],
+            outcome.payload["final_url"]
+        );
+        assert_eq!(
+            outcome.payload["continuation"]["recommended_payload"]["mode"],
+            "raw_text"
         );
     }
 

@@ -290,6 +290,20 @@ async fn provider_auth_ready_accepts_manual_auth_headers_for_custom_provider() {
     assert!(provider_auth_ready(&config).await);
 }
 
+#[tokio::test]
+async fn provider_auth_ready_rejects_blank_manual_auth_headers_for_custom_provider() {
+    let config = LoongConfig {
+        provider: ProviderConfig {
+            kind: ProviderKind::Custom,
+            headers: BTreeMap::from([("authorization".to_owned(), "   ".to_owned())]),
+            ..ProviderConfig::default()
+        },
+        ..LoongConfig::default()
+    };
+
+    assert!(!provider_auth_ready(&config).await);
+}
+
 #[cfg(feature = "provider-bedrock")]
 #[tokio::test]
 async fn provider_auth_ready_accepts_bedrock_sigv4_credentials() {
@@ -1297,9 +1311,8 @@ fn build_messages_includes_capability_snapshot_block() {
         "system prompt should advertise the direct read surface"
     );
     assert!(system_content.contains("- write:"));
-    assert!(system_content.contains("- exec:"));
-    assert!(system_content.contains("- tool.search: Discover hidden specialized tools"));
-    assert!(system_content.contains("- tool.invoke: Invoke a discovered hidden specialized tool"));
+    assert!(system_content.contains("- edit:"));
+    assert!(system_content.contains("- bash:"));
     assert!(!system_content.contains("shell.exec"));
     assert!(!system_content.contains("file.read"));
     assert!(!system_content.contains("file.write"));
@@ -1710,15 +1723,7 @@ fn turn_body_includes_tool_schema_and_auto_choice() {
         .filter_map(Value::as_str)
         .collect();
 
-    let expected = vec![
-        "browser",
-        "exec",
-        "read",
-        "tool_invoke",
-        "tool_search",
-        "web",
-        "write",
-    ];
+    let expected = vec!["bash", "edit", "read", "web", "write"];
 
     for expected_name in expected {
         assert!(
@@ -2280,12 +2285,196 @@ fn responses_turn_body_keeps_tool_schema_with_responses_input_shape() {
     assert_eq!(body["input"][0]["content"][0]["text"], "read README");
     assert!(body.get("messages").is_none());
     assert_eq!(body["tool_choice"], "auto");
+    assert_eq!(body["parallel_tool_calls"], true);
     assert!(
         body.get("tools")
             .and_then(Value::as_array)
             .is_some_and(|tools| !tools.is_empty()),
         "responses requests should still carry tool definitions"
     );
+}
+
+#[cfg(any(feature = "tool-file", feature = "tool-shell"))]
+#[test]
+fn responses_openai_turn_body_includes_native_web_search_tool_when_enabled() {
+    let config = test_config(ProviderConfig {
+        kind: ProviderKind::Openai,
+        wire_api: crate::config::ProviderWireApi::Responses,
+        ..ProviderConfig::default()
+    });
+    let runtime_config =
+        crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(&config, None);
+    let provider_tool_surface = super::native_tool_surface::provider_tool_surface(&config);
+    let surface_plan = provider_tool_surface
+        .materialize(&config, &crate::tools::runtime_tool_view(), &runtime_config)
+        .expect("provider tool surface plan");
+    let request_surface = surface_plan.request;
+
+    let body = build_turn_request_body(
+        &config,
+        &[json!({
+            "role": "user",
+            "content": "search the latest release notes"
+        })],
+        "gpt-5.1-mini",
+        CompletionPayloadMode::default_for(&config.provider),
+        true,
+        &request_surface.tool_definitions,
+    );
+
+    let tools = body["tools"].as_array().expect("responses tools array");
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.get("type").and_then(Value::as_str) == Some("web_search")),
+        "openai responses turn payload should expose native web_search alongside function tools: {tools:#?}"
+    );
+    let web = tools
+        .iter()
+        .find(|tool| {
+            tool.get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                == Some("web")
+        })
+        .expect("web function tool");
+    let web_properties = web["function"]["parameters"]["properties"]
+        .as_object()
+        .expect("web properties");
+    assert!(web_properties.contains_key("url"));
+    assert!(!web_properties.contains_key("query"));
+    assert!(!web_properties.contains_key("provider"));
+    assert!(!web_properties.contains_key("max_results"));
+    assert_eq!(web["function"]["parameters"]["required"], json!(["url"]));
+    assert_eq!(
+        web["function"]["description"],
+        "Fetch a URL or send HTTP requests"
+    );
+}
+
+#[cfg(any(feature = "tool-file", feature = "tool-shell"))]
+#[test]
+fn responses_openai_turn_body_omits_native_web_search_tool_when_disabled() {
+    let mut config = test_config(ProviderConfig {
+        kind: ProviderKind::Openai,
+        wire_api: crate::config::ProviderWireApi::Responses,
+        ..ProviderConfig::default()
+    });
+    config.tools.web_search.enabled = false;
+    let runtime_config =
+        crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(&config, None);
+    let provider_tool_surface = super::native_tool_surface::provider_tool_surface(&config);
+    let surface_plan = provider_tool_surface
+        .materialize(&config, &crate::tools::runtime_tool_view(), &runtime_config)
+        .expect("provider tool surface plan");
+    let request_surface = surface_plan.request;
+
+    let body = build_turn_request_body(
+        &config,
+        &[json!({
+            "role": "user",
+            "content": "search the latest release notes"
+        })],
+        "gpt-5.1-mini",
+        CompletionPayloadMode::default_for(&config.provider),
+        true,
+        &request_surface.tool_definitions,
+    );
+
+    let tools = body["tools"].as_array().expect("responses tools array");
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.get("type").and_then(Value::as_str) != Some("web_search")),
+        "native web_search should stay absent when query search is disabled: {tools:#?}"
+    );
+}
+
+#[cfg(any(feature = "tool-file", feature = "tool-shell"))]
+#[test]
+fn responses_non_openai_turn_body_keeps_function_web_query_mode() {
+    let config = test_config(ProviderConfig {
+        kind: ProviderKind::Deepseek,
+        wire_api: crate::config::ProviderWireApi::Responses,
+        ..ProviderConfig::default()
+    });
+    let runtime_config =
+        crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(&config, None);
+    let provider_tool_surface = super::native_tool_surface::provider_tool_surface(&config);
+    let surface_plan = provider_tool_surface
+        .materialize(&config, &crate::tools::runtime_tool_view(), &runtime_config)
+        .expect("provider tool surface plan");
+    let request_surface = surface_plan.request;
+
+    let body = build_turn_request_body(
+        &config,
+        &[json!({
+            "role": "user",
+            "content": "search the latest release notes"
+        })],
+        "deepseek-chat",
+        CompletionPayloadMode::default_for(&config.provider),
+        true,
+        &request_surface.tool_definitions,
+    );
+
+    let tools = body["tools"].as_array().expect("responses tools array");
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.get("type").and_then(Value::as_str) != Some("web_search")),
+        "non-openai responses profiles should not expose native web_search: {tools:#?}"
+    );
+    let web = tools
+        .iter()
+        .find(|tool| {
+            tool.get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                == Some("web")
+        })
+        .expect("web function tool");
+    let web_properties = web["function"]["parameters"]["properties"]
+        .as_object()
+        .expect("web properties");
+    assert!(web_properties.contains_key("query"));
+    assert!(web_properties.contains_key("provider"));
+    assert!(web_properties.contains_key("max_results"));
+}
+
+#[cfg(any(feature = "tool-file", feature = "tool-shell"))]
+#[test]
+fn provider_request_tool_definitions_include_native_web_search_for_openai_responses() {
+    let config = test_config(ProviderConfig {
+        kind: ProviderKind::Openai,
+        wire_api: crate::config::ProviderWireApi::Responses,
+        ..ProviderConfig::default()
+    });
+    let runtime_config =
+        crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(&config, None);
+    let provider_tool_surface = super::native_tool_surface::provider_tool_surface(&config);
+    let surface_plan = provider_tool_surface
+        .materialize(&config, &crate::tools::runtime_tool_view(), &runtime_config)
+        .expect("provider tool surface plan");
+    let request_surface = surface_plan.request;
+    let prompt_surface = surface_plan.prompt;
+
+    let tools = request_surface.tool_definitions;
+
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool.get("type").and_then(Value::as_str) == Some("web_search")),
+        "provider request tool definitions should include native web_search for openai responses: {tools:#?}"
+    );
+    assert!(
+        prompt_surface
+            .prompt_sections
+            .iter()
+            .any(|section| section.content.contains("native `web_search`"))
+    );
+    let capability_snapshot = prompt_surface.capability_snapshot;
+    assert!(capability_snapshot.contains("- web: fetch a URL or send an HTTP request."));
 }
 
 #[test]
@@ -3177,6 +3366,7 @@ async fn responses_turn_falls_back_to_chat_completions_for_compatible_endpoints(
             request.starts_with("POST /v1/responses ")
                 && request.contains("\"input\"")
                 && request.contains("\"tools\"")
+                && request.contains("\"parallel_tool_calls\":true")
         }),
         "turn flow should first attempt Responses with tool schema: {requests:#?}"
     );

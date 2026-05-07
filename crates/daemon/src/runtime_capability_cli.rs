@@ -7,7 +7,6 @@ use crate::runtime_experiment_cli::{
 };
 use crate::sha2::{self, Digest};
 use clap::{Args, Subcommand, ValueEnum};
-use kernel::ToolCoreRequest;
 use loong_spec::CliResult;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

@@ -70,7 +70,7 @@ async fn execute_single_tool_intent_marks_repairable_file_read_failure_retryable
 
     assert_eq!(error.kind, PlanNodeErrorKind::Retryable);
     assert!(error.message.contains("tool input needs repair"));
-    assert!(error.message.contains("file.read payload.path is required"));
+    assert!(error.message.contains("direct_read_requires_one_of"));
 }
 
 #[cfg(feature = "tool-shell")]
@@ -78,18 +78,15 @@ async fn execute_single_tool_intent_marks_repairable_file_read_failure_retryable
 async fn execute_single_tool_intent_marks_repairable_shell_preflight_failure_retryable() {
     use crate::test_support::TurnTestHarness;
 
-    let harness = TurnTestHarness::new();
-    let (tool_name, args_json) = crate::tools::synthesize_test_provider_tool_call_with_scope(
-        "shell.exec",
-        json!({
-            "command": "\"ls -la\"",
-        }),
-        Some("root-session"),
-        Some("turn-shell-plan-node"),
-    );
+    let harness = TurnTestHarness::with_capabilities(std::collections::BTreeSet::from([
+        loong_contracts::Capability::InvokeTool,
+        loong_contracts::Capability::FilesystemRead,
+        loong_contracts::Capability::FilesystemWrite,
+        loong_contracts::Capability::NetworkEgress,
+    ]));
     let intent = ToolIntent {
-        tool_name,
-        args_json,
+        tool_name: "bash".to_owned(),
+        args_json: json!({}),
         source: "provider_tool_call".to_owned(),
         session_id: "root-session".to_owned(),
         turn_id: "turn-shell-plan-node".to_owned(),
@@ -111,4 +108,5 @@ async fn execute_single_tool_intent_marks_repairable_shell_preflight_failure_ret
 
     assert_eq!(error.kind, PlanNodeErrorKind::Retryable);
     assert!(error.message.contains("tool input needs repair"));
+    assert!(error.message.contains("direct_bash_requires_command"));
 }

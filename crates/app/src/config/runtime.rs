@@ -38,7 +38,7 @@ use super::{
         format_config_validation_issues,
     },
     tools::{
-        DEFAULT_WEB_SEARCH_PROVIDER, ExternalSkillsConfig, RuntimePluginsConfig, ToolConfig,
+        DEFAULT_WEB_SEARCH_PROVIDER, RuntimePluginsConfig, SkillsConfig, ToolConfig,
         WEB_SEARCH_BRAVE_API_KEY_ENV, WEB_SEARCH_EXA_API_KEY_ENV, WEB_SEARCH_FIRECRAWL_API_KEY_ENV,
         WEB_SEARCH_JINA_API_KEY_ENV, WEB_SEARCH_JINA_AUTH_TOKEN_ENV,
         WEB_SEARCH_PERPLEXITY_API_KEY_ENV, WEB_SEARCH_PROVIDER_VALID_VALUES,
@@ -179,7 +179,7 @@ pub struct LoongConfig {
     #[serde(default)]
     pub tools: ToolConfig,
     #[serde(default)]
-    pub external_skills: ExternalSkillsConfig,
+    pub skills: SkillsConfig,
     #[serde(default)]
     pub runtime_plugins: RuntimePluginsConfig,
     #[serde(default)]
@@ -272,7 +272,7 @@ pub struct AcpConfig {
     pub bindings_enabled: bool,
     #[serde(default)]
     pub emit_runtime_events: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub allow_mcp_server_injection: bool,
     #[serde(default)]
     pub backends: AcpBackendProfilesConfig,
@@ -392,7 +392,7 @@ impl Default for AcpConfig {
             queue_owner_ttl_ms: Some(default_acp_queue_owner_ttl_ms()),
             bindings_enabled: false,
             emit_runtime_events: false,
-            allow_mcp_server_injection: true,
+            allow_mcp_server_injection: false,
             backends: AcpBackendProfilesConfig::default(),
         }
     }
@@ -1135,7 +1135,6 @@ fn canonicalize_channel_configs_for_encoding(config: &mut LoongConfig) {
     canonicalize_weixin_channel_for_encoding(&mut config.weixin);
     canonicalize_qqbot_channel_for_encoding(&mut config.qqbot);
     canonicalize_onebot_channel_for_encoding(&mut config.onebot);
-    canonicalize_whatsapp_personal_channel_for_encoding(&mut config.whatsapp_personal);
     canonicalize_discord_channel_for_encoding(&mut config.discord);
     canonicalize_line_channel_for_encoding(&mut config.line);
     canonicalize_dingtalk_channel_for_encoding(&mut config.dingtalk);
@@ -1238,16 +1237,6 @@ fn canonicalize_onebot_channel_for_encoding(config: &mut OnebotChannelConfig) {
             &mut account.websocket_url_env,
         );
         canonicalize_env_secret_reference(&mut account.access_token, &mut account.access_token_env);
-    }
-}
-
-fn canonicalize_whatsapp_personal_channel_for_encoding(config: &mut WhatsappPersonalChannelConfig) {
-    canonicalize_env_string_reference(&mut config.bridge_url, &mut config.bridge_url_env);
-    canonicalize_env_string_reference(&mut config.auth_dir, &mut config.auth_dir_env);
-
-    for account in config.accounts.values_mut() {
-        canonicalize_env_string_reference(&mut account.bridge_url, &mut account.bridge_url_env);
-        canonicalize_env_string_reference(&mut account.auth_dir, &mut account.auth_dir_env);
     }
 }
 
@@ -3823,26 +3812,39 @@ model = "gpt-5"
 
     #[test]
     #[cfg(feature = "config-toml")]
-    fn write_default_config_uses_yolo_external_skills_defaults() {
+    fn write_default_config_keeps_skills_defaults() {
         let path = unique_config_path("loong-config-runtime-external-skills");
         let path_string = path.display().to_string();
+        let defaults = crate::config::SkillsConfig::default();
 
         write(Some(&path_string), &LoongConfig::default(), true)
             .expect("default config write should pass");
 
         let raw = fs::read_to_string(&path).expect("read written config");
-        assert!(raw.contains("[external_skills]"));
-        assert!(raw.contains("enabled = true"));
-        assert!(raw.contains("require_download_approval = false"));
-        assert!(raw.contains("auto_expose_installed = true"));
+        assert!(raw.contains("[skills]"));
+        assert!(raw.contains(&format!("enabled = {}", defaults.enabled)));
+        assert!(raw.contains(&format!(
+            "require_download_approval = {}",
+            defaults.require_download_approval
+        )));
+        assert!(raw.contains(&format!(
+            "auto_expose_installed = {}",
+            defaults.auto_expose_installed
+        )));
 
         let (_, loaded) = load(Some(&path_string)).expect("config load should pass");
-        assert!(loaded.external_skills.enabled);
-        assert!(!loaded.external_skills.require_download_approval);
-        assert!(loaded.external_skills.allowed_domains.is_empty());
-        assert!(loaded.external_skills.blocked_domains.is_empty());
-        assert!(loaded.external_skills.install_root.is_none());
-        assert!(loaded.external_skills.auto_expose_installed);
+        assert_eq!(loaded.skills.enabled, defaults.enabled);
+        assert_eq!(
+            loaded.skills.require_download_approval,
+            defaults.require_download_approval
+        );
+        assert_eq!(loaded.skills.allowed_domains, defaults.allowed_domains);
+        assert_eq!(loaded.skills.blocked_domains, defaults.blocked_domains);
+        assert_eq!(loaded.skills.install_root, defaults.install_root);
+        assert_eq!(
+            loaded.skills.auto_expose_installed,
+            defaults.auto_expose_installed
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -3877,7 +3879,7 @@ model = "gpt-5"
         config.tools.delegate.timeout_seconds = 90;
         config.tools.delegate.allow_shell_in_child = true;
         config.tools.delegate.child_tool_allowlist =
-            vec!["file.read".to_owned(), "shell.exec".to_owned()];
+            vec!["read".to_owned(), "shell.exec".to_owned()];
 
         let encoded = encode_toml_config(&config).expect("encode config");
         let parsed = toml::from_str::<LoongConfig>(&encoded).expect("parse encoded config");

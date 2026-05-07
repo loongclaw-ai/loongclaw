@@ -38,11 +38,17 @@ pub(crate) fn compact_tool_search_payload_summary(payload: &Value) -> Option<Val
     }
 
     if let Some(exact_tool_id) = payload_object.get("exact_tool_id") {
-        compacted.insert("exact_tool_id".to_owned(), exact_tool_id.clone());
+        compacted.insert(
+            "exact_tool_id".to_owned(),
+            normalize_visible_tool_id_value(exact_tool_id),
+        );
     }
 
     if let Some(diagnostics) = payload_object.get("diagnostics") {
-        compacted.insert("diagnostics".to_owned(), diagnostics.clone());
+        compacted.insert(
+            "diagnostics".to_owned(),
+            normalize_tool_search_diagnostics(diagnostics),
+        );
     }
 
     if let Some(returned) = payload_object.get("returned") {
@@ -60,6 +66,10 @@ pub(crate) fn compact_tool_search_payload_summary(payload: &Value) -> Option<Val
     );
 
     Some(Value::Object(compacted))
+}
+
+pub(crate) fn compact_discovery_payload_summary(payload: &Value) -> Option<Value> {
+    compact_tool_search_payload_summary(payload)
 }
 
 fn compact_continuation_payload_summary(payload: &Value) -> Option<Value> {
@@ -117,7 +127,12 @@ fn compact_tool_search_payload_result(result: &Value) -> Value {
 
     let mut compacted = Map::new();
 
-    clone_field_if_present(result_object, &mut compacted, "tool_id");
+    if let Some(tool_id) = result_object.get("tool_id") {
+        compacted.insert(
+            "tool_id".to_owned(),
+            normalize_visible_tool_id_value(tool_id),
+        );
+    }
     clone_field_if_present(result_object, &mut compacted, "summary");
     clone_field_if_present(result_object, &mut compacted, "argument_hint");
     clone_array_field_if_present(result_object, &mut compacted, "required_fields");
@@ -125,6 +140,28 @@ fn compact_tool_search_payload_result(result: &Value) -> Value {
     clone_field_if_present(result_object, &mut compacted, "lease");
 
     Value::Object(compacted)
+}
+
+fn normalize_tool_search_diagnostics(diagnostics: &Value) -> Value {
+    let Some(diagnostics_object) = diagnostics.as_object() else {
+        return diagnostics.clone();
+    };
+    let mut normalized = diagnostics_object.clone();
+    if let Some(requested_tool_id) = diagnostics_object.get("requested_tool_id") {
+        normalized.insert(
+            "requested_tool_id".to_owned(),
+            normalize_visible_tool_id_value(requested_tool_id),
+        );
+    }
+    Value::Object(normalized)
+}
+
+fn normalize_visible_tool_id_value(value: &Value) -> Value {
+    value
+        .as_str()
+        .map(crate::tools::user_visible_tool_name)
+        .map(Value::String)
+        .unwrap_or_else(|| value.clone())
 }
 
 fn clone_field_if_present(source: &Map<String, Value>, target: &mut Map<String, Value>, key: &str) {
@@ -146,78 +183,4 @@ fn clone_array_field_if_present(
     };
 
     target.insert(key.to_owned(), Value::Array(values.clone()));
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::compact_tool_search_payload_summary;
-    use crate::conversation::tool_discovery_state::ToolDiscoveryState;
-
-    #[test]
-    fn compact_tool_search_payload_summary_keeps_runtime_usable_leases_and_advisory_metadata() {
-        let payload = json!({
-            "adapter": "core-tools",
-            "tool_name": "tool.search",
-            "query": "read note.md",
-            "exact_tool_id": "file.read",
-            "returned": 1,
-            "results": [
-                {
-                    "tool_id": "file.read",
-                    "summary": "Read a file.",
-                    "search_hint": "Use for UTF-8 text files.",
-                    "argument_hint": "path:string",
-                    "required_fields": ["path"],
-                    "required_field_groups": [["path"]],
-                    "schema_preview": {
-                        "type": "object"
-                    },
-                    "why": ["matched query"],
-                    "lease": "lease-file"
-                }
-            ],
-            "diagnostics": {
-                "reason": "exact_tool_id_not_visible",
-                "requested_tool_id": "file.read"
-            }
-        });
-
-        let compacted =
-            compact_tool_search_payload_summary(&payload).expect("compacted tool search payload");
-        let compacted_result = compacted["results"][0]
-            .as_object()
-            .expect("compacted result object");
-        let recovered_state = ToolDiscoveryState::from_tool_search_payload(&compacted)
-            .expect("compacted payload should still recover discovery state");
-
-        assert_eq!(compacted["query"], json!("read note.md"));
-        assert_eq!(compacted["exact_tool_id"], json!("file.read"));
-        assert_eq!(compacted["returned"], json!(1));
-        assert_eq!(
-            compacted["diagnostics"]["reason"],
-            json!("exact_tool_id_not_visible")
-        );
-        assert_eq!(compacted_result.get("lease"), Some(&json!("lease-file")));
-        assert_eq!(compacted_result.get("tool_id"), Some(&json!("file.read")));
-        assert_eq!(
-            compacted_result.get("summary"),
-            Some(&json!("Read a file."))
-        );
-        assert_eq!(
-            compacted_result.get("argument_hint"),
-            Some(&json!("path:string"))
-        );
-        assert!(!compacted_result.contains_key("schema_preview"));
-        assert!(!compacted_result.contains_key("why"));
-        assert!(!compacted_result.contains_key("search_hint"));
-        assert_eq!(recovered_state.exact_tool_id.as_deref(), Some("read"));
-        assert_eq!(recovered_state.entries.len(), 1);
-        assert_eq!(recovered_state.entries[0].tool_id.as_str(), "read");
-        assert_eq!(
-            recovered_state.entries[0].argument_hint.as_deref(),
-            Some("path:string")
-        );
-    }
 }

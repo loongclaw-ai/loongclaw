@@ -16,17 +16,21 @@ pub(super) async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
     followup_chain_active: bool,
 ) -> ProviderTurnLaneExecution {
     let had_tool_intents = !turn.tool_intents.is_empty();
-    let search_tool_intents = turn
+    let provider_originated_tool_intents = turn
         .tool_intents
         .iter()
-        .filter(|intent| effective_followup_tool_name(intent) == "tool.search")
-        .count();
-    let discovery_search_turn = search_tool_intents > 0;
+        .any(|intent| intent.source.starts_with("provider_"));
+    let search_tool_intents = 0usize;
+    let discovery_search_turn = false;
     let malformed_parse_followup_turn =
         provider_turn_has_malformed_parse_followup_signal(&turn.raw_meta);
-    let supports_provider_turn_followup =
-        followup_chain_active || discovery_search_turn || malformed_parse_followup_turn;
     let assistant_preface = turn.assistant_text.clone();
+    let textual_tool_parse_followup_signal = provider_turn_has_textual_tool_parse_followup_signal(
+        &turn.raw_meta,
+        had_tool_intents,
+        assistant_preface.as_str(),
+    );
+    let supports_provider_turn_followup = followup_chain_active || malformed_parse_followup_turn;
     let lane = preparation.lane_plan.decision.lane;
     let session_context = match runtime.session_context(config, session_id, binding) {
         Ok(session_context) => session_context,
@@ -40,6 +44,8 @@ pub(super) async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
                 assistant_preface,
                 provider_usage: provider_turn_usage(turn),
                 had_tool_intents,
+                provider_originated_tool_intents,
+                textual_tool_parse_followup_turn: textual_tool_parse_followup_signal,
                 tool_request_summary,
                 discovery_search_turn,
                 search_tool_intents,
@@ -73,7 +79,7 @@ pub(super) async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
         .lane_plan
         .should_use_safe_lane_plan_path(config, turn);
     let engine = TurnEngine::with_parallel_tool_execution(
-        preparation.lane_plan.max_tool_steps,
+        0,
         payload_summary_limit_chars,
         parallel_tool_execution_enabled,
         parallel_tool_execution_max_in_flight,
@@ -177,19 +183,19 @@ pub(super) async fn execute_provider_turn_lane<R: ConversationRuntime + ?Sized>(
         provider_turn_has_malformed_parse_followup_signal(&turn.raw_meta);
     let runtime_followup_turn = tool_driven_followup_payload(had_tool_intents, &turn_result)
         .is_some_and(|payload| payload.requests_runtime_followup_chain());
-    let preface_signals_provider_turn_followup =
-        assistant_preface_signals_provider_turn_followup(assistant_preface.as_str());
     let supports_provider_turn_followup = followup_chain_active
         || discovery_search_turn
         || recovery_followup_turn
         || malformed_parse_followup_turn
         || runtime_followup_turn
-        || preface_signals_provider_turn_followup;
+        || textual_tool_parse_followup_signal;
     ProviderTurnLaneExecution {
         lane,
         assistant_preface,
         provider_usage: provider_turn_usage(turn),
         had_tool_intents,
+        provider_originated_tool_intents,
+        textual_tool_parse_followup_turn: textual_tool_parse_followup_signal,
         tool_request_summary,
         discovery_search_turn,
         search_tool_intents,
@@ -216,13 +222,24 @@ pub(super) fn provider_turn_has_malformed_parse_followup_signal(raw_meta: &Value
     })
 }
 
-pub(super) fn assistant_preface_signals_provider_turn_followup(assistant_preface: &str) -> bool {
-    let normalized_preface = assistant_preface.to_ascii_lowercase();
-    let contains_first = normalized_preface.contains("first");
-    let contains_then = normalized_preface.contains("then");
-    let contains_next = normalized_preface.contains("next");
-    let contains_after_that = normalized_preface.contains("after that");
-    let contains_afterwards = normalized_preface.contains("afterwards");
+fn provider_turn_has_textual_tool_parse_followup_signal(
+    raw_meta: &Value,
+    had_tool_intents: bool,
+    assistant_preface: &str,
+) -> bool {
+    if !had_tool_intents || assistant_preface.trim().is_empty() {
+        return false;
+    }
 
-    contains_first || contains_then || contains_next || contains_after_that || contains_afterwards
+    let Some(parse_meta) = raw_meta.get("loong_provider_parse") else {
+        return false;
+    };
+    let Some(parse_meta_object) = parse_meta.as_object() else {
+        return false;
+    };
+
+    parse_meta_object.values().any(|entry| {
+        let status = entry.get("status").and_then(Value::as_str);
+        status == Some("parsed")
+    })
 }

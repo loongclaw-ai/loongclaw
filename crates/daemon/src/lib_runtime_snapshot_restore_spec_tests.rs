@@ -5,8 +5,8 @@ use serde_json::json;
 fn runtime_snapshot_restore_managed_skills_keeps_entries_without_display_metadata() {
     let mut warnings = Vec::new();
     let spec = build_runtime_snapshot_restore_managed_skills_spec(
-        &RuntimeSnapshotExternalSkillsState {
-            policy: mvp::tools::runtime_config::ExternalSkillsRuntimePolicy::default(),
+        &RuntimeSnapshotSkillsState {
+            policy: mvp::tools::runtime_config::SkillsRuntimePolicy::default(),
             override_active: false,
             inventory_status: RuntimeSnapshotInventoryStatus::Ok,
             inventory_error: None,
@@ -211,48 +211,48 @@ fn runtime_snapshot_restore_normalization_treats_blank_inline_secret_as_absent()
 
 #[test]
 fn runtime_snapshot_tool_runtime_json_reports_browser_execution_tiers() {
-    let mut runtime = mvp::tools::runtime_config::ToolRuntimeConfig::default();
-    runtime.browser_companion.enabled = true;
-    runtime.browser_companion.ready = true;
-    runtime.browser_companion.command = Some("browser-companion".to_owned());
+    let config = mvp::config::LoongConfig::default();
+    let runtime = mvp::tools::runtime_config::ToolRuntimeConfig::default();
 
-    let json = runtime_snapshot_tool_runtime_json(&runtime);
+    let access = runtime_tool_access_summary(&config, &runtime);
+    let json = runtime_snapshot_tool_runtime_json(&runtime, &access);
 
     assert_eq!(json["browser"]["execution_tier"], json!("restricted"));
-    assert_eq!(
-        json["browser_companion"]["execution_tier"],
-        json!("balanced")
-    );
     assert_eq!(json["web_search"]["enabled"], json!(true));
     assert_eq!(json["web_search"]["default_provider"], json!("duckduckgo"));
     assert_eq!(json["web_search"]["credential_ready"], json!(true));
     assert_eq!(
         json["web_search"]["separation_note"],
-        json!(RUNTIME_WEB_ACCESS_SEPARATION_NOTE)
+        json!(RUNTIME_TOOL_ACCESS_SEPARATION_NOTE)
     );
+    assert_eq!(json["consent"]["default_mode"], json!("full"));
+    assert_eq!(json["approval"]["mode"], json!("disabled"));
     assert_eq!(
-        json["web_access"]["ordinary_network_access_enabled"],
+        json["access"]["ordinary_network_access_enabled"],
         json!(true)
     );
-    assert_eq!(json["web_access"]["query_search_enabled"], json!(true));
+    assert_eq!(json["access"]["query_search_enabled"], json!(true));
     assert_eq!(
-        json["web_access"]["query_search_default_provider"],
+        json["access"]["query_search_default_provider"],
         json!("duckduckgo")
     );
+    assert_eq!(json["access"]["query_search_credential_ready"], json!(true));
     assert_eq!(
-        json["web_access"]["query_search_credential_ready"],
-        json!(true)
+        json["access"]["managed_browser_session_ready"],
+        json!(false)
     );
 }
 
 #[test]
-fn runtime_web_access_summary_distinguishes_network_from_query_search_credentials() {
+fn runtime_tool_access_summary_distinguishes_network_search_browser_and_governance() {
+    let config = mvp::config::LoongConfig::default();
     let mut runtime = mvp::tools::runtime_config::ToolRuntimeConfig::default();
     runtime.web_fetch.enabled = false;
+    runtime.browser.enabled = false;
     runtime.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_BRAVE.to_owned();
     runtime.web_search.brave_api_key = None;
 
-    let summary = runtime_web_access_summary(&runtime);
+    let summary = runtime_tool_access_summary(&config, &runtime);
 
     assert!(!summary.ordinary_network_access_enabled);
     assert!(summary.query_search_enabled);
@@ -261,21 +261,48 @@ fn runtime_web_access_summary_distinguishes_network_from_query_search_credential
         mvp::config::WEB_SEARCH_PROVIDER_BRAVE
     );
     assert!(!summary.query_search_credential_ready);
+    assert!(!summary.browser_page_access_enabled);
+    assert!(!summary.managed_browser_session_enabled);
+    assert!(!summary.managed_browser_session_ready);
+    assert_eq!(summary.consent_mode, "full");
+    assert_eq!(summary.approval_mode, "disabled");
 }
 
 #[test]
-fn runtime_web_access_summary_accepts_firecrawl_credentials() {
+fn runtime_tool_access_summary_accepts_firecrawl_credentials() {
+    let config = mvp::config::LoongConfig::default();
     let mut runtime = mvp::tools::runtime_config::ToolRuntimeConfig::default();
     runtime.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL.to_owned();
     runtime.web_search.firecrawl_api_key = Some("firecrawl-secret".to_owned());
 
-    let summary = runtime_web_access_summary(&runtime);
+    let summary = runtime_tool_access_summary(&config, &runtime);
 
     assert!(summary.ordinary_network_access_enabled);
     assert!(summary.query_search_enabled);
     assert_eq!(
         summary.query_search_default_provider,
         mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL
+    );
+    assert!(summary.query_search_credential_ready);
+    assert!(summary.browser_page_access_enabled);
+}
+
+#[test]
+fn runtime_tool_access_summary_accepts_openai_native_query_search_without_external_credential() {
+    let mut config = mvp::config::LoongConfig::default();
+    config.provider.kind = mvp::config::ProviderKind::Openai;
+    config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+    config.tools.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_BRAVE.to_owned();
+    let mut runtime = mvp::tools::runtime_config::ToolRuntimeConfig::default();
+    runtime.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_BRAVE.to_owned();
+    runtime.web_search.brave_api_key = None;
+
+    let summary = runtime_tool_access_summary(&config, &runtime);
+
+    assert!(summary.query_search_enabled);
+    assert_eq!(
+        summary.query_search_default_provider,
+        mvp::config::WEB_SEARCH_PROVIDER_BRAVE
     );
     assert!(summary.query_search_credential_ready);
 }

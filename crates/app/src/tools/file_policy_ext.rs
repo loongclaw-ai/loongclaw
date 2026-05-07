@@ -88,15 +88,19 @@ impl FilePolicyExtension {
         payload: &serde_json::Map<String, serde_json::Value>,
     ) -> BTreeSet<Capability> {
         let mut required_capabilities = BTreeSet::new();
+        let visible_tool_name = super::user_visible_tool_name(tool_name);
 
-        match tool_name {
-            "file.read" | "glob.search" | "content.search" | "memory_search" | "memory_get" => {
+        match visible_tool_name.as_str() {
+            "read" => {
                 required_capabilities.insert(Capability::FilesystemRead);
             }
-            "file.write" | "file.edit" => {
+            "write" | "edit" => {
                 required_capabilities.insert(Capability::FilesystemWrite);
             }
-            "config.import" => {
+            _ if matches!(tool_name, "memory_search" | "memory_get") => {
+                required_capabilities.insert(Capability::FilesystemRead);
+            }
+            _ if tool_name == "config.import" => {
                 required_capabilities.insert(Capability::FilesystemRead);
 
                 let mode_requires_write =
@@ -341,6 +345,7 @@ impl PolicyExtension for FilePolicyExtension {
             .unwrap_or("");
 
         let tool_name = super::canonical_tool_name(raw_tool_name);
+        let visible_tool_name = super::user_visible_tool_name(tool_name);
 
         let payload = params.get("payload").and_then(serde_json::Value::as_object);
         let Some(payload) = payload else {
@@ -363,7 +368,7 @@ impl PolicyExtension for FilePolicyExtension {
 
             let extension = self.name().to_owned();
             let reason = format!(
-                "tool `{tool_name}` requires capability `{required_capability:?}` not granted to token"
+                "tool `{visible_tool_name}` requires capability `{required_capability:?}` not granted to token"
             );
             return Err(PolicyError::ExtensionDenied { extension, reason });
         }
@@ -438,10 +443,10 @@ mod tests {
             json!({"tool_name": "file.write", "payload": {"path": "foo.txt", "content": "x"}});
         let ctx = make_context(&pack, &token, &caps, Some(&params));
         let result = ext.authorize_extension(&ctx);
-        assert!(matches!(
-            result.unwrap_err(),
-            PolicyError::ExtensionDenied { .. }
-        ));
+        let error = result.expect_err("missing write capability should deny");
+        let rendered = error.to_string();
+        assert!(rendered.contains("tool `write` requires capability"));
+        assert!(!rendered.contains("file.write"));
     }
 
     #[test]

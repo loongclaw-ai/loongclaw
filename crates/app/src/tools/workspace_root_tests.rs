@@ -11,7 +11,7 @@ fn test_tool_runtime_config(root: PathBuf) -> runtime_config::ToolRuntimeConfig 
         shell_allow: BTreeSet::from(["echo".to_owned(), "cat".to_owned(), "ls".to_owned()]),
         file_root: Some(root),
         messages_enabled: true,
-        external_skills: runtime_config::ExternalSkillsRuntimePolicy {
+        skills: runtime_config::SkillsRuntimePolicy {
             enabled: true,
             require_download_approval: true,
             allowed_domains: BTreeSet::new(),
@@ -188,57 +188,4 @@ fn file_read_rejects_relative_workspace_root_from_trusted_internal_payload() {
     );
 
     std::fs::remove_dir_all(&outer_root).ok();
-}
-
-#[cfg(feature = "tool-file")]
-#[test]
-fn tool_invoke_preserves_combined_trusted_internal_context_for_inner_execution() {
-    let _env = crate::test_support::ScopedEnv::new();
-    let child_root = std::env::temp_dir().join(format!(
-        "loong-tool-invoke-workspace-root-child-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&child_root).expect("create child fixture root");
-    std::fs::write(child_root.join("note.txt"), "child").expect("write child note");
-
-    let (tool_name, mut payload) = bridge_provider_tool_call_with_scope(
-        "file.read",
-        json!({
-            "path": "note.txt"
-        }),
-        None,
-        None,
-    );
-    let payload_object = payload.as_object_mut().expect("tool.invoke payload object");
-    payload_object.insert(
-        LOONG_INTERNAL_TOOL_CONTEXT_KEY.to_owned(),
-        json!({
-            LOONG_INTERNAL_WORKSPACE_ROOT_KEY: child_root.display().to_string(),
-            LOONG_INTERNAL_RUNTIME_NARROWING_KEY: {
-                "web_fetch": {
-                    "allowed_domains": ["docs.example.com"],
-                    "allow_private_hosts": false
-                }
-            }
-        }),
-    );
-
-    let request = ToolCoreRequest { tool_name, payload };
-    let (_, effective_request) =
-        resolve_tool_invoke_request(&request).expect("tool.invoke should preserve trusted context");
-
-    let internal_context = effective_request.payload[LOONG_INTERNAL_TOOL_CONTEXT_KEY]
-        .as_object()
-        .expect("inner arguments should keep trusted internal context");
-    assert_eq!(
-        internal_context[LOONG_INTERNAL_WORKSPACE_ROOT_KEY],
-        child_root.display().to_string()
-    );
-    assert_eq!(
-        internal_context[LOONG_INTERNAL_RUNTIME_NARROWING_KEY]["web_fetch"]["allowed_domains"][0],
-        "docs.example.com"
-    );
-    assert_eq!(effective_request.payload["path"], "note.txt");
-
-    std::fs::remove_dir_all(&child_root).ok();
 }

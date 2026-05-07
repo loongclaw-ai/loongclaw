@@ -69,16 +69,23 @@ fn runtime_snapshot_fixture(
                 active_model: "gpt-4.1-mini".to_owned(),
                 reason: "no runtime-visible tools are enabled".to_owned(),
             },
-            web_access: loong_daemon::gateway::read_models::GatewayWebAccessReadModel {
+            access: loong_daemon::gateway::read_models::GatewayToolAccessReadModel {
                 ordinary_network_access_enabled: false,
                 query_search_enabled: false,
                 query_search_default_provider: "duckduckgo".to_owned(),
+                query_search_source: "external_provider".to_owned(),
+                query_search_provider_label: "DuckDuckGo".to_owned(),
                 query_search_credential_ready: true,
-                separation_note: "web-search provider settings affect only query search mode; ordinary network access stays separately governed".to_owned(),
+                browser_page_access_enabled: false,
+                managed_browser_session_enabled: false,
+                managed_browser_session_ready: false,
+                consent_mode: "full".to_owned(),
+                approval_mode: "disabled".to_owned(),
+                separation_note: "web-search provider settings affect only query search mode; ordinary network access and browser lanes stay separately governed".to_owned(),
             },
         },
         runtime_plugins: serde_json::json!({}),
-        external_skills: serde_json::json!({}),
+        skills: serde_json::json!({}),
     }
 }
 
@@ -88,7 +95,7 @@ fn managed_bridge_parity_keeps_summary_aligned_across_text_json_and_operator_vie
     let mut config = mixed_account_weixin_plugin_bridge_config();
 
     install_ready_weixin_managed_bridge(install_root.as_path());
-    config.external_skills.install_root = Some(install_root.display().to_string());
+    config.skills.install_root = Some(install_root.display().to_string());
 
     let inventory = mvp::channel::channel_inventory(&config);
     let rendered = loong_daemon::render_channel_surfaces_text("/tmp/loong.toml", &inventory);
@@ -149,7 +156,7 @@ fn managed_bridge_parity_keeps_doctor_json_and_channels_json_account_summary_in_
     let mut config = mixed_account_weixin_plugin_bridge_config();
 
     install_ready_weixin_managed_bridge(install_root.as_path());
-    config.external_skills.install_root = Some(install_root.display().to_string());
+    config.skills.install_root = Some(install_root.display().to_string());
     mvp::config::write(
         Some(config_path.to_str().expect("utf8 config path")),
         &config,

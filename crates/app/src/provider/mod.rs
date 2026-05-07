@@ -28,12 +28,14 @@ mod mock_transport;
 mod model_candidate_cooldown_runtime;
 mod model_candidate_resolver_runtime;
 mod model_catalog_runtime;
+mod native_tool_surface;
 mod policy;
 mod profile_health_policy;
 mod profile_health_runtime;
 mod profile_state_backend;
 mod profile_state_store;
 mod provider_keyspace;
+mod provider_runtime_status;
 mod provider_validation_runtime;
 mod rate_limit;
 mod request_dispatch_runtime;
@@ -60,6 +62,12 @@ pub use model_catalog_runtime::{
     effective_default_reasoning_effort_for_entry, effective_supported_reasoning_efforts_for_entry,
     reasoning_effort_description_for_entry, supported_reasoning_efforts_for_model,
 };
+pub use provider_runtime_status::{
+    ProviderToolSchemaReadiness, fetch_available_models, is_auth_style_failure_message,
+    provider_auth_ready, provider_failover_metrics_snapshot,
+    provider_http_client_runtime_metrics_snapshot, provider_tool_schema_readiness,
+    supports_turn_streaming_events,
+};
 pub use rate_limit::RateLimitObservation;
 pub use request_executor::{
     ProviderRetryProgress, ProviderRetryProgressCallback, StreamingCallbackData,
@@ -72,58 +80,9 @@ pub use shape::{
     extract_provider_turn_with_scope_and_messages,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderToolSchemaReadiness {
-    pub active_model: String,
-    pub structured_tool_schema_enabled: bool,
-    pub effective_tool_schema_mode: String,
-}
-
-pub fn provider_tool_schema_readiness(config: &LoongConfig) -> ProviderToolSchemaReadiness {
-    let provider = &config.provider;
-    let runtime_contract = provider_runtime_contract(provider);
-    let capability_profile = capability_profile_runtime::ProviderCapabilityProfile::from_provider(
-        provider,
-        runtime_contract,
-    );
-    let active_model = provider.model.clone();
-    let capability = capability_profile.resolve_for_model(active_model.as_str());
-    let effective_tool_schema_mode = match capability.tool_schema_mode {
-        contracts::ProviderToolSchemaMode::Disabled => "disabled",
-        contracts::ProviderToolSchemaMode::EnabledStrict => "enabled_strict",
-        contracts::ProviderToolSchemaMode::EnabledWithDowngradeOnUnsupported => {
-            "enabled_with_downgrade"
-        }
-    };
-    let structured_tool_schema_enabled = capability.turn_tool_schema_enabled();
-
-    ProviderToolSchemaReadiness {
-        active_model,
-        structured_tool_schema_enabled,
-        effective_tool_schema_mode: effective_tool_schema_mode.to_owned(),
-    }
-}
-
-pub fn provider_http_client_runtime_metrics_snapshot() -> ProviderHttpClientRuntimeMetricsSnapshot {
-    http_client_runtime::provider_http_client_runtime_metrics_snapshot()
-}
-
-pub fn provider_failover_metrics_snapshot() -> ProviderFailoverMetricsSnapshot {
-    failover_telemetry_runtime::provider_failover_metrics_snapshot()
-}
-
-pub fn is_auth_style_failure_message(message: &str) -> bool {
-    matches!(
-        profile_health_policy::classify_profile_failure_reason_from_message(message),
-        ProviderFailoverReason::AuthRejected
-    )
-}
-
 #[cfg(test)]
 use auth_profile_runtime::{ProviderAuthProfile, resolve_provider_auth_profiles};
-use catalog_query_runtime::{
-    fetch_available_models_with_profiles, fetch_model_catalog_with_profiles,
-};
+use catalog_query_runtime::fetch_model_catalog_with_profiles;
 #[cfg(test)]
 use catalog_runtime::{
     ModelCatalogCache, clear_model_catalog_singleflight_slot,
@@ -220,6 +179,14 @@ pub fn build_system_message(config: &LoongConfig, include_system_prompt: bool) -
     request_message_runtime::build_system_message(config, include_system_prompt)
 }
 
+pub fn native_query_search_label(config: &LoongConfig) -> Option<String> {
+    native_tool_surface::provider_tool_surface(config).native_query_search_label()
+}
+
+pub fn native_query_search_active(config: &LoongConfig) -> bool {
+    native_tool_surface::provider_tool_surface(config).native_query_search_active()
+}
+
 pub(crate) use request_message_runtime::build_projected_context_for_session_with_binding;
 pub(crate) use request_message_runtime::project_hydrated_memory_context_for_view_with_binding;
 
@@ -302,13 +269,10 @@ pub async fn request_turn_in_view_with_retry_progress(
     let session = prepare_provider_request_session(config).await?;
     let tool_runtime_config =
         crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None);
-    let runtime_tool_view =
-        crate::tools::runtime_tool_view_with_runtime_config(&config.tools, &tool_runtime_config);
-    let tool_definitions = if tool_view == &runtime_tool_view {
-        crate::tools::provider_tool_definitions_with_config(Some(&tool_runtime_config))
-    } else {
-        crate::tools::try_provider_tool_definitions_for_view(tool_view)?
-    };
+    let provider_tool_surface = native_tool_surface::provider_tool_surface(config);
+    let surface_plan =
+        provider_tool_surface.materialize(config, tool_view, &tool_runtime_config)?;
+    let tool_definitions = surface_plan.request.tool_definitions;
     request_across_model_candidates(
         &config.provider,
         binding,
@@ -389,13 +353,10 @@ pub async fn request_turn_streaming_in_view_with_retry_progress(
     let session = prepare_provider_request_session(config).await?;
     let tool_runtime_config =
         crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None);
-    let runtime_tool_view =
-        crate::tools::runtime_tool_view_with_runtime_config(&config.tools, &tool_runtime_config);
-    let tool_definitions = if tool_view == &runtime_tool_view {
-        crate::tools::provider_tool_definitions_with_config(Some(&tool_runtime_config))
-    } else {
-        crate::tools::try_provider_tool_definitions_for_view(tool_view)?
-    };
+    let provider_tool_surface = native_tool_surface::provider_tool_surface(config);
+    let surface_plan =
+        provider_tool_surface.materialize(config, tool_view, &tool_runtime_config)?;
+    let tool_definitions = surface_plan.request.tool_definitions;
     request_across_model_candidates(
         &config.provider,
         binding,
@@ -425,11 +386,6 @@ pub async fn request_turn_streaming_in_view_with_retry_progress(
     .await
 }
 
-pub fn supports_turn_streaming_events(config: &LoongConfig) -> bool {
-    let runtime_contract = provider_runtime_contract(&config.provider);
-    runtime_contract.supports_turn_streaming_events()
-}
-
 pub async fn request_turn_streaming_in_view(
     config: &LoongConfig,
     session_id: &str,
@@ -445,38 +401,10 @@ pub async fn request_turn_streaming_in_view(
     .await
 }
 
-pub async fn fetch_available_models(config: &LoongConfig) -> CliResult<Vec<String>> {
-    fetch_available_models_with_profiles(config).await
-}
-
 pub async fn fetch_model_catalog(
     config: &LoongConfig,
 ) -> CliResult<Vec<ProviderModelCatalogEntry>> {
     fetch_model_catalog_with_profiles(config).await
-}
-
-pub async fn provider_auth_ready(config: &LoongConfig) -> bool {
-    if config.provider.resolved_auth_secret().is_some() {
-        return true;
-    }
-
-    for header_name in ["authorization", "x-api-key"] {
-        if config
-            .provider
-            .header_value(header_name)
-            .is_some_and(|value| !value.trim().is_empty())
-        {
-            return true;
-        }
-    }
-
-    if config.provider.kind == crate::config::ProviderKind::Bedrock
-        && let Ok(auth_context) = transport::resolve_request_auth_context(&config.provider).await
-    {
-        return auth_context.has_bedrock_sigv4_fallback();
-    }
-
-    false
 }
 
 #[cfg(test)]

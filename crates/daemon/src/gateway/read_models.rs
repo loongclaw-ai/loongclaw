@@ -252,11 +252,18 @@ pub struct GatewayRuntimeSnapshotChannelsReadModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GatewayWebAccessReadModel {
+pub struct GatewayToolAccessReadModel {
     pub ordinary_network_access_enabled: bool,
     pub query_search_enabled: bool,
     pub query_search_default_provider: String,
+    pub query_search_source: String,
+    pub query_search_provider_label: String,
     pub query_search_credential_ready: bool,
+    pub browser_page_access_enabled: bool,
+    pub managed_browser_session_enabled: bool,
+    pub managed_browser_session_ready: bool,
+    pub consent_mode: String,
+    pub approval_mode: String,
     pub separation_note: String,
 }
 
@@ -271,7 +278,7 @@ pub struct GatewayRuntimeSnapshotToolsReadModel {
     pub capability_snapshot_sha256: String,
     pub capability_snapshot: String,
     pub tool_calling: GatewayToolCallingReadModel,
-    pub web_access: GatewayWebAccessReadModel,
+    pub access: GatewayToolAccessReadModel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,7 +304,7 @@ pub struct GatewayRuntimeSnapshotReadModel {
     pub tool_runtime: Value,
     pub tools: GatewayRuntimeSnapshotToolsReadModel,
     pub runtime_plugins: Value,
-    pub external_skills: Value,
+    pub skills: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -388,7 +395,7 @@ pub struct GatewayOperatorRuntimeSummaryReadModel {
     pub active_provider_label: Option<String>,
     pub compaction_hygiene: crate::RuntimeSnapshotCompactionHygieneState,
     pub tool_calling: GatewayToolCallingReadModel,
-    pub web_access: GatewayWebAccessReadModel,
+    pub access: GatewayToolAccessReadModel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -719,7 +726,8 @@ pub fn build_runtime_snapshot_read_model(
         enabled_outbound_only_channel_ids,
         inventory,
     };
-    let tool_runtime = crate::runtime_snapshot_tool_runtime_json(&snapshot.tool_runtime);
+    let tool_runtime =
+        crate::runtime_snapshot_tool_runtime_json(&snapshot.tool_runtime, &snapshot.tool_access);
     let visible_tool_count = snapshot.visible_tool_names.len();
     let visible_tool_names = snapshot.visible_tool_names.clone();
     let visible_direct_tool_names = snapshot
@@ -737,7 +745,7 @@ pub fn build_runtime_snapshot_read_model(
     let capability_snapshot_sha256 = snapshot.capability_snapshot_sha256.clone();
     let capability_snapshot = snapshot.capability_snapshot.clone();
     let tool_calling = build_tool_calling_read_model(&snapshot.tool_calling);
-    let web_access = build_web_access_read_model(&snapshot.tool_runtime);
+    let access = build_tool_access_read_model(&snapshot.tool_access);
     let tools = GatewayRuntimeSnapshotToolsReadModel {
         visible_tool_count,
         visible_tool_names,
@@ -748,10 +756,10 @@ pub fn build_runtime_snapshot_read_model(
         capability_snapshot_sha256,
         capability_snapshot,
         tool_calling,
-        web_access,
+        access,
     };
     let runtime_plugins = crate::runtime_snapshot_runtime_plugins_json(&snapshot.runtime_plugins);
-    let external_skills = crate::runtime_snapshot_external_skills_json(&snapshot.external_skills);
+    let skills = crate::runtime_snapshot_skills_json(&snapshot.skills);
 
     GatewayRuntimeSnapshotReadModel {
         config,
@@ -764,7 +772,7 @@ pub fn build_runtime_snapshot_read_model(
         tool_runtime,
         tools,
         runtime_plugins,
-        external_skills,
+        skills,
     }
 }
 
@@ -1524,7 +1532,7 @@ fn build_operator_runtime_summary_read_model(
     let compaction_hygiene =
         crate::RuntimeSnapshotCompactionHygieneState::decode_or_unknown(compaction_hygiene);
     let tool_calling = runtime_snapshot.tools.tool_calling.clone();
-    let web_access = runtime_snapshot.tools.web_access.clone();
+    let access = runtime_snapshot.tools.access.clone();
 
     GatewayOperatorRuntimeSummaryReadModel {
         enabled_channel_ids,
@@ -1540,7 +1548,7 @@ fn build_operator_runtime_summary_read_model(
         active_provider_label,
         compaction_hygiene,
         tool_calling,
-        web_access,
+        access,
     }
 }
 
@@ -1641,16 +1649,21 @@ fn managed_bridge_trust_state(
     }
 }
 
-fn build_web_access_read_model(
-    runtime: &mvp::tools::runtime_config::ToolRuntimeConfig,
-) -> GatewayWebAccessReadModel {
-    let summary = crate::runtime_web_access_summary(runtime);
-
-    GatewayWebAccessReadModel {
+fn build_tool_access_read_model(
+    summary: &crate::RuntimeToolAccessSummary,
+) -> GatewayToolAccessReadModel {
+    GatewayToolAccessReadModel {
         ordinary_network_access_enabled: summary.ordinary_network_access_enabled,
         query_search_enabled: summary.query_search_enabled,
-        query_search_default_provider: summary.query_search_default_provider,
+        query_search_default_provider: summary.query_search_default_provider.clone(),
+        query_search_source: summary.query_search_source.to_owned(),
+        query_search_provider_label: summary.query_search_provider_label.clone(),
         query_search_credential_ready: summary.query_search_credential_ready,
+        browser_page_access_enabled: summary.browser_page_access_enabled,
+        managed_browser_session_enabled: summary.managed_browser_session_enabled,
+        managed_browser_session_ready: summary.managed_browser_session_ready,
+        consent_mode: summary.consent_mode.to_owned(),
+        approval_mode: summary.approval_mode.to_owned(),
         separation_note: summary.separation_note.to_owned(),
     }
 }
@@ -1658,13 +1671,14 @@ fn build_web_access_read_model(
 fn build_tool_surface_read_model(
     surface: &mvp::tools::ToolSurfaceState,
 ) -> GatewayToolSurfaceReadModel {
+    let visible_tool_names = visible_tool_names_for_surface(surface);
     GatewayToolSurfaceReadModel {
         surface_id: surface.surface_id.clone(),
         prompt_snippet: surface.prompt_snippet.clone(),
         usage_guidance: surface.usage_guidance.clone(),
         tool_count: surface.tool_count(),
-        visible_tool_names: visible_tool_names_for_surface(surface),
-        tool_ids: surface.tool_ids.clone(),
+        visible_tool_names: visible_tool_names.clone(),
+        tool_ids: visible_tool_names,
     }
 }
 
@@ -2270,16 +2284,23 @@ mod tests {
                     active_model: "gpt-4.1-mini".to_owned(),
                     reason: "test".to_owned(),
                 },
-                web_access: GatewayWebAccessReadModel {
+                access: GatewayToolAccessReadModel {
                     ordinary_network_access_enabled: false,
                     query_search_enabled: false,
                     query_search_default_provider: "duckduckgo".to_owned(),
+                    query_search_source: "external_provider".to_owned(),
+                    query_search_provider_label: "DuckDuckGo".to_owned(),
                     query_search_credential_ready: false,
-                    separation_note: crate::RUNTIME_WEB_ACCESS_SEPARATION_NOTE.to_owned(),
+                    browser_page_access_enabled: false,
+                    managed_browser_session_enabled: false,
+                    managed_browser_session_ready: false,
+                    consent_mode: "full".to_owned(),
+                    approval_mode: "disabled".to_owned(),
+                    separation_note: crate::RUNTIME_TOOL_ACCESS_SEPARATION_NOTE.to_owned(),
                 },
             },
             runtime_plugins: serde_json::json!({}),
-            external_skills: serde_json::json!({}),
+            skills: serde_json::json!({}),
         };
 
         let summary =
@@ -2344,7 +2365,7 @@ mod tests {
         assert_eq!(read_model.surface_id, "read");
         assert_eq!(read_model.tool_count, 2);
         assert_eq!(read_model.visible_tool_names, vec!["read", "write"]);
-        assert_eq!(read_model.tool_ids, vec!["file.read", "file.write"]);
+        assert_eq!(read_model.tool_ids, vec!["read", "write"]);
         assert_eq!(read_model.usage_guidance, "prefer direct read before shell");
     }
 
@@ -2430,23 +2451,30 @@ mod tests {
                     active_model: "gpt-4.1-mini".to_owned(),
                     reason: "runtime ready".to_owned(),
                 },
-                web_access: GatewayWebAccessReadModel {
+                access: GatewayToolAccessReadModel {
                     ordinary_network_access_enabled: true,
                     query_search_enabled: false,
                     query_search_default_provider: "duckduckgo".to_owned(),
+                    query_search_source: "external_provider".to_owned(),
+                    query_search_provider_label: "DuckDuckGo".to_owned(),
                     query_search_credential_ready: true,
-                    separation_note: crate::RUNTIME_WEB_ACCESS_SEPARATION_NOTE.to_owned(),
+                    browser_page_access_enabled: true,
+                    managed_browser_session_enabled: false,
+                    managed_browser_session_ready: false,
+                    consent_mode: "full".to_owned(),
+                    approval_mode: "disabled".to_owned(),
+                    separation_note: crate::RUNTIME_TOOL_ACCESS_SEPARATION_NOTE.to_owned(),
                 },
             },
             runtime_plugins: serde_json::json!({}),
-            external_skills: serde_json::json!({}),
+            skills: serde_json::json!({}),
         };
 
         let summary = build_operator_runtime_summary_read_model(&runtime_snapshot);
 
         assert_eq!(summary.visible_direct_tool_names, vec!["read", "write"]);
         assert_eq!(summary.hidden_tool_surface_ids, vec!["agent", "web"]);
-        assert!(summary.web_access.ordinary_network_access_enabled);
-        assert!(!summary.web_access.query_search_enabled);
+        assert!(summary.access.ordinary_network_access_enabled);
+        assert!(!summary.access.query_search_enabled);
     }
 }

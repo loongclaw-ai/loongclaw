@@ -387,7 +387,7 @@ mod tests {
         let summary = ChatControlPlaneApprovalSummary::from_record(&record);
 
         assert_eq!(summary.tool_name, "shell.exec");
-        assert_eq!(summary.visible_tool_name, "exec");
+        assert_eq!(summary.visible_tool_name, "bash");
         assert_eq!(summary.request_summary, serde_json::json!({}));
         assert_eq!(
             summary.reason.as_deref(),

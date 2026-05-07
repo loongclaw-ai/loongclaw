@@ -402,7 +402,7 @@ pub struct DiscoveryFirstEventSummary {
     pub followup_requested_events: u32,
     pub followup_result_events: u32,
     pub raw_output_followup_events: u32,
-    pub search_to_invoke_hits: u32,
+    pub legacy_hidden_tool_wrapper_hits: u32,
     pub aggregate_added_estimated_tokens: u64,
     pub added_estimated_token_samples: u32,
     pub average_added_estimated_tokens: Option<u32>,
@@ -868,11 +868,13 @@ fn fold_discovery_first_event_record(
             }
             if record
                 .payload
-                .get("resolved_to_tool_invoke")
+                .get("used_legacy_hidden_tool_wrapper")
+                .or_else(|| record.payload.get("resolved_to_tool_invoke"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
             {
-                summary.search_to_invoke_hits = summary.search_to_invoke_hits.saturating_add(1);
+                summary.legacy_hidden_tool_wrapper_hits =
+                    summary.legacy_hidden_tool_wrapper_hits.saturating_add(1);
             }
 
             if let Some(outcome) = outcome {
@@ -3298,10 +3300,10 @@ mod tests {
                 "event": "discovery_first_followup_result",
                 "payload": {
                     "provider_round": 1,
-                    "outcome": "tool.invoke",
-                    "followup_tool_name": "tool.invoke",
-                    "followup_target_tool_id": "file.read",
-                    "resolved_to_tool_invoke": true,
+                    "outcome": "hidden tool",
+                    "followup_tool_name": "hidden tool",
+                    "followup_target_tool_id": "read",
+                    "used_legacy_hidden_tool_wrapper": true,
                     "raw_tool_output_requested": true
                 }
             })
@@ -3313,25 +3315,25 @@ mod tests {
         assert_eq!(summary.followup_requested_events, 1);
         assert_eq!(summary.followup_result_events, 1);
         assert_eq!(summary.raw_output_followup_events, 1);
-        assert_eq!(summary.search_to_invoke_hits, 1);
+        assert_eq!(summary.legacy_hidden_tool_wrapper_hits, 1);
         assert_eq!(summary.aggregate_added_estimated_tokens, 9);
         assert_eq!(summary.average_added_estimated_tokens, Some(9));
         assert_eq!(
             summary.latest_followup_outcome.as_deref(),
-            Some("tool.invoke")
+            Some("hidden tool")
         );
         assert_eq!(
             summary.latest_followup_tool_name.as_deref(),
-            Some("tool.invoke")
+            Some("hidden tool")
         );
         assert_eq!(
             summary.latest_followup_target_tool_id.as_deref(),
-            Some("file.read")
+            Some("read")
         );
         assert_eq!(summary.latest_initial_estimated_tokens, Some(12));
         assert_eq!(summary.latest_followup_estimated_tokens, Some(21));
         assert_eq!(summary.latest_added_estimated_tokens, Some(9));
-        assert_eq!(summary.outcome_counts.get("tool.invoke").copied(), Some(1));
+        assert_eq!(summary.outcome_counts.get("hidden tool").copied(), Some(1));
     }
 
     #[test]
@@ -3339,9 +3341,9 @@ mod tests {
         let payloads = [
             r#"{"type":"conversation_event","event":"discovery_first_search_round","payload":{"provider_round":0,"search_tool_calls":1}}"#,
             r#"{"type":"conversation_event","event":"discovery_first_followup_requested","payload":{"provider_round":1,"initial_estimated_tokens":20,"followup_estimated_tokens":32,"followup_added_estimated_tokens":12}}"#,
-            r#"{"type":"conversation_event","event":"discovery_first_followup_result","payload":{"provider_round":1,"outcome":"final_reply","resolved_to_tool_invoke":false}}"#,
-            r#"{"type":"conversation_event","event":"discovery_first_followup_noise","payload":{"outcome":"tool.invoke","resolved_to_tool_invoke":true,"followup_added_estimated_tokens":999}}"#,
-            r#"{"type":"tool_outcome","event":"discovery_first_followup_result","payload":{"outcome":"tool.invoke"}}"#,
+            r#"{"type":"conversation_event","event":"discovery_first_followup_result","payload":{"provider_round":1,"outcome":"final_reply","used_legacy_hidden_tool_wrapper":false}}"#,
+            r#"{"type":"conversation_event","event":"discovery_first_followup_noise","payload":{"outcome":"hidden tool","used_legacy_hidden_tool_wrapper":true,"followup_added_estimated_tokens":999}}"#,
+            r#"{"type":"tool_outcome","event":"discovery_first_followup_result","payload":{"outcome":"hidden tool"}}"#,
         ];
 
         let summary = summarize_discovery_first_events(payloads.iter().copied());
@@ -3349,7 +3351,7 @@ mod tests {
         assert_eq!(summary.followup_requested_events, 1);
         assert_eq!(summary.followup_result_events, 1);
         assert_eq!(summary.raw_output_followup_events, 0);
-        assert_eq!(summary.search_to_invoke_hits, 0);
+        assert_eq!(summary.legacy_hidden_tool_wrapper_hits, 0);
         assert_eq!(summary.aggregate_added_estimated_tokens, 12);
         assert_eq!(summary.average_added_estimated_tokens, Some(12));
         assert_eq!(
@@ -3362,7 +3364,7 @@ mod tests {
         assert_eq!(summary.latest_followup_estimated_tokens, Some(32));
         assert_eq!(summary.latest_added_estimated_tokens, Some(12));
         assert_eq!(summary.outcome_counts.get("final_reply").copied(), Some(1));
-        assert_eq!(summary.outcome_counts.get("tool.invoke").copied(), None);
+        assert_eq!(summary.outcome_counts.get("hidden tool").copied(), None);
     }
 
     #[test]
@@ -3475,9 +3477,9 @@ mod tests {
             "event": "discovery_first_followup_result",
             "payload": {
                 "raw_tool_output_requested": true,
-                "resolved_to_tool_invoke": true,
-                "followup_tool_name": "tool.invoke",
-                "followup_target_tool_id": "file.read"
+                "used_legacy_hidden_tool_wrapper": true,
+                "followup_tool_name": "hidden tool",
+                "followup_target_tool_id": "read"
             }
         })
         .to_string()];
@@ -3486,14 +3488,14 @@ mod tests {
 
         assert_eq!(summary.followup_result_events, 0);
         assert_eq!(summary.raw_output_followup_events, 1);
-        assert_eq!(summary.search_to_invoke_hits, 1);
+        assert_eq!(summary.legacy_hidden_tool_wrapper_hits, 1);
         assert_eq!(
             summary.latest_followup_tool_name.as_deref(),
-            Some("tool.invoke")
+            Some("hidden tool")
         );
         assert_eq!(
             summary.latest_followup_target_tool_id.as_deref(),
-            Some("file.read")
+            Some("read")
         );
         assert_eq!(summary.latest_followup_outcome, None);
         assert!(summary.outcome_counts.is_empty());

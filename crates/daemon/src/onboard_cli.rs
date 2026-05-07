@@ -8,11 +8,9 @@ use std::time::Duration;
 
 use dialoguer::console::{Term, user_attended};
 use dialoguer::theme::ColorfulTheme;
-use kernel::ToolCoreRequest;
 use loong_app as mvp;
 use loong_contracts::SecretRef;
 use loong_spec::CliResult;
-use serde_json::json;
 
 use crate::copilot_onboarding::finalize_github_copilot_onboard_credentials;
 use crate::onboard_finalize::{
@@ -39,19 +37,20 @@ pub use crate::onboard_types::OnboardingCredentialSummary;
 #[cfg(test)]
 use crate::onboard_web_search::{
     WebSearchProviderRecommendation, WebSearchProviderRecommendationSource,
-    explicit_web_search_provider_override,
     recommend_web_search_provider_from_available_credentials,
 };
 use crate::onboard_web_search::{
-    configured_web_search_provider_credential_source_value,
-    configured_web_search_provider_env_name, configured_web_search_provider_secret,
-    current_web_search_provider, preferred_web_search_credential_env_default,
+    current_web_search_provider, explicit_web_search_provider_override,
     resolve_effective_web_search_default_provider, resolve_web_search_provider_recommendation,
-    summarize_web_search_provider_credential, web_search_provider_display_name,
-    web_search_provider_has_inline_credential,
 };
 use crate::onboarding_model_policy;
 use crate::provider_credential_policy;
+use crate::query_search_guidance::{
+    configured_query_search_credential_env_name, configured_query_search_credential_source_value,
+    configured_query_search_secret, preferred_query_search_credential_env_default,
+    query_search_has_inline_credential, query_search_provider_display_name,
+    summarize_query_search_credential,
+};
 use mvp::tui_surface::{
     TuiCalloutTone, TuiChoiceSpec, TuiHeaderStyle, TuiScreenSpec, TuiSectionSpec,
     render_onboard_screen_spec,
@@ -703,13 +702,13 @@ fn resolve_preinstalled_skill_selection(
     parse_preinstalled_skill_selection(raw.as_str())
 }
 
-fn onboarding_default_external_skills_install_root(output_path: &Path) -> PathBuf {
+fn onboarding_default_skills_install_root(output_path: &Path) -> PathBuf {
     let base_dir = output_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .map(Path::to_path_buf)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    base_dir.join("external-skills-installed")
+    base_dir.join(".loong/skills")
 }
 
 fn apply_selected_preinstalled_skills_to_config(
@@ -720,11 +719,11 @@ fn apply_selected_preinstalled_skills_to_config(
     if selected_skill_ids.is_empty() {
         return;
     }
-    config.external_skills.enabled = true;
-    config.external_skills.auto_expose_installed = true;
-    if config.external_skills.install_root.is_none() {
-        config.external_skills.install_root = Some(
-            onboarding_default_external_skills_install_root(output_path)
+    config.skills.enabled = true;
+    config.skills.auto_expose_installed = true;
+    if config.skills.install_root.is_none() {
+        config.skills.install_root = Some(
+            onboarding_default_skills_install_root(output_path)
                 .display()
                 .to_string(),
         );
@@ -736,9 +735,9 @@ fn install_root_for_onboarded_skills(
     config_path: &Path,
 ) -> PathBuf {
     config
-        .external_skills
+        .skills
         .resolved_install_root()
-        .unwrap_or_else(|| onboarding_default_external_skills_install_root(config_path))
+        .unwrap_or_else(|| onboarding_default_skills_install_root(config_path))
 }
 
 fn install_selected_preinstalled_skills(
@@ -753,31 +752,24 @@ fn install_selected_preinstalled_skills(
     let install_root = install_root_for_onboarded_skills(config, config_path);
     let tool_runtime_config =
         mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, Some(config_path));
-    let mut installed_now = Vec::new();
+    let mut installed_now: Vec<String> = Vec::new();
 
     for skill_id in selected_skill_ids {
         if install_root.join(skill_id).join("SKILL.md").is_file() {
             continue;
         }
-        let request = ToolCoreRequest {
-            tool_name: "external_skills.install".to_owned(),
-            payload: json!({
-                "bundled_skill_id": skill_id,
-                "replace": false,
-            }),
-        };
-        if let Err(error) = mvp::tools::execute_tool_core_with_config(request, &tool_runtime_config)
-        {
+        if let Err(error) = mvp::tools::skills_install_with_config(
+            None,
+            Some(skill_id.as_str()),
+            None,
+            None,
+            false,
+            false,
+            &tool_runtime_config,
+        ) {
             for installed_skill_id in installed_now.iter().rev() {
-                let _ = mvp::tools::execute_tool_core_with_config(
-                    ToolCoreRequest {
-                        tool_name: "external_skills.remove".to_owned(),
-                        payload: json!({
-                            "skill_id": installed_skill_id,
-                        }),
-                    },
-                    &tool_runtime_config,
-                );
+                let _ =
+                    mvp::tools::skills_remove_with_config(installed_skill_id, &tool_runtime_config);
             }
             return Err(format!(
                 "failed to install selected bundled skill `{skill_id}`: {error}"
@@ -2466,6 +2458,11 @@ async fn resolve_web_search_provider_selection(
     ui: &mut impl OnboardUi,
     context: &OnboardRuntimeContext,
 ) -> CliResult<String> {
+    let explicit_override = explicit_web_search_provider_override(options)?;
+    if mvp::provider::native_query_search_active(config) && explicit_override.is_none() {
+        return Ok(current_web_search_provider(config).to_owned());
+    }
+
     let recommendation = resolve_web_search_provider_recommendation(options, config).await?;
     let recommended_provider = recommendation.provider;
     let default_provider =
@@ -2494,14 +2491,14 @@ async fn resolve_web_search_provider_selection(
         ),
     )?;
     let idx = ui.select_one(
-        "Web search provider",
+        crate::access_terms::QUERY_SEARCH_PROVIDER_LABEL,
         &select_options,
         default_idx,
         SelectInteractionMode::List,
     )?;
     let selected = select_options
         .get(idx)
-        .ok_or_else(|| format!("web search provider selection index {idx} out of range"))?;
+        .ok_or_else(|| crate::access_terms::query_search_provider_selection_index_error(idx))?;
     Ok(selected.slug.clone())
 }
 
@@ -2514,6 +2511,11 @@ fn resolve_web_search_credential_selection(
     ui: &mut impl OnboardUi,
     context: &OnboardRuntimeContext,
 ) -> CliResult<WebSearchCredentialSelection> {
+    let explicit_override = explicit_web_search_provider_override(options)?;
+    if mvp::provider::native_query_search_active(config) && explicit_override.is_none() {
+        return Ok(WebSearchCredentialSelection::KeepCurrent);
+    }
+
     let Some(descriptor) = mvp::config::web_search_provider_descriptor(provider) else {
         return Ok(WebSearchCredentialSelection::KeepCurrent);
     };
@@ -2538,7 +2540,7 @@ fn resolve_web_search_credential_selection(
         None
     };
 
-    let prompt_default = preferred_web_search_credential_env_default(config, provider);
+    let prompt_default = preferred_query_search_credential_env_default(config, provider);
     if non_interactive {
         if let Some(explicit_env_name) = explicit_selection {
             return Ok(WebSearchCredentialSelection::UseEnv(explicit_env_name));
@@ -2571,7 +2573,10 @@ fn resolve_web_search_credential_selection(
                 true,
             ),
         )?;
-        let value = ui.prompt_with_default("Web search credential env var name", initial_value)?;
+        let value = ui.prompt_with_default(
+            crate::access_terms::query_search_credential_prompt_label(),
+            initial_value,
+        )?;
         if is_explicit_onboard_clear_input(&value) {
             return Ok(WebSearchCredentialSelection::ClearConfigured);
         }
@@ -2585,8 +2590,8 @@ fn resolve_web_search_credential_selection(
                 print_message(ui, error)?;
                 print_message(
                     ui,
-                    format!(
-                        "enter the environment variable name only, for example {example_env_name}, or type :clear to remove the configured web search credential"
+                    crate::access_terms::query_search_credential_input_hint(
+                        example_env_name.as_str(),
                     ),
                 )?;
             }
@@ -2602,9 +2607,7 @@ fn build_web_search_provider_screen_options(
         .iter()
         .map(|descriptor| {
             let mut detail_lines = vec![descriptor.description.to_owned()];
-            if let Some(credential) =
-                summarize_web_search_provider_credential(config, descriptor.id)
-            {
+            if let Some(credential) = summarize_query_search_credential(config, descriptor.id) {
                 detail_lines.push(format!("{}: {}", credential.label, credential.value));
             }
             OnboardScreenOption {
@@ -2627,9 +2630,9 @@ fn render_web_search_provider_selection_screen_lines_with_style(
     color_enabled: bool,
 ) -> Vec<String> {
     let current_provider = current_web_search_provider(config);
-    let current_provider_label = web_search_provider_display_name(current_provider);
-    let recommended_provider_label = web_search_provider_display_name(recommended_provider);
-    let default_provider_label = web_search_provider_display_name(default_provider);
+    let current_provider_label = query_search_provider_display_name(current_provider);
+    let recommended_provider_label = query_search_provider_display_name(recommended_provider);
+    let default_provider_label = query_search_provider_display_name(default_provider);
     let options = build_web_search_provider_screen_options(config, recommended_provider);
     let default_footer_description = if default_provider == current_provider {
         format!("keep {current_provider_label}")
@@ -2640,8 +2643,8 @@ fn render_web_search_provider_selection_screen_lines_with_style(
     render_onboard_choice_screen(
         OnboardHeaderStyle::Compact,
         width,
-        "choose web search",
-        "choose web search provider",
+        crate::access_terms::CHOOSE_QUERY_SEARCH_TITLE,
+        crate::access_terms::CHOOSE_QUERY_SEARCH_PROVIDER_TITLE,
         Some((GuidedOnboardStep::WebSearchProvider, guided_prompt_path)),
         vec![
             format!("- current provider: {current_provider_label}"),
@@ -2709,9 +2712,7 @@ fn validate_selected_web_search_credential_env(
         })
         .unwrap_or("WEB_SEARCH_API_KEY");
 
-    Err(format!(
-        "web search credential source must be an environment variable name like {example_env_name}"
-    ))
+    Err(crate::access_terms::query_search_credential_source_validation_error(example_env_name))
 }
 
 fn apply_selected_web_search_credential(
@@ -3977,7 +3978,7 @@ fn render_web_search_credential_selection_default_hint_line(
         })
         .unwrap_or_default();
     let current_env =
-        configured_web_search_provider_env_name(config, provider).and_then(|env_name| {
+        configured_query_search_credential_env_name(config, provider).and_then(|env_name| {
             provider_credential_policy::render_provider_credential_source_value(Some(
                 env_name.as_str(),
             ))
@@ -4856,11 +4857,9 @@ fn render_web_search_credential_selection_screen_lines_with_style(
     width: usize,
     color_enabled: bool,
 ) -> Vec<String> {
-    let provider_label = web_search_provider_display_name(provider);
+    let provider_label = query_search_provider_display_name(provider);
     let mut context_lines = vec![format!("- provider: {provider_label}")];
-    if let Some(current_value) =
-        configured_web_search_provider_credential_source_value(config, provider)
-    {
+    if let Some(current_value) = configured_query_search_credential_source_value(config, provider) {
         let label = if current_value == "inline api key" {
             "- current credential: "
         } else {
@@ -4899,23 +4898,21 @@ fn render_web_search_credential_selection_screen_lines_with_style(
         })
         .unwrap_or("WEB_SEARCH_API_KEY");
     hint_lines.push(format!("- example: {example_env_name}"));
-    if prompt_default.trim().is_empty()
-        && web_search_provider_has_inline_credential(config, provider)
-    {
+    if prompt_default.trim().is_empty() && query_search_has_inline_credential(config, provider) {
         hint_lines.push("- leave this blank to keep inline credentials".to_owned());
     }
-    if configured_web_search_provider_secret(config, provider)
+    if configured_query_search_secret(config, provider)
         .map(str::trim)
         .is_some_and(|value| !value.is_empty())
     {
         hint_lines.push(render_clear_input_hint_line(
-            "clear the configured web search credential",
+            crate::access_terms::query_search_credential_clear_hint(),
         ));
     }
 
     render_onboard_input_screen(
         width,
-        "choose web search credential",
+        crate::access_terms::CHOOSE_QUERY_SEARCH_CREDENTIAL_TITLE,
         GuidedOnboardStep::WebSearchProvider,
         guided_prompt_path,
         context_lines,
@@ -5291,13 +5288,12 @@ fn build_onboard_review_digest_display_lines(config: &mvp::config::LoongConfig) 
     ));
 
     let web_search_provider =
-        web_search_provider_display_name(config.tools.web_search.default_provider.as_str());
+        query_search_provider_display_name(config.tools.web_search.default_provider.as_str());
     lines.push(onboard_display_line("- web search: ", &web_search_provider));
 
-    if let Some(web_search_credential) = summarize_web_search_provider_credential(
-        config,
-        config.tools.web_search.default_provider.as_str(),
-    ) {
+    if let Some(web_search_credential) =
+        summarize_query_search_credential(config, config.tools.web_search.default_provider.as_str())
+    {
         let credential_prefix = format!("- {}: ", web_search_credential.label);
         lines.push(onboard_display_line(
             &credential_prefix,

@@ -236,8 +236,6 @@ async fn build_doctor_security_execution(
 ) -> CliResult<DoctorSecurityAuditExecution> {
     let runtime =
         mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, Some(config_path));
-    let browser_companion_diagnostics =
-        crate::browser_companion_diagnostics::collect_browser_companion_diagnostics(config).await;
 
     let mut findings = Vec::new();
 
@@ -253,21 +251,17 @@ async fn build_doctor_security_execution(
     let web_fetch_finding = assess_web_fetch(runtime.web_fetch.clone());
     findings.push(web_fetch_finding);
 
-    let external_skills_finding =
-        match crate::external_skills_policy_probe::resolve_effective_external_skills_policy(
-            &runtime,
-        ) {
-            Ok(policy_probe) => assess_external_skills(policy_probe),
-            Err(error) => {
-                assess_external_skills_probe_failure(runtime.external_skills.clone(), error)
-            }
-        };
-    findings.push(external_skills_finding);
+    let skills_finding = match crate::skills_policy_probe::resolve_effective_skills_policy(&runtime)
+    {
+        Ok(policy_probe) => assess_skills(policy_probe),
+        Err(error) => assess_skills_probe_failure(runtime.skills.clone(), error),
+    };
+    findings.push(skills_finding);
 
     let secret_hygiene_finding = assess_secret_hygiene(config_path, config)?;
     findings.push(secret_hygiene_finding);
 
-    let browser_finding = assess_browser_surfaces(&runtime, browser_companion_diagnostics.as_ref());
+    let browser_finding = assess_browser_surfaces(&runtime);
     findings.push(browser_finding);
 
     let summary = summarize_findings(&findings);
@@ -575,29 +569,29 @@ fn assess_web_fetch(policy: mvp::tools::runtime_config::WebFetchRuntimePolicy) -
     )
 }
 
-fn assess_external_skills(
-    policy_probe: crate::external_skills_policy_probe::EffectiveExternalSkillsPolicyProbe,
+fn assess_skills(
+    policy_probe: crate::skills_policy_probe::EffectiveSkillsPolicyProbe,
 ) -> SecurityFinding {
     let policy = policy_probe.policy;
     let override_active = policy_probe.override_active;
     let mut evidence = Vec::new();
-    let enabled_evidence = format!("external_skills.enabled={}", policy.enabled);
+    let enabled_evidence = format!("skills.enabled={}", policy.enabled);
     evidence.push(enabled_evidence);
-    let override_active_evidence = format!("external_skills.override_active={override_active}");
+    let override_active_evidence = format!("skills.override_active={override_active}");
     evidence.push(override_active_evidence);
     let approval_evidence = format!(
-        "external_skills.require_download_approval={}",
+        "skills.require_download_approval={}",
         policy.require_download_approval
     );
     evidence.push(approval_evidence);
     let allow_count = policy.allowed_domains.len();
-    let allow_count_evidence = format!("external_skills.allowed_domains.count={allow_count}");
+    let allow_count_evidence = format!("skills.allowed_domains.count={allow_count}");
     evidence.push(allow_count_evidence);
     let block_count = policy.blocked_domains.len();
-    let block_count_evidence = format!("external_skills.blocked_domains.count={block_count}");
+    let block_count_evidence = format!("skills.blocked_domains.count={block_count}");
     evidence.push(block_count_evidence);
     let auto_expose_evidence = format!(
-        "external_skills.auto_expose_installed={}",
+        "skills.auto_expose_installed={}",
         policy.auto_expose_installed
     );
     evidence.push(auto_expose_evidence);
@@ -606,7 +600,7 @@ fn assess_external_skills(
         let summary = "External skills are disabled for this runtime.".to_owned();
         let next_steps = Vec::new();
         return build_finding(
-            "external_skills",
+            "skills",
             "External Skills",
             SecurityFindingStatus::Covered,
             SecurityFindingSeverity::Info,
@@ -621,12 +615,11 @@ fn assess_external_skills(
             "External skills are enabled with a posture that can auto-expose or download without explicit approval."
                 .to_owned();
         let next_steps = vec![
-            "Keep external_skills.require_download_approval = true.".to_owned(),
-            "Keep external_skills.auto_expose_installed = false until a review step completes."
-                .to_owned(),
+            "Keep skills.require_download_approval = true.".to_owned(),
+            "Keep skills.auto_expose_installed = false until a review step completes.".to_owned(),
         ];
         return build_finding(
-            "external_skills",
+            "skills",
             "External Skills",
             SecurityFindingStatus::Exposed,
             SecurityFindingSeverity::Critical,
@@ -641,13 +634,11 @@ fn assess_external_skills(
             .to_owned();
     let mut next_steps = Vec::new();
     if policy.allowed_domains.is_empty() {
-        next_steps.push(
-            "Pin external_skills.allowed_domains to the smallest trusted host set.".to_owned(),
-        );
+        next_steps.push("Pin skills.allowed_domains to the smallest trusted host set.".to_owned());
     }
     next_steps.push("Keep installed skills dark until operator review completes.".to_owned());
     build_finding(
-        "external_skills",
+        "skills",
         "External Skills",
         SecurityFindingStatus::Partial,
         SecurityFindingSeverity::Warn,
@@ -657,25 +648,25 @@ fn assess_external_skills(
     )
 }
 
-fn assess_external_skills_probe_failure(
-    config_projection: mvp::tools::runtime_config::ExternalSkillsRuntimePolicy,
+fn assess_skills_probe_failure(
+    config_projection: mvp::tools::runtime_config::SkillsRuntimePolicy,
     error: String,
 ) -> SecurityFinding {
     let mut evidence = Vec::new();
     let error_evidence = format!("effective_policy_probe.error={error}");
     evidence.push(error_evidence);
     let enabled_evidence = format!(
-        "config_projection.external_skills.enabled={}",
+        "config_projection.skills.enabled={}",
         config_projection.enabled
     );
     evidence.push(enabled_evidence);
     let approval_evidence = format!(
-        "config_projection.external_skills.require_download_approval={}",
+        "config_projection.skills.require_download_approval={}",
         config_projection.require_download_approval
     );
     evidence.push(approval_evidence);
     let auto_expose_evidence = format!(
-        "config_projection.external_skills.auto_expose_installed={}",
+        "config_projection.skills.auto_expose_installed={}",
         config_projection.auto_expose_installed
     );
     evidence.push(auto_expose_evidence);
@@ -686,11 +677,10 @@ fn assess_external_skills_probe_failure(
     let cli = mvp::config::active_cli_command_name();
     let next_steps = vec![
         format!("Run `{cli} skills policy show --json` to confirm the effective runtime policy."),
-        "Repair the external_skills.policy tool path before relying on this audit result."
-            .to_owned(),
+        "Repair the skills.policy tool path before relying on this audit result.".to_owned(),
     ];
     build_finding(
-        "external_skills",
+        "skills",
         "External Skills",
         SecurityFindingStatus::Unknown,
         SecurityFindingSeverity::Warn,
@@ -823,90 +813,27 @@ fn assess_secret_hygiene(
 
 fn assess_browser_surfaces(
     runtime: &mvp::tools::runtime_config::ToolRuntimeConfig,
-    diagnostics: Option<&crate::browser_companion_diagnostics::BrowserCompanionDiagnostics>,
 ) -> SecurityFinding {
     let browser_enabled = runtime.browser.enabled;
     let browser_tier = runtime.browser_execution_security_tier();
-    let companion_enabled = runtime.browser_companion.enabled;
-    let companion_tier = runtime.browser_companion_execution_security_tier();
 
     let mut evidence = Vec::new();
     let browser_enabled_evidence = format!("tools.browser.enabled={browser_enabled}");
     evidence.push(browser_enabled_evidence);
     let browser_tier_evidence = format!("browser.execution_tier={}", browser_tier.as_str());
     evidence.push(browser_tier_evidence);
-    let companion_enabled_evidence = format!("tools.browser_companion.enabled={companion_enabled}");
-    evidence.push(companion_enabled_evidence);
-    let companion_tier_evidence = format!(
-        "browser_companion.execution_tier={}",
-        companion_tier.as_str()
-    );
-    evidence.push(companion_tier_evidence);
-
-    if !companion_enabled {
-        let summary = if browser_enabled {
-            "Browser automation stays on the built-in restricted lane because the managed browser companion is disabled."
-                .to_owned()
-        } else {
-            "Browser automation surfaces are disabled.".to_owned()
-        };
-        let next_steps = Vec::new();
-        return build_finding(
-            "browser_surfaces",
-            "Browser Surfaces",
-            SecurityFindingStatus::Covered,
-            SecurityFindingSeverity::Info,
-            summary,
-            evidence,
-            next_steps,
-        );
-    }
-
-    if let Some(diagnostics) = diagnostics {
-        let install_evidence =
-            format!("browser_companion.install={}", diagnostics.install_detail());
-        evidence.push(install_evidence);
-        if let Some(runtime_gate_detail) = diagnostics.runtime_gate_detail() {
-            let gate_evidence = format!("browser_companion.runtime_gate={runtime_gate_detail}");
-            evidence.push(gate_evidence);
-        }
-
-        if !diagnostics.install_ready() || !diagnostics.runtime_ready {
-            let summary =
-                "The browser companion lane is enabled, but install or runtime readiness is still incomplete."
-                    .to_owned();
-            let next_steps = vec![
-                "Keep the built-in browser lane as the active path until the companion runtime is fully ready."
-                    .to_owned(),
-                format!(
-                    "Run {} doctor to repair the companion install/runtime gate.",
-                    mvp::config::active_cli_command_name()
-                ),
-            ];
-            return build_finding(
-                "browser_surfaces",
-                "Browser Surfaces",
-                SecurityFindingStatus::Partial,
-                SecurityFindingSeverity::Warn,
-                summary,
-                evidence,
-                next_steps,
-            );
-        }
-    }
-
-    let summary =
-        "The managed browser companion lane is active, but this command does not prove remote/browser auth equivalence beyond local runtime readiness."
-            .to_owned();
-    let next_steps = vec![
-        "Keep browser companion deployment local-first unless you have separately reviewed its auth boundary."
-            .to_owned(),
-    ];
+    let summary = if browser_enabled {
+        "Built-in browse stays on the restricted lane, and richer browser automation is expected to run through an external skill or plugin."
+            .to_owned()
+    } else {
+        "Browser automation surfaces are disabled.".to_owned()
+    };
+    let next_steps = Vec::new();
     build_finding(
         "browser_surfaces",
         "Browser Surfaces",
-        SecurityFindingStatus::Unknown,
-        SecurityFindingSeverity::Warn,
+        SecurityFindingStatus::Covered,
+        SecurityFindingSeverity::Info,
         summary,
         evidence,
         next_steps,
@@ -1656,10 +1583,8 @@ fn config_file_permission_issue(config_path: &Path) -> CliResult<Option<String>>
 mod tests {
     use super::*;
 
-    use crate::test_support::ScopedEnv;
     use loong_contracts::SecretRef;
     use std::path::PathBuf;
-    use std::process::Command;
     use std::sync::MutexGuard;
 
     fn temp_config_path(label: &str) -> PathBuf {
@@ -1682,30 +1607,12 @@ mod tests {
             .unwrap_or_else(|| panic!("missing finding `{id}`"))
     }
 
-    fn portable_browser_companion_probe() -> (String, String) {
-        let output = Command::new("rustc")
-            .arg("--version")
-            .output()
-            .expect("run rustc --version");
-        assert!(output.status.success(), "rustc --version should succeed");
-
-        let observed_version = String::from_utf8(output.stdout).expect("utf-8 rustc version");
-        let observed_version = observed_version.trim().to_owned();
-        let expected_version = observed_version
-            .split_whitespace()
-            .nth(1)
-            .expect("rustc version token")
-            .to_owned();
-
-        ("rustc".to_owned(), expected_version)
-    }
-
-    struct ExternalSkillsPolicyResetGuard {
+    struct SkillsPolicyResetGuard {
         _lock: MutexGuard<'static, ()>,
         runtime_config: mvp::tools::runtime_config::ToolRuntimeConfig,
     }
 
-    impl ExternalSkillsPolicyResetGuard {
+    impl SkillsPolicyResetGuard {
         fn new(runtime_config: &mvp::tools::runtime_config::ToolRuntimeConfig) -> Self {
             let lock = crate::test_support::lock_daemon_test_environment();
             Self {
@@ -1715,16 +1622,9 @@ mod tests {
         }
     }
 
-    impl Drop for ExternalSkillsPolicyResetGuard {
+    impl Drop for SkillsPolicyResetGuard {
         fn drop(&mut self) {
-            let request = kernel::ToolCoreRequest {
-                tool_name: "external_skills.policy".to_owned(),
-                payload: serde_json::json!({
-                    "action": "reset",
-                    "policy_update_approved": true,
-                }),
-            };
-            let _ = mvp::tools::execute_tool_core_with_config(request, &self.runtime_config);
+            let _ = mvp::tools::skills_policy_reset_with_config(true, &self.runtime_config);
         }
     }
 
@@ -1846,82 +1746,75 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn external_skills_expose_when_auto_expose_or_approval_is_open() {
+    async fn skills_expose_when_auto_expose_or_approval_is_open() {
         let path = temp_config_path("external-skills");
         write_placeholder_config(&path);
 
         let mut config = mvp::config::LoongConfig::default();
-        config.external_skills.enabled = true;
-        config.external_skills.require_download_approval = false;
-        config.external_skills.auto_expose_installed = true;
+        config.skills.enabled = true;
+        config.skills.require_download_approval = false;
+        config.skills.auto_expose_installed = true;
 
         let execution = build_doctor_security_execution(&path, &config)
             .await
             .expect("build security execution");
-        let finding = finding_by_id(&execution.findings, "external_skills");
+        let finding = finding_by_id(&execution.findings, "skills");
 
         assert_eq!(finding.status, SecurityFindingStatus::Exposed);
         assert_eq!(finding.severity, SecurityFindingSeverity::Critical);
     }
 
     #[tokio::test]
-    async fn external_skills_audit_uses_effective_policy_override() {
+    async fn skills_audit_uses_effective_policy_override() {
         let path = temp_config_path("external-skills-override");
         write_placeholder_config(&path);
 
         let config = mvp::config::LoongConfig::default();
         let runtime_config =
             mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(&config, Some(&path));
-        let _reset_guard = ExternalSkillsPolicyResetGuard::new(&runtime_config);
+        let _reset_guard = SkillsPolicyResetGuard::new(&runtime_config);
 
-        let request = kernel::ToolCoreRequest {
-            tool_name: "external_skills.policy".to_owned(),
-            payload: serde_json::json!({
-                "action": "set",
-                "policy_update_approved": true,
-                "enabled": true,
-                "require_download_approval": false,
-                "allowed_domains": ["override.example"],
-                "blocked_domains": ["blocked.example"],
-            }),
-        };
-        mvp::tools::execute_tool_core_with_config(request, &runtime_config)
-            .expect("override external skills policy");
+        mvp::tools::skills_policy_set_with_config(
+            Some(true),
+            Some(false),
+            Some(std::collections::BTreeSet::from([
+                "override.example".to_owned()
+            ])),
+            Some(std::collections::BTreeSet::from([
+                "blocked.example".to_owned()
+            ])),
+            true,
+            &runtime_config,
+        )
+        .expect("override skills policy");
 
         let execution = build_doctor_security_execution(&path, &config)
             .await
             .expect("build security execution");
-        let finding = finding_by_id(&execution.findings, "external_skills");
+        let finding = finding_by_id(&execution.findings, "skills");
         let rendered_evidence = finding.evidence.join("\n");
 
         assert_eq!(finding.status, SecurityFindingStatus::Exposed);
-        assert!(rendered_evidence.contains("external_skills.override_active=true"));
-        assert!(rendered_evidence.contains("external_skills.enabled=true"));
-        assert!(rendered_evidence.contains("external_skills.allowed_domains.count=1"));
+        assert!(rendered_evidence.contains("skills.override_active=true"));
+        assert!(rendered_evidence.contains("skills.enabled=true"));
+        assert!(rendered_evidence.contains("skills.allowed_domains.count=1"));
     }
 
     #[tokio::test]
-    async fn browser_surfaces_become_unknown_when_companion_is_ready() {
+    async fn browser_surfaces_report_built_in_browse_lane() {
         let path = temp_config_path("browser-companion");
         write_placeholder_config(&path);
 
-        let (command_name, expected_version) = portable_browser_companion_probe();
-
         let mut config = mvp::config::LoongConfig::default();
-        config.tools.browser_companion.enabled = true;
-        config.tools.browser_companion.command = Some(command_name);
-        config.tools.browser_companion.expected_version = Some(expected_version);
-
-        let mut env = ScopedEnv::new();
-        env.set("LOONG_BROWSER_COMPANION_READY", "true");
+        config.tools.browser.enabled = true;
 
         let execution = build_doctor_security_execution(&path, &config)
             .await
             .expect("build security execution");
         let finding = finding_by_id(&execution.findings, "browser_surfaces");
 
-        assert_eq!(finding.status, SecurityFindingStatus::Unknown);
-        assert_eq!(finding.severity, SecurityFindingSeverity::Warn);
+        assert_eq!(finding.status, SecurityFindingStatus::Covered);
+        assert_eq!(finding.severity, SecurityFindingSeverity::Info);
     }
 
     #[test]

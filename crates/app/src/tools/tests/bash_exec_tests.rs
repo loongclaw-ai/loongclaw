@@ -118,15 +118,15 @@ fn tool_search_routes_bash_capabilities_to_exec_when_runtime_is_available() {
     let results = outcome.payload["results"].as_array().expect("results");
     let exec_entry = results
         .iter()
-        .find(|entry| entry["tool_id"] == "exec")
-        .expect("exec should absorb bash-oriented search queries");
+        .find(|entry| entry["tool_id"] == "bash")
+        .expect("bash should absorb bash-oriented search queries");
 
     assert!(exec_entry.get("lease").is_none());
 }
 
 #[cfg(feature = "tool-shell")]
 #[test]
-fn tool_search_exact_bash_query_surfaces_exec() {
+fn tool_search_exact_bash_query_surfaces_bash() {
     let root = unique_tool_temp_dir("loong-bash-tool-search-exact-query");
     std::fs::create_dir_all(&root).expect("create root dir");
 
@@ -146,8 +146,8 @@ fn tool_search_exact_bash_query_surfaces_exec() {
 
     let results = outcome.payload["results"].as_array().expect("results");
     assert!(
-        results.iter().any(|entry| entry["tool_id"] == "exec"),
-        "exact bash query should surface exec, got: {results:?}"
+        results.iter().any(|entry| entry["tool_id"] == "bash"),
+        "exact bash query should surface bash, got: {results:?}"
     );
 }
 
@@ -845,12 +845,12 @@ fn bash_exec_times_out_when_timeout_ms_is_small() {
 fn direct_exec_routes_script_mode_to_bash_exec() {
     assert_eq!(
         route_direct_tool_name(
-            "exec",
+            "bash",
             &json!({
-                "script": "printf 'script-mode' | cat"
+                "command": "printf 'script-mode' | cat"
             })
         )
-        .expect("script mode should route through bash.exec"),
+        .expect("bash direct surface should route through bash.exec"),
         "bash.exec"
     );
 }
@@ -869,10 +869,9 @@ fn direct_exec_can_run_bash_through_the_collapsed_exec_surface() {
 
     let outcome = execute_tool_core_with_trusted_subprocess_test_context(
         ToolCoreRequest {
-            tool_name: "exec".to_owned(),
+            tool_name: "bash".to_owned(),
             payload: json!({
-                "command": "bash",
-                "args": ["-lc", "printf 'invoke-bash'"],
+                "command": "printf 'invoke-bash'",
                 "_loong": {
                     LOONG_INTERNAL_RUNTIME_NARROWING_KEY: {}
                 }

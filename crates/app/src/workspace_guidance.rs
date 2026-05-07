@@ -246,7 +246,7 @@ fn read_workspace_guidance_source(
 ) -> Option<String> {
     let request_path = workspace_source_request_path(workspace_root, path)?;
     let request = ToolCoreRequest {
-        tool_name: "file.read".to_owned(),
+        tool_name: "read".to_owned(),
         payload: json!({
             "path": request_path,
         }),

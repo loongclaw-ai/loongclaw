@@ -958,8 +958,6 @@ async fn turn_checkpoint_summary_output_accepts_explicit_runtime_binding() {
 fn render_cli_chat_startup_lines_prioritize_first_turn_guidance() {
     let lines = render_cli_chat_startup_lines_with_width(
         &CliChatStartupSummary {
-            workspace_root: Some("/workspace/project".to_owned()),
-            provider_label: "OpenAI / test-model".to_owned(),
             config_path: "/tmp/loong.toml".to_owned(),
             memory_label: "/tmp/loong.db".to_owned(),
             session_id: "default".to_owned(),
@@ -969,7 +967,6 @@ fn render_cli_chat_startup_lines_prioritize_first_turn_guidance() {
             compaction_min_messages: Some(6),
             compaction_trigger_estimated_tokens: Some(120),
             compaction_preserve_recent_turns: 4,
-            compaction_preserve_recent_estimated_tokens: Some(96),
             compaction_fail_open: false,
             acp_enabled: true,
             dispatch_enabled: true,
@@ -986,10 +983,8 @@ fn render_cli_chat_startup_lines_prioritize_first_turn_guidance() {
     );
 
     assert!(
-        lines
-            .iter()
-            .any(|line| line.contains(concat!("v", env!("CARGO_PKG_VERSION")))),
-        "chat startup should now surface the richer branded header: {lines:#?}"
+        lines.first().is_some_and(|line| line.starts_with("LOONG")),
+        "chat startup should now use the shared compact brand header: {lines:#?}"
     );
     assert!(
         lines
@@ -999,102 +994,36 @@ fn render_cli_chat_startup_lines_prioritize_first_turn_guidance() {
         "chat startup should render the first answer handoff through the structured action group: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line.contains("quick commands")),
-        "chat startup should surface the quick-commands section beside the first answer handoff: {lines:#?}"
+        lines.iter().any(|line| line.contains("command deck")),
+        "chat startup should surface a command deck section beside the first answer handoff: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("current setup snapshot")),
-        "chat startup should now open on a current-setup snapshot instead of a runtime dashboard: {lines:#?}"
+            .any(|line| line.contains("note: how this surface works")),
+        "chat startup should keep the usage guidance as a structured callout: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("session anchor")),
+        "chat startup should keep session/config facts in a structured key-value section: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("runtime posture")),
+        "chat startup should still preserve runtime context in a compact secondary section: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("- workspace: /workspace/project")),
-        "chat startup should anchor the shell to the current workspace: {lines:#?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("- provider: OpenAI / test-model")),
-        "chat startup should surface the current provider in the setup snapshot: {lines:#?}"
+            .any(|line| line.contains("continuity guardrails")),
+        "chat startup should show compaction maintenance settings in a dedicated section: {lines:#?}"
     );
     assert!(
         lines.iter().any(|line| line.contains("- session: default")),
         "chat startup should continue to show session identity after the handoff block: {lines:#?}"
     );
     assert!(
-        lines.iter().any(|line| line.contains("fast lane")),
-        "chat startup should surface the onboarding-style fast lane callout: {lines:#?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("note: how chat works")),
-        "chat startup should keep the usage guidance as a structured callout: {lines:#?}"
-    );
-    assert!(
-        lines.iter().any(|line| line == "compose"),
-        "chat startup should now include a compose panel instead of only informational sections: {lines:#?}"
-    );
-    assert!(
-        lines.iter().any(|line| line == ">"),
-        "chat startup should expose an empty compose prompt inside the startup shell: {lines:#?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("Enter send · ? help · : or / command menu")),
-        "chat startup should keep the primary compose controls visible in the startup shell: {lines:#?}"
-    );
-    assert!(
-        !lines.iter().any(|line| line == "runtime posture"),
-        "chat startup should leave the dedicated runtime-posture block to /status: {lines:#?}"
-    );
-}
-
-#[test]
-fn render_cli_chat_startup_output_uses_rich_shell_when_requested() {
-    let lines = startup_view::render_cli_chat_startup_output_with_width(
-        &CliChatStartupSummary {
-            workspace_root: Some("/workspace/project".to_owned()),
-            provider_label: "OpenAI / test-model".to_owned(),
-            config_path: "/tmp/loong.toml".to_owned(),
-            memory_label: "/tmp/loong.db".to_owned(),
-            session_id: "default".to_owned(),
-            context_engine_id: "threaded".to_owned(),
-            context_engine_source: "config".to_owned(),
-            compaction_enabled: true,
-            compaction_min_messages: Some(6),
-            compaction_trigger_estimated_tokens: Some(120),
-            compaction_preserve_recent_turns: 4,
-            compaction_preserve_recent_estimated_tokens: Some(96),
-            compaction_fail_open: false,
-            acp_enabled: false,
-            dispatch_enabled: false,
-            conversation_routing: "automatic".to_owned(),
-            allowed_channels: vec!["cli".to_owned()],
-            acp_backend_id: "builtin".to_owned(),
-            acp_backend_source: "default".to_owned(),
-            explicit_acp_request: false,
-            event_stream_enabled: false,
-            bootstrap_mcp_servers: Vec::new(),
-            working_directory: None,
-        },
-        80,
-        true,
-    );
-
-    assert!(
-        lines.iter().any(|line| line.contains("chat ready")),
-        "rich startup shell should keep the guided startup title visible: {lines:#?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("│") || line.contains("╭") || line.contains("╰")),
-        "rich startup shell should render inside shell blocks instead of plain lines: {lines:#?}"
+        lines.iter().any(|line| line.contains("- compaction: true")),
+        "chat startup should show whether automatic compaction is enabled: {lines:#?}"
     );
 }
 
@@ -1102,8 +1031,6 @@ fn render_cli_chat_startup_output_uses_rich_shell_when_requested() {
 fn render_cli_chat_startup_lines_surface_explicit_acp_overrides() {
     let lines = render_cli_chat_startup_lines_with_width(
         &CliChatStartupSummary {
-            workspace_root: Some("/workspace/project".to_owned()),
-            provider_label: "OpenAI / test-model".to_owned(),
             config_path: "/tmp/loong.toml".to_owned(),
             memory_label: "/tmp/loong.db".to_owned(),
             session_id: "thread-42".to_owned(),
@@ -1113,7 +1040,6 @@ fn render_cli_chat_startup_lines_surface_explicit_acp_overrides() {
             compaction_min_messages: Some(6),
             compaction_trigger_estimated_tokens: Some(120),
             compaction_preserve_recent_turns: 4,
-            compaction_preserve_recent_estimated_tokens: Some(96),
             compaction_fail_open: false,
             acp_enabled: true,
             dispatch_enabled: true,
@@ -1153,8 +1079,6 @@ fn render_cli_chat_startup_lines_surface_explicit_acp_overrides() {
 fn render_cli_chat_status_lines_focus_on_runtime_state_without_start_here() {
     let lines = render_cli_chat_status_lines_with_width(
         &CliChatStartupSummary {
-            workspace_root: None,
-            provider_label: "OpenAI / test-model".to_owned(),
             config_path: "/tmp/loong.toml".to_owned(),
             memory_label: "/tmp/loong.db".to_owned(),
             session_id: "default".to_owned(),
@@ -1164,7 +1088,6 @@ fn render_cli_chat_status_lines_focus_on_runtime_state_without_start_here() {
             compaction_min_messages: Some(6),
             compaction_trigger_estimated_tokens: Some(120),
             compaction_preserve_recent_turns: 4,
-            compaction_preserve_recent_estimated_tokens: Some(96),
             compaction_fail_open: false,
             acp_enabled: true,
             dispatch_enabled: true,
@@ -1180,7 +1103,7 @@ fn render_cli_chat_status_lines_focus_on_runtime_state_without_start_here() {
         80,
     );
 
-    assert_eq!(lines[0], "╭─ chat status · session=default");
+    assert_eq!(lines[0], "╭─ control deck · session=default");
     assert!(
         lines.iter().any(|line| line.contains("session anchor")),
         "status output should keep session facts grouped under a section: {lines:#?}"
@@ -1368,43 +1291,6 @@ fn render_turn_checkpoint_status_health_lines_surface_non_durable_sessions() {
             .iter()
             .any(|line| line.contains("checkpoint durable: no")),
         "status health should surface checkpoint durability explicitly: {lines:#?}"
-    );
-}
-
-#[test]
-fn render_turn_checkpoint_status_health_lines_surface_compaction_diagnostics() {
-    let summary = TurnCheckpointEventSummary {
-        checkpoint_events: 1,
-        latest_compaction_diagnostics: Some(crate::conversation::ContextCompactionDiagnostics {
-            summary_turn_count: 4,
-            retained_turn_count: 3,
-            demoted_recent_turn_count: 1,
-            total_turns: 7,
-            assistant_turns: 3,
-            low_signal_turns: 1,
-            tool_result_line_prunes: 1,
-            tool_outcome_record_prunes: 0,
-        }),
-        checkpoint_durable: true,
-        reply_durable: true,
-        ..TurnCheckpointEventSummary::default()
-    };
-    let diagnostics = test_turn_checkpoint_diagnostics(summary, None);
-    let lines = ops::render_turn_checkpoint_status_health_lines_with_width(
-        "session-health",
-        &diagnostics,
-        80,
-    );
-
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("compaction diagnostics")),
-        "status health should surface compaction diagnostics as a dedicated section: {lines:#?}"
-    );
-    assert!(
-        lines.iter().any(|line| line.contains("summary turns: 4")),
-        "status health should surface compaction rollup values: {lines:#?}"
     );
 }
 
@@ -1692,8 +1578,6 @@ fn render_cli_chat_command_usage_lines_wrap_usage_in_warning_card() {
 #[test]
 fn render_cli_chat_status_lines_surface_runtime_and_compaction_controls() {
     let summary = CliChatStartupSummary {
-        workspace_root: None,
-        provider_label: "OpenAI / test-model".to_owned(),
         config_path: "/tmp/loong.toml".to_owned(),
         memory_label: "window_plus_summary".to_owned(),
         session_id: "session-status".to_owned(),
@@ -1703,7 +1587,6 @@ fn render_cli_chat_status_lines_surface_runtime_and_compaction_controls() {
         compaction_min_messages: Some(6),
         compaction_trigger_estimated_tokens: Some(12_000),
         compaction_preserve_recent_turns: 4,
-        compaction_preserve_recent_estimated_tokens: Some(4_096),
         compaction_fail_open: true,
         acp_enabled: true,
         dispatch_enabled: true,
@@ -1719,7 +1602,7 @@ fn render_cli_chat_status_lines_surface_runtime_and_compaction_controls() {
 
     let lines = render_cli_chat_status_lines_with_width(&summary, 80);
 
-    assert_eq!(lines[0], "╭─ chat status · session=session-status");
+    assert_eq!(lines[0], "╭─ control deck · session=session-status");
     assert!(
         lines
             .iter()
@@ -1737,12 +1620,6 @@ fn render_cli_chat_status_lines_surface_runtime_and_compaction_controls() {
         "status output should surface the compaction token trigger: {lines:#?}"
     );
     assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("preserve recent tokens: 4096")),
-        "status output should surface the recent-tail token budget: {lines:#?}"
-    );
-    assert!(
         lines.iter().any(|line| line.contains("note: next moves")),
         "status output should append the operator controls callout: {lines:#?}"
     );
@@ -1757,18 +1634,14 @@ fn render_cli_chat_status_lines_surface_runtime_and_compaction_controls() {
 #[test]
 fn render_manual_compaction_lines_surface_structured_result() {
     let result = ManualCompactionResult {
-        status: ManualCompactionStatus::Applied,
-        before_turns: 8,
-        after_turns: 3,
-        estimated_tokens_before: Some(1200),
-        estimated_tokens_after: Some(420),
-        summary_headline: Some("Compacted 6 earlier turns".to_owned()),
-        prune_summary: Some(
-            "summary:6 retained:3 demoted:1 low_signal:2 tool_results:1 tool_outcomes:0"
-                .to_owned(),
-        ),
-        detail: "Compacted 6 earlier turns. Session-local recall only. It does not replace Runtime Self Context.".to_owned(),
-    };
+            status: ManualCompactionStatus::Applied,
+            before_turns: 8,
+            after_turns: 3,
+            estimated_tokens_before: Some(1200),
+            estimated_tokens_after: Some(420),
+            summary_headline: Some("Compacted 6 earlier turns".to_owned()),
+            detail: "Compacted 6 earlier turns. Session-local recall only. It does not replace Runtime Self Context.".to_owned(),
+        };
 
     let lines = render_manual_compaction_lines_with_width("session-compact", &result, 80);
 
@@ -1784,12 +1657,6 @@ fn render_manual_compaction_lines_surface_structured_result() {
     assert!(
         lines.iter().any(|line| line.contains("tokens after: 420")),
         "manual compaction should surface token estimates: {lines:#?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("prune: summary:6 retained:3 demoted:1")),
-        "manual compaction should surface the prune summary rollup: {lines:#?}"
     );
     assert!(
         lines
@@ -2099,7 +1966,7 @@ fn cli_chat_live_surface_observer_renders_tool_lifecycle_updates() {
         delta: crate::acp::TokenDelta {
             text: None,
             tool_call: Some(crate::acp::ToolCallDelta {
-                name: Some("file.read".to_owned()),
+                name: Some("read".to_owned()),
                 args: None,
                 id: Some("call-tool-1".to_owned()),
             }),
@@ -2122,7 +1989,7 @@ fn cli_chat_live_surface_observer_renders_tool_lifecycle_updates() {
     });
     observer.on_tool(ConversationTurnToolEvent::completed(
         "call-tool-1",
-        "file.read",
+        "read",
         Some("ok".to_owned()),
     ));
 
@@ -2199,7 +2066,7 @@ fn cli_chat_live_surface_observer_renders_runtime_output_and_file_change_updates
         1,
     ));
     observer.on_tool(
-        ConversationTurnToolEvent::running("call-tool-2", "shell.exec")
+        ConversationTurnToolEvent::running("call-tool-2", "bash")
             .with_request_summary(Some("{\"command\":\"printf\"}".to_owned())),
     );
     observer.on_runtime(ConversationTurnRuntimeEvent::new(
@@ -2231,7 +2098,7 @@ fn cli_chat_live_surface_observer_renders_runtime_output_and_file_change_updates
     ));
     observer.on_tool(ConversationTurnToolEvent::completed(
         "call-tool-2",
-        "shell.exec",
+        "bash",
         Some("ok".to_owned()),
     ));
 
@@ -2244,14 +2111,14 @@ fn cli_chat_live_surface_observer_renders_runtime_output_and_file_change_updates
         final_batch
             .lines
             .iter()
-            .any(|line| line.contains("• Closed exec · ok")),
+            .any(|line| line.contains("• Closed bash · ok")),
         "runtime output should surface the visible tool name: {final_batch:#?}"
     );
     assert!(
         final_batch
             .lines
             .iter()
-            .any(|line| line.contains("stdout 2 lines · 22 bytes")),
+            .any(|line| line.contains("↳ stdout 2 lines · 22 bytes")),
         "runtime output should surface stdout counters: {final_batch:#?}"
     );
     assert!(
@@ -2265,14 +2132,14 @@ fn cli_chat_live_surface_observer_renders_runtime_output_and_file_change_updates
         final_batch
             .lines
             .iter()
-            .any(|line| line.contains("file edit src/lib.rs (+2 / -1)")),
+            .any(|line| line.contains("↳ file edit src/lib.rs (+2 / -1)")),
         "runtime output should surface file change summaries: {final_batch:#?}"
     );
     assert!(
         final_batch
             .lines
             .iter()
-            .any(|line| line.contains("metrics 42ms · exit=0")),
+            .any(|line| line.contains("↳ metrics 42ms · exit=0")),
         "runtime output should surface command metrics: {final_batch:#?}"
     );
 }
@@ -2290,7 +2157,7 @@ fn build_cli_chat_live_surface_snapshot_preserves_structured_tool_state() {
     };
 
     let tool_state = ensure_cli_chat_live_tool_state(&mut state, "call-structured");
-    tool_state.name = Some("shell.exec".to_owned());
+    tool_state.name = Some("bash".to_owned());
     tool_state.request_summary = Some("{\"command\":\"printf\"}".to_owned());
     tool_state.args = "{\"command\":\"printf\"}".to_owned();
     tool_state.stdout = CliChatLiveOutputView {
@@ -2311,7 +2178,7 @@ fn build_cli_chat_live_surface_snapshot_preserves_structured_tool_state() {
 
     assert_eq!(snapshot.tools.len(), 1);
     assert_eq!(tool.tool_call_id, "call-structured");
-    assert_eq!(tool.name.as_deref(), Some("exec"));
+    assert_eq!(tool.name.as_deref(), Some("bash"));
     assert_eq!(
         tool.request_summary.as_deref(),
         Some("{\"command\":\"printf\"}")
@@ -2810,7 +2677,6 @@ fn manual_compaction_status_from_report_maps_failed_open() {
         status: TurnCheckpointProgressStatus::FailedOpen,
         estimated_tokens_before: Some(420),
         estimated_tokens_after: Some(420),
-        diagnostics: None,
     };
 
     let status =
@@ -2870,12 +2736,6 @@ async fn manual_compaction_result_applies_and_surfaces_continuity_checkpoint() {
             .summary_headline
             .as_deref()
             .is_some_and(|headline| headline.contains("Compacted 6 earlier turns"))
-    );
-    assert!(
-        result
-            .prune_summary
-            .as_deref()
-            .is_some_and(|summary| summary.contains("summary:6"))
     );
     assert!(
         result.detail.contains("Runtime Self Context"),

@@ -1,27 +1,15 @@
 use super::*;
-use crate::conversation::{
-    FAST_LANE_MAX_TOOL_STEPS_PER_TURN, SAFE_LANE_MAX_TOOL_STEPS_PER_TURN,
-    TURN_LOOP_MAX_CONSECUTIVE_SAME_TOOL, TURN_LOOP_MAX_TOTAL_TOOL_CALLS,
-};
+use crate::conversation::{TURN_LOOP_MAX_CONSECUTIVE_SAME_TOOL, TURN_LOOP_MAX_TOTAL_TOOL_CALLS};
 
 #[derive(Debug, Clone)]
 pub(super) struct ProviderTurnLanePlan {
     pub(super) decision: LaneDecision,
-    pub(super) max_tool_steps: usize,
 }
 
 impl ProviderTurnLanePlan {
     pub(super) fn from_user_input(config: &LoongConfig, user_input: &str) -> Self {
         let decision = lane_policy_from_config(config).decide(user_input);
-        let max_tool_steps = match decision.lane {
-            ExecutionLane::Fast => FAST_LANE_MAX_TOOL_STEPS_PER_TURN,
-            ExecutionLane::Safe => SAFE_LANE_MAX_TOOL_STEPS_PER_TURN,
-        };
-
-        Self {
-            decision,
-            max_tool_steps,
-        }
+        Self { decision }
     }
 
     pub(super) fn should_use_safe_lane_plan_path(
@@ -39,6 +27,8 @@ pub(super) struct ProviderTurnLaneExecution {
     pub(super) assistant_preface: String,
     pub(super) provider_usage: Option<Value>,
     pub(super) had_tool_intents: bool,
+    pub(super) provider_originated_tool_intents: bool,
+    pub(super) textual_tool_parse_followup_turn: bool,
     pub(super) tool_request_summary: Option<String>,
     pub(super) discovery_search_turn: bool,
     pub(super) search_tool_intents: usize,
@@ -165,6 +155,7 @@ pub(super) fn provider_turn_tool_name_signature(intents: &[ToolIntent]) -> Strin
 pub(super) struct ProviderTurnContinuePhase {
     pub(super) request: TurnCheckpointRequest,
     pub(super) lane_execution: ProviderTurnLaneExecution,
+    pub(super) carried_followup_payload: Option<ToolDrivenFollowupPayload>,
     pub(super) reply_phase: ToolDrivenReplyPhase,
     pub(super) loop_verdict: Option<ProviderTurnLoopVerdict>,
     pub(super) followup_config: LoongConfig,
@@ -175,6 +166,7 @@ impl ProviderTurnContinuePhase {
     pub(super) fn new(
         tool_intents: usize,
         lane_execution: ProviderTurnLaneExecution,
+        carried_followup_payload: Option<ToolDrivenFollowupPayload>,
         loop_verdict: Option<ProviderTurnLoopVerdict>,
         followup_config: LoongConfig,
         ingress: Option<&ConversationIngressContext>,
@@ -183,6 +175,7 @@ impl ProviderTurnContinuePhase {
         Self {
             request: TurnCheckpointRequest::Continue { tool_intents },
             lane_execution,
+            carried_followup_payload,
             reply_phase,
             loop_verdict,
             followup_config,

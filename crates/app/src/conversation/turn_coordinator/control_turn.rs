@@ -126,7 +126,14 @@ impl ConversationTurnCoordinator {
         binding: ConversationRuntimeBinding<'_>,
         observer: Option<&ConversationTurnObserverHandle>,
     ) -> CliResult<Option<ConversationTurnOutcome>> {
-        let Some(explicit_activation) = parse_explicit_skill_activation_input(user_input) else {
+        let tool_runtime_config =
+            crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None);
+        let visible_skill_ids =
+            crate::tools::model_visible_skill_ids_with_config(&tool_runtime_config);
+        let explicit_activation = parse_explicit_skill_activation_input(user_input).or_else(|| {
+            parse_named_skill_activation_input(user_input, visible_skill_ids.as_slice())
+        });
+        let Some(explicit_activation) = explicit_activation else {
             return Ok(None);
         };
 
@@ -155,19 +162,37 @@ impl ConversationTurnCoordinator {
                 preparation.session.estimated_tokens,
             ),
         );
-        let tool_runtime_config =
-            crate::tools::runtime_config::ToolRuntimeConfig::from_loong_config(config, None);
-        let activation_outcome = crate::tools::execute_tool_core_with_config(
-            loong_contracts::ToolCoreRequest {
-                tool_name: "external_skills.invoke".to_owned(),
-                payload: json!({
-                    "skill_id": explicit_activation.skill_id,
-                }),
-            },
+        let activation_payload = crate::tools::model_visible_skill_context_payload_for_skill_id(
             &tool_runtime_config,
+            explicit_activation.skill_id.as_str(),
         );
-        let activation_outcome = match activation_outcome {
-            Ok(outcome) => outcome,
+        let activation_payload = match activation_payload {
+            Ok(Some(payload)) => payload,
+            Ok(None) => {
+                let error = format!(
+                    "external skill `{}` is not currently model-visible and eligible",
+                    explicit_activation.skill_id
+                );
+                return match error_mode {
+                    ProviderErrorMode::Propagate => Err(error),
+                    ProviderErrorMode::InlineMessage => {
+                        let synthetic = format_provider_error_reply(&error);
+                        persist_reply_turns_raw_with_mode(
+                            runtime,
+                            session_id,
+                            followup_request,
+                            &synthetic,
+                            ReplyPersistenceMode::InlineProviderError,
+                            binding,
+                        )
+                        .await?;
+                        Ok(Some(ConversationTurnOutcome {
+                            reply: synthetic,
+                            usage: None,
+                        }))
+                    }
+                };
+            }
             Err(error) => {
                 return match error_mode {
                     ProviderErrorMode::Propagate => Err(error),
@@ -191,17 +216,17 @@ impl ConversationTurnCoordinator {
             }
         };
         let payload_summary =
-            serde_json::to_string(&activation_outcome.payload).unwrap_or_else(|_| "{}".to_owned());
+            serde_json::to_string(&activation_payload).unwrap_or_else(|_| "{}".to_owned());
         let payload_chars = payload_summary.chars().count();
         let tool_result_text = format!(
             "[ok] {}",
             json!({
-                "status": activation_outcome.status,
-                "tool": "external_skills.invoke",
+                "status": "ok",
+                "tool": "skill.activate",
                 "tool_call_id": explicit_skill_activation_tool_call_id(
                     explicit_activation.skill_id.as_str(),
                 ),
-                "payload_semantics": "external_skill_context",
+                "payload_semantics": "skill_context",
                 "payload_summary": payload_summary,
                 "payload_chars": payload_chars,
                 "payload_truncated": false,
@@ -211,7 +236,7 @@ impl ConversationTurnCoordinator {
             text: tool_result_text,
         };
         #[cfg(feature = "memory-sqlite")]
-        persist_active_external_skills_from_followup_payload_if_needed(
+        persist_active_skills_from_followup_payload_if_needed(
             config,
             session_id,
             &followup_payload,
@@ -224,6 +249,47 @@ impl ConversationTurnCoordinator {
             followup_request,
             None,
         );
+        let followup_preparation = preparation.for_followup_messages(follow_up_messages.clone());
+        if observer.is_some() {
+            let followup_tool_view = runtime.tool_view(config, session_id, binding)?;
+            let resolved_turn = resolve_provider_turn(
+                config,
+                runtime,
+                session_id,
+                followup_request,
+                &followup_preparation,
+                request_provider_turn_with_observer(
+                    config,
+                    runtime,
+                    session_id,
+                    followup_preparation.turn_id.as_str(),
+                    &followup_preparation.session.messages,
+                    &followup_tool_view,
+                    binding,
+                    observer,
+                    None,
+                )
+                .await,
+                error_mode,
+                binding,
+                None,
+                observer,
+                None,
+            )
+            .await;
+            let reply = apply_resolved_provider_turn(
+                config,
+                runtime,
+                session_id,
+                followup_request,
+                &followup_preparation,
+                &resolved_turn,
+                binding,
+                observer,
+            )
+            .await?;
+            return Ok(Some(reply));
+        }
         let reply = request_completion_with_raw_fallback(
             runtime,
             config,
@@ -250,16 +316,18 @@ impl ConversationTurnCoordinator {
         turn: &ProviderTurn,
     ) -> LoongConfig {
         let config_path_from_tool = turn.tool_intents.iter().rev().find_map(|intent| {
-            let canonical_tool_name = crate::tools::canonical_tool_name(intent.tool_name.as_str());
-            let payload = if canonical_tool_name == "provider.switch" {
-                intent.args_json.as_object()
-            } else if canonical_tool_name == "tool.invoke" {
-                crate::tools::invoked_discoverable_tool_request(&intent.args_json)
-                    .filter(|(tool_name, _arguments)| *tool_name == "provider.switch")
-                    .and_then(|(_tool_name, arguments)| arguments.as_object())
-            } else {
-                None
+            let request = loong_contracts::ToolCoreRequest {
+                tool_name: intent.tool_name.clone(),
+                payload: intent.args_json.clone(),
             };
+            let direct_payload = crate::tools::canonical_tool_name(intent.tool_name.as_str())
+                .eq("provider.switch")
+                .then(|| intent.args_json.as_object())
+                .flatten();
+            let wrapped_payload = crate::tools::peek_tool_invoke_request(&request)
+                .filter(|peeked| peeked.tool_name == "provider.switch")
+                .and_then(|peeked| peeked.arguments.as_object());
+            let payload = direct_payload.or(wrapped_payload);
 
             payload
                 .and_then(|payload| payload.get("config_path"))

@@ -1,5 +1,5 @@
 use clap::Subcommand;
-use kernel::{ToolCoreOutcome, ToolCoreRequest};
+use kernel::ToolCoreOutcome;
 use loong_app as mvp;
 use loong_spec::CliResult;
 use serde_json::{Map, Value, json};
@@ -13,24 +13,24 @@ const DEFAULT_SKILLS_RECOMMEND_LIMIT: usize = 3;
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum SkillsCommands {
-    /// List discovered external skills across managed, user, and project scopes
+    /// List discovered skills across managed, user, and project scopes
     List,
-    /// Search the external-skills inventory from a task or capability phrase
+    /// Search the skills inventory from a task or capability phrase
     Search {
         query: Vec<String>,
         #[arg(long, default_value_t = DEFAULT_SKILLS_SEARCH_LIMIT)]
         limit: usize,
     },
-    /// Recommend the best-fit external skills for an operator goal
+    /// Recommend the best-fit skills for an operator goal
     Recommend {
         query: Vec<String>,
         #[arg(long, default_value_t = DEFAULT_SKILLS_RECOMMEND_LIMIT)]
         limit: usize,
     },
-    /// Inspect one resolved external skill
+    /// Inspect one resolved skill
     #[command(visible_alias = "inspect")]
     Info { skill_id: String },
-    /// Download an external skill package and optionally sync it into the managed runtime
+    /// Download a skill package and optionally sync it into the managed runtime
     Fetch {
         url: String,
         #[arg(long)]
@@ -48,7 +48,7 @@ pub enum SkillsCommands {
         #[arg(long, default_value_t = false)]
         replace: bool,
     },
-    /// Install a managed external skill from a local directory or archive
+    /// Install a managed skill from a local directory or archive
     Install {
         path: String,
         #[arg(long)]
@@ -58,20 +58,15 @@ pub enum SkillsCommands {
         #[arg(long, default_value_t = false)]
         replace: bool,
     },
-    /// Install a first-party bundled managed external skill
+    /// Install a first-party bundled managed skill
     InstallBundled {
         skill_id: String,
         #[arg(long, default_value_t = false)]
         replace: bool,
     },
-    /// Enable the managed browser preview flow and install its bundled helper skill
-    EnableBrowserPreview {
-        #[arg(long, default_value_t = false)]
-        replace: bool,
-    },
-    /// Remove an installed managed external skill
+    /// Remove an installed managed skill
     Remove { skill_id: String },
-    /// Inspect or update persisted runtime policy for external skills
+    /// Inspect or update persisted runtime policy for skills
     Policy {
         #[command(subcommand)]
         command: SkillsPolicyCommands,
@@ -80,10 +75,10 @@ pub enum SkillsCommands {
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum SkillsPolicyCommands {
-    /// Show the persisted external-skills runtime policy
+    /// Show the persisted skills runtime policy
     #[command(visible_alias = "show")]
     Get,
-    /// Persist one or more external-skills runtime policy fields into config
+    /// Persist one or more skills runtime policy fields into config
     Set {
         #[arg(long)]
         enabled: Option<bool>,
@@ -137,29 +132,47 @@ pub fn run_skills_cli(options: SkillsCommandOptions) -> CliResult<()> {
 }
 
 pub fn execute_skills_command(options: SkillsCommandOptions) -> CliResult<SkillsCommandExecution> {
-    let (resolved_path, mut config) = mvp::config::load(options.config.as_deref())?;
-    let outcome = match options.command {
-        SkillsCommands::Policy { command } => {
-            execute_policy_command(&resolved_path, &mut config, command)?
-        }
-        SkillsCommands::EnableBrowserPreview { replace } => {
-            execute_enable_browser_preview_command(&resolved_path, &mut config, replace)?
-        }
-        command @ (SkillsCommands::List
-        | SkillsCommands::Search { .. }
-        | SkillsCommands::Recommend { .. }
-        | SkillsCommands::Info { .. }
-        | SkillsCommands::Fetch { .. }
-        | SkillsCommands::Install { .. }
-        | SkillsCommands::InstallBundled { .. }
-        | SkillsCommands::Remove { .. }) => {
-            execute_non_policy_skills_command(&resolved_path, &config, command)?
-        }
-    };
-    Ok(SkillsCommandExecution {
-        resolved_config_path: resolved_path.display().to_string(),
-        outcome,
+    run_skills_cli_sync(move || {
+        let (resolved_path, mut config) = mvp::config::load(options.config.as_deref())?;
+        let outcome = match options.command {
+            SkillsCommands::Policy { command } => {
+                execute_policy_command(&resolved_path, &mut config, command)?
+            }
+            command @ (SkillsCommands::List
+            | SkillsCommands::Search { .. }
+            | SkillsCommands::Recommend { .. }
+            | SkillsCommands::Info { .. }
+            | SkillsCommands::Fetch { .. }
+            | SkillsCommands::Install { .. }
+            | SkillsCommands::InstallBundled { .. }
+            | SkillsCommands::Remove { .. }) => {
+                execute_non_policy_skills_command(&resolved_path, &config, command)?
+            }
+        };
+        Ok(SkillsCommandExecution {
+            resolved_config_path: resolved_path.display().to_string(),
+            outcome,
+        })
     })
+}
+
+fn run_skills_cli_sync<F, T>(operation: F) -> CliResult<T>
+where
+    F: FnOnce() -> CliResult<T> + Send,
+    T: Send,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(operation)
+        }
+        Ok(_) => std::thread::scope(|scope| {
+            scope
+                .spawn(operation)
+                .join()
+                .map_err(|_panic| "skills CLI worker thread panicked".to_owned())?
+        }),
+        Err(_) => operation(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -182,37 +195,33 @@ fn execute_non_policy_skills_command(
     match command {
         SkillsCommands::List => {
             let tool_runtime_config = tool_runtime_config_for_skills_command(config, resolved_path);
-            mvp::tools::external_skills_operator_list_with_config(&tool_runtime_config)
+            mvp::tools::skills_list_with_config(&tool_runtime_config)
         }
         SkillsCommands::Search { query, limit } => {
             let normalized_query = normalize_skills_discovery_query(query, "skills search")?;
             let tool_runtime_config = tool_runtime_config_for_skills_command(config, resolved_path);
-            let request = build_skills_discovery_tool_request(
-                "external_skills.search",
+            mvp::tools::skills_search_with_config(
                 normalized_query.as_str(),
                 limit,
-            );
-            mvp::tools::execute_tool_core_with_config(request, &tool_runtime_config)
+                &tool_runtime_config,
+            )
         }
         SkillsCommands::Recommend { query, limit } => {
             let normalized_query = normalize_skills_discovery_query(query, "skills recommend")?;
             let tool_runtime_config = tool_runtime_config_for_skills_command(config, resolved_path);
-            let request = build_skills_discovery_tool_request(
-                "external_skills.recommend",
+            mvp::tools::skills_recommend_with_config(
                 normalized_query.as_str(),
                 limit,
-            );
-            mvp::tools::execute_tool_core_with_config(request, &tool_runtime_config)
+                &tool_runtime_config,
+            )
         }
         SkillsCommands::Info { skill_id } => {
             let tool_runtime_config = tool_runtime_config_for_skills_command(config, resolved_path);
             if let Some(pack) = mvp::tools::bundled_skill_pack(&skill_id) {
                 execute_bundled_pack_inspect_command(resolved_path, config, pack)
             } else {
-                let inspect_outcome = mvp::tools::external_skills_operator_inspect_with_config(
-                    &skill_id,
-                    &tool_runtime_config,
-                )?;
+                let inspect_outcome =
+                    mvp::tools::skills_inspect_with_config(&skill_id, &tool_runtime_config)?;
                 decorate_skill_info_outcome(inspect_outcome, resolved_path)
             }
         }
@@ -242,17 +251,53 @@ fn execute_non_policy_skills_command(
         }
         SkillsCommands::Install { .. } => {
             let tool_runtime_config = tool_runtime_config_for_skills_command(config, resolved_path);
-            let request = build_skills_tool_request(command)?;
-            let install_outcome =
-                mvp::tools::execute_tool_core_with_config(request, &tool_runtime_config)?;
+            let (path, skill_id, approve_security_once, replace) = match command {
+                SkillsCommands::Install {
+                    path,
+                    skill_id,
+                    approve_security_once,
+                    replace,
+                } => (path, skill_id, approve_security_once, replace),
+                SkillsCommands::List
+                | SkillsCommands::Search { .. }
+                | SkillsCommands::Recommend { .. }
+                | SkillsCommands::Info { .. }
+                | SkillsCommands::Fetch { .. }
+                | SkillsCommands::InstallBundled { .. }
+                | SkillsCommands::Remove { .. }
+                | SkillsCommands::Policy { .. } => {
+                    return Err("unexpected skills install command routing".to_owned());
+                }
+            };
+            let install_outcome = mvp::tools::skills_install_with_config(
+                Some(path.as_str()),
+                None,
+                skill_id.as_deref(),
+                None,
+                approve_security_once,
+                replace,
+                &tool_runtime_config,
+            )?;
             decorate_skill_install_outcome(install_outcome, resolved_path, &tool_runtime_config)
         }
         SkillsCommands::Remove { .. } => {
             let tool_runtime_config = tool_runtime_config_for_skills_command(config, resolved_path);
-            let request = build_skills_tool_request(command)?;
-            mvp::tools::execute_tool_core_with_config(request, &tool_runtime_config)
+            let skill_id = match command {
+                SkillsCommands::Remove { skill_id } => skill_id,
+                SkillsCommands::List
+                | SkillsCommands::Search { .. }
+                | SkillsCommands::Recommend { .. }
+                | SkillsCommands::Info { .. }
+                | SkillsCommands::Fetch { .. }
+                | SkillsCommands::Install { .. }
+                | SkillsCommands::InstallBundled { .. }
+                | SkillsCommands::Policy { .. } => {
+                    return Err("unexpected skills remove command routing".to_owned());
+                }
+            };
+            mvp::tools::skills_remove_with_config(skill_id.as_str(), &tool_runtime_config)
         }
-        SkillsCommands::Policy { .. } | SkillsCommands::EnableBrowserPreview { .. } => {
+        SkillsCommands::Policy { .. } => {
             Err("unexpected skills CLI command routed through non-policy execution path".to_owned())
         }
     }
@@ -308,8 +353,7 @@ fn decorate_skill_install_outcome(
         .get("skill_id")
         .and_then(Value::as_str)
         .ok_or_else(|| "skills install payload missing `skill_id`".to_owned())?;
-    let inspect_outcome =
-        mvp::tools::external_skills_operator_inspect_with_config(skill_id, tool_runtime_config)?;
+    let inspect_outcome = mvp::tools::skills_inspect_with_config(skill_id, tool_runtime_config)?;
     let mut guidance =
         build_skill_follow_up_guidance_from_info_payload(&inspect_outcome.payload, resolved_path)?;
     let config_path = resolved_path.display().to_string();
@@ -392,7 +436,15 @@ fn build_skill_follow_up_guidance(
     let missing_env = string_array_from_value(eligibility.get("missing_env"));
     let missing_bin = string_array_from_value(eligibility.get("missing_bin"));
     let missing_paths = string_array_from_value(eligibility.get("missing_paths"));
-    let missing_config = string_array_from_value(eligibility.get("missing_config"));
+    let missing_config = string_array_from_value(eligibility.get("missing_config"))
+        .into_iter()
+        .map(|selector| match selector.as_str() {
+            "tools.skills.enabled" => "skills.enabled".to_owned(),
+            _ => selector,
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     let active = skill.get("active").and_then(Value::as_bool).unwrap_or(true);
     let config_path = resolved_path.display().to_string();
     let mut next_steps = Vec::new();
@@ -443,8 +495,7 @@ fn build_skill_follow_up_guidance(
         );
     } else if manual_only {
         next_steps.push(
-            "This skill is manual-only and cannot be invoked through `external_skills.invoke`."
-                .to_owned(),
+            "This skill is manual-only and must be activated explicitly before use.".to_owned(),
         );
     } else if !active {
         next_steps.push(
@@ -480,68 +531,6 @@ fn string_array_from_value(value: Option<&Value>) -> Vec<String> {
     strings
 }
 
-fn build_skills_discovery_tool_request(
-    tool_name: &str,
-    query: &str,
-    limit: usize,
-) -> ToolCoreRequest {
-    ToolCoreRequest {
-        tool_name: tool_name.to_owned(),
-        payload: json!({
-            "query": query,
-            "limit": limit,
-        }),
-    }
-}
-
-fn build_skills_tool_request(command: SkillsCommands) -> CliResult<ToolCoreRequest> {
-    match command {
-        SkillsCommands::List => Ok(ToolCoreRequest {
-            tool_name: "external_skills.list".to_owned(),
-            payload: json!({}),
-        }),
-        SkillsCommands::Search { .. } | SkillsCommands::Recommend { .. } => {
-            Err("skills discovery requests are handled directly by the daemon CLI".to_owned())
-        }
-        SkillsCommands::Info { skill_id } => Ok(ToolCoreRequest {
-            tool_name: "external_skills.inspect".to_owned(),
-            payload: json!({
-                "skill_id": skill_id,
-            }),
-        }),
-        SkillsCommands::Fetch { .. } => {
-            Err("skills fetch requests are handled directly by the daemon CLI".to_owned())
-        }
-        SkillsCommands::Install {
-            path,
-            skill_id,
-            approve_security_once,
-            replace,
-        } => Ok(ToolCoreRequest {
-            tool_name: "external_skills.install".to_owned(),
-            payload: build_install_payload(
-                &path,
-                skill_id.as_deref(),
-                None,
-                approve_security_once,
-                replace,
-            ),
-        }),
-        SkillsCommands::InstallBundled { .. } | SkillsCommands::EnableBrowserPreview { .. } => {
-            Err("bundled skills install requests are handled directly by the daemon CLI".to_owned())
-        }
-        SkillsCommands::Remove { skill_id } => Ok(ToolCoreRequest {
-            tool_name: "external_skills.remove".to_owned(),
-            payload: json!({
-                "skill_id": skill_id,
-            }),
-        }),
-        SkillsCommands::Policy { .. } => {
-            Err("skills policy requests are handled directly by the daemon CLI".to_owned())
-        }
-    }
-}
-
 fn execute_fetch_command(
     resolved_path: &Path,
     config: &mvp::config::LoongConfig,
@@ -570,26 +559,28 @@ fn execute_fetch_command(
         config,
         Some(resolved_path),
     );
-    let fetch_request = build_fetch_tool_request(url, save_as, max_bytes, approve_download);
-    let fetch_outcome =
-        mvp::tools::execute_tool_core_with_config(fetch_request, &tool_runtime_config)?;
+    let fetch_outcome = mvp::tools::skills_fetch_with_config(
+        url,
+        save_as,
+        max_bytes,
+        approve_download,
+        &tool_runtime_config,
+    )?;
     let fetched = fetch_outcome.payload;
 
     let mut installed = if install {
         let saved_path = fetched
             .get("saved_path")
             .and_then(Value::as_str)
-            .ok_or_else(|| "external skills fetch payload missing `saved_path`".to_owned())?;
+            .ok_or_else(|| "skills fetch payload missing `saved_path`".to_owned())?;
         let source_skill_id = fetched.get("source_skill_id").and_then(Value::as_str);
-        let install_request = build_install_request(
-            saved_path,
+        Some(mvp::tools::skills_install_with_config(
+            Some(saved_path),
+            None,
             skill_id,
             source_skill_id,
             approve_security_once,
             replace,
-        );
-        Some(mvp::tools::execute_tool_core_with_config(
-            install_request,
             &tool_runtime_config,
         )?)
     } else {
@@ -624,70 +615,6 @@ fn execute_fetch_command(
     })
 }
 
-fn build_fetch_tool_request(
-    url: &str,
-    save_as: Option<&str>,
-    max_bytes: Option<usize>,
-    approve_download: bool,
-) -> ToolCoreRequest {
-    let mut payload = Map::new();
-    payload.insert("url".to_owned(), json!(url));
-    if let Some(save_as) = save_as {
-        payload.insert("save_as".to_owned(), json!(save_as));
-    }
-    if let Some(max_bytes) = max_bytes {
-        payload.insert("max_bytes".to_owned(), json!(max_bytes));
-    }
-    if approve_download {
-        payload.insert("approval_granted".to_owned(), json!(true));
-    }
-    ToolCoreRequest {
-        tool_name: "external_skills.fetch".to_owned(),
-        payload: Value::Object(payload),
-    }
-}
-
-fn build_install_payload(
-    path: &str,
-    skill_id: Option<&str>,
-    source_skill_id: Option<&str>,
-    approve_security_once: bool,
-    replace: bool,
-) -> Value {
-    let mut payload = Map::new();
-    payload.insert("path".to_owned(), json!(path));
-    payload.insert("replace".to_owned(), json!(replace));
-    if let Some(skill_id) = skill_id {
-        payload.insert("skill_id".to_owned(), json!(skill_id));
-    }
-    if let Some(source_skill_id) = source_skill_id {
-        payload.insert("source_skill_id".to_owned(), json!(source_skill_id));
-    }
-    if approve_security_once {
-        payload.insert("security_decision".to_owned(), json!("approve_once"));
-    }
-    Value::Object(payload)
-}
-
-fn build_install_request(
-    path: &str,
-    skill_id: Option<&str>,
-    source_skill_id: Option<&str>,
-    approve_security_once: bool,
-    replace: bool,
-) -> ToolCoreRequest {
-    ToolCoreRequest {
-        tool_name: "external_skills.install".to_owned(),
-        payload: build_install_payload(
-            path,
-            skill_id,
-            source_skill_id,
-            approve_security_once,
-            replace,
-        ),
-    }
-}
-
 fn execute_policy_command(
     resolved_path: &Path,
     config: &mut mvp::config::LoongConfig,
@@ -708,12 +635,12 @@ fn execute_policy_command(
             approve_policy_update,
         } => {
             require_policy_update_approval(approve_policy_update)?;
-            let defaults = mvp::config::ExternalSkillsConfig::default();
-            config.external_skills.enabled = defaults.enabled;
-            config.external_skills.require_download_approval = defaults.require_download_approval;
-            config.external_skills.allowed_domains = defaults.allowed_domains;
-            config.external_skills.blocked_domains = defaults.blocked_domains;
-            config.external_skills.auto_expose_installed = defaults.auto_expose_installed;
+            let defaults = mvp::config::SkillsConfig::default();
+            config.skills.enabled = defaults.enabled;
+            config.skills.require_download_approval = defaults.require_download_approval;
+            config.skills.allowed_domains = defaults.allowed_domains;
+            config.skills.blocked_domains = defaults.blocked_domains;
+            config.skills.auto_expose_installed = defaults.auto_expose_installed;
             persist_config_update(resolved_path, config)?;
             Ok(ToolCoreOutcome {
                 status: "ok".to_owned(),
@@ -763,24 +690,24 @@ fn execute_policy_command(
             require_policy_update_approval(approve_policy_update)?;
 
             if let Some(enabled) = enabled {
-                config.external_skills.enabled = enabled;
+                config.skills.enabled = enabled;
             }
             if let Some(require_download_approval) = require_download_approval {
-                config.external_skills.require_download_approval = require_download_approval;
+                config.skills.require_download_approval = require_download_approval;
             }
             if let Some(auto_expose_installed) = auto_expose_installed {
-                config.external_skills.auto_expose_installed = auto_expose_installed;
+                config.skills.auto_expose_installed = auto_expose_installed;
             }
             if clear_allowed_domains {
-                config.external_skills.allowed_domains.clear();
+                config.skills.allowed_domains.clear();
             } else if !allowed_domains.is_empty() {
-                config.external_skills.allowed_domains =
+                config.skills.allowed_domains =
                     normalize_domain_inputs("--allow-domain", allowed_domains)?;
             }
             if clear_blocked_domains {
-                config.external_skills.blocked_domains.clear();
+                config.skills.blocked_domains.clear();
             } else if !blocked_domains.is_empty() {
-                config.external_skills.blocked_domains =
+                config.skills.blocked_domains =
                     normalize_domain_inputs("--block-domain", blocked_domains)?;
             }
 
@@ -826,14 +753,15 @@ fn execute_install_bundled_skill_command(
         config,
         Some(resolved_path),
     );
-    let request = ToolCoreRequest {
-        tool_name: "external_skills.install".to_owned(),
-        payload: json!({
-            "bundled_skill_id": skill_id,
-            "replace": replace,
-        }),
-    };
-    mvp::tools::execute_tool_core_with_config(request, &tool_runtime_config)
+    mvp::tools::skills_install_with_config(
+        None,
+        Some(skill_id),
+        None,
+        None,
+        false,
+        replace,
+        &tool_runtime_config,
+    )
 }
 
 fn execute_install_bundled_target_command(
@@ -861,7 +789,7 @@ fn execute_install_bundled_pack_command(
         config,
         Some(resolved_path),
     );
-    let existing = mvp::tools::external_skills_operator_list_with_config(&tool_runtime_config)?;
+    let existing = mvp::tools::skills_list_with_config(&tool_runtime_config)?;
     let installed_ids = existing
         .payload
         .get("skills")
@@ -892,11 +820,8 @@ fn execute_install_bundled_pack_command(
             }
             Err(error) => {
                 for installed_skill_id in newly_installed.iter().rev() {
-                    let _ = mvp::tools::execute_tool_core_with_config(
-                        ToolCoreRequest {
-                            tool_name: "external_skills.remove".to_owned(),
-                            payload: json!({ "skill_id": installed_skill_id }),
-                        },
+                    let _ = mvp::tools::skills_remove_with_config(
+                        installed_skill_id,
                         &tool_runtime_config,
                     );
                 }
@@ -929,7 +854,7 @@ fn execute_bundled_pack_inspect_command(
         config,
         Some(resolved_path),
     );
-    let existing = mvp::tools::external_skills_operator_list_with_config(&tool_runtime_config)?;
+    let existing = mvp::tools::skills_list_with_config(&tool_runtime_config)?;
     let discovered_map = existing
         .payload
         .get("skills")
@@ -988,126 +913,24 @@ fn serialize_bundled_skill_pack(pack: &mvp::tools::BundledSkillPack) -> Value {
     })
 }
 
-fn execute_enable_browser_preview_command(
-    resolved_path: &Path,
-    config: &mut mvp::config::LoongConfig,
-    replace: bool,
-) -> CliResult<ToolCoreOutcome> {
-    let mut updated_config = config.clone();
-    let config_updated = crate::browser_preview::ensure_browser_preview_config(&mut updated_config);
-    if crate::browser_preview::shell_policy_explicitly_denies_command(
-        &updated_config,
-        mvp::tools::BROWSER_COMPANION_COMMAND,
-    ) {
-        return Err(
-            "browser preview cannot be enabled while [tools].shell_deny blocks `agent-browser`; remove that entry and retry"
-                .to_owned(),
-        );
-    }
-
-    if config_updated {
-        persist_config_update(resolved_path, &updated_config)?;
-    }
-    let install_result = execute_install_bundled_skill_command(
-        resolved_path,
-        &updated_config,
-        crate::browser_preview::BROWSER_PREVIEW_SKILL_ID,
-        replace
-            || crate::browser_preview::inspect_browser_preview_state(&updated_config)
-                .skill_installed,
-    );
-    let mut outcome = match install_result {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            if config_updated {
-                persist_config_update(resolved_path, config).map_err(|rollback_error| {
-                    format!("{error}; browser preview config rollback failed: {rollback_error}")
-                })?;
-            }
-            return Err(error);
-        }
-    };
-    *config = updated_config;
-    let resolved_config_path = resolved_path.display().to_string();
-    let runtime_available =
-        crate::browser_preview::inspect_browser_preview_state(config).runtime_available;
-    let cli_enabled = config.cli.enabled;
-    let recipes = if cli_enabled {
-        crate::browser_preview::browser_preview_recipe_commands(&resolved_config_path)
-    } else {
-        Vec::new()
-    };
-    let doctor_command =
-        crate::cli_handoff::format_subcommand_with_config("doctor", &resolved_config_path);
-    let mut next_steps = if runtime_available {
-        let mut steps = Vec::new();
-        if cli_enabled && let Some(first_recipe) = recipes.first() {
-            steps.push(format!(
-                "Try browser companion preview: {}",
-                first_recipe.command
-            ));
-        }
-        steps.push(format!("Run diagnostics: {doctor_command}"));
-        steps
-    } else {
-        vec![
-            crate::browser_preview::browser_preview_install_step(),
-            crate::browser_preview::browser_preview_verify_step(),
-            format!("Run diagnostics: {doctor_command}"),
-        ]
-    };
-    if !cli_enabled {
-        next_steps.push("Re-enable `cli.enabled` before running the preview recipes.".to_owned());
-    }
-
-    if let Some(payload) = outcome.payload.as_object_mut() {
-        payload.insert(
-            "tool_name".to_owned(),
-            json!("skills.enable-browser-preview"),
-        );
-        payload.insert("config_updated".to_owned(), json!(config_updated));
-        payload.insert("browser_preview_enabled".to_owned(), json!(true));
-        payload.insert(
-            "runtime_binary_available".to_owned(),
-            json!(runtime_available),
-        );
-        payload.insert("cli_enabled".to_owned(), json!(cli_enabled));
-        payload.insert("next_steps".to_owned(), json!(next_steps));
-        payload.insert(
-            "recipes".to_owned(),
-            json!(
-                recipes
-                    .into_iter()
-                    .map(|recipe| json!({
-                        "label": recipe.label,
-                        "command": recipe.command,
-                    }))
-                    .collect::<Vec<_>>()
-            ),
-        );
-    }
-
-    Ok(outcome)
-}
-
 fn persistent_policy_payload(config: &mvp::config::LoongConfig) -> Value {
     json!({
-        "enabled": config.external_skills.enabled,
-        "require_download_approval": config.external_skills.require_download_approval,
-        "allowed_domains": config.external_skills.normalized_allowed_domains(),
-        "blocked_domains": config.external_skills.normalized_blocked_domains(),
+        "enabled": config.skills.enabled,
+        "require_download_approval": config.skills.require_download_approval,
+        "allowed_domains": config.skills.normalized_allowed_domains(),
+        "blocked_domains": config.skills.normalized_blocked_domains(),
         "install_root": config
-            .external_skills
+            .skills
             .resolved_install_root()
             .map(|path| path.display().to_string()),
-        "auto_expose_installed": config.external_skills.auto_expose_installed,
+        "auto_expose_installed": config.skills.auto_expose_installed,
     })
 }
 
 fn normalize_domain_inputs(flag: &str, entries: Vec<String>) -> CliResult<Vec<String>> {
     let mut normalized = BTreeSet::new();
     for entry in entries {
-        let value = mvp::tools::normalize_external_skill_domain_rule(entry.as_str())
+        let value = mvp::tools::normalize_skill_domain_rule(entry.as_str())
             .map_err(|error| format!("invalid domain rule for {flag}: {error}"))?;
         normalized.insert(value);
     }
@@ -1122,16 +945,21 @@ pub fn skills_cli_json(execution: &SkillsCommandExecution) -> Value {
     })
 }
 
+fn canonicalize_skills_tool_name(tool_name: &str) -> &str {
+    tool_name
+}
+
 pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<String> {
     let payload = &execution.outcome.payload;
     let tool_name = payload
         .get("tool_name")
         .and_then(Value::as_str)
-        .unwrap_or("external_skills");
+        .map(canonicalize_skills_tool_name)
+        .unwrap_or("skills");
     let mut lines = vec![format!("config={}", execution.resolved_config_path)];
 
     match tool_name {
-        "external_skills.list" => {
+        "skills.list" => {
             let skills = payload
                 .get("skills")
                 .and_then(Value::as_array)
@@ -1192,10 +1020,7 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                 }
             }
         }
-        "skills.search"
-        | "skills.recommend"
-        | "external_skills.search"
-        | "external_skills.recommend" => {
+        "skills.search" | "skills.recommend" => {
             lines.push(format!(
                 "query={}",
                 payload.get("query").and_then(Value::as_str).unwrap_or("-")
@@ -1227,8 +1052,7 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                     .and_then(Value::as_u64)
                     .unwrap_or(0)
             ));
-            let is_recommendation =
-                matches!(tool_name, "skills.recommend" | "external_skills.recommend");
+            let is_recommendation = matches!(tool_name, "skills.recommend");
             let results_heading = if is_recommendation {
                 "recommended skills:"
             } else {
@@ -1255,7 +1079,7 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                 "skills discovery payload missing `blocked_results` array",
             )?;
         }
-        "external_skills.source_search" => {
+        "skills.source_search" => {
             let results = payload
                 .get("results")
                 .and_then(Value::as_array)
@@ -1406,7 +1230,7 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                 }
             }
         }
-        "external_skills.inspect" => {
+        "skills.inspect" => {
             let skill = payload
                 .get("skill")
                 .and_then(Value::as_object)
@@ -1692,7 +1516,7 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                 }
             }
         }
-        "external_skills.install" | "skills.enable-browser-preview" => {
+        "skills.install" => {
             lines.push(format!(
                 "installed skill_id={}",
                 payload
@@ -1728,27 +1552,10 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
             ));
-            if tool_name == "skills.enable-browser-preview" {
-                lines.push("browser preview enabled via bundled helper skill".to_owned());
-                lines.push(format!(
-                    "config_updated={}",
-                    payload
-                        .get("config_updated")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                ));
-                lines.push(format!(
-                    "runtime_binary_available={}",
-                    payload
-                        .get("runtime_binary_available")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                ));
-            }
             render_optional_string_section(&mut lines, "next steps:", payload.get("next_steps"))?;
             render_optional_recipe_section(&mut lines, "recipes:", payload.get("recipes"))?;
         }
-        "external_skills.remove" => {
+        "skills.remove" => {
             lines.push(format!(
                 "removed skill_id={}",
                 payload
@@ -1757,7 +1564,7 @@ pub fn render_skills_cli_text(execution: &SkillsCommandExecution) -> CliResult<S
                     .unwrap_or("-")
             ));
         }
-        "external_skills.policy" | "skills.policy" => {
+        "skills.policy" => {
             let policy = payload
                 .get("policy")
                 .and_then(Value::as_object)

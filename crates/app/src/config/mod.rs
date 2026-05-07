@@ -75,7 +75,7 @@ pub(crate) use channels::{
     parse_nostr_private_key_hex, parse_nostr_public_key_hex,
 };
 #[allow(unused_imports)]
-pub use conversation::{ConversationConfig, ConversationTurnLoopConfig};
+pub use conversation::ConversationConfig;
 pub use feishu_integration::{FeishuCapabilityConfig, FeishuIntegrationConfig};
 pub(crate) use irc::{
     IRC_NICKNAME_ENV, IRC_SERVER_ENV, IrcServerEndpoint, IrcServerTransport,
@@ -135,27 +135,26 @@ pub(crate) use shared::{
 };
 #[allow(unused_imports)]
 pub use tools::{
-    AUTONOMY_PROFILE_VALID_VALUES, AutonomyProfile, BrowserCompanionToolConfig, BrowserToolConfig,
-    DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS, DEFAULT_BROWSER_MAX_LINKS,
+    AUTONOMY_PROFILE_VALID_VALUES, AutonomyProfile, BrowserToolConfig, DEFAULT_BROWSER_MAX_LINKS,
     DEFAULT_BROWSER_MAX_SESSIONS, DEFAULT_BROWSER_MAX_TEXT_CHARS,
     DEFAULT_EXTERNAL_SKILLS_BLOCKED_DOMAIN_RULES, DEFAULT_RUNTIME_SELF_MAX_SOURCE_CHARS,
     DEFAULT_RUNTIME_SELF_MAX_TOTAL_CHARS, DEFAULT_SHELL_ALLOW, DEFAULT_WEB_FETCH_MAX_BYTES,
     DEFAULT_WEB_FETCH_MAX_REDIRECTS, DEFAULT_WEB_FETCH_TIMEOUT_SECONDS,
     DEFAULT_WEB_SEARCH_MAX_RESULTS, DEFAULT_WEB_SEARCH_PROVIDER,
-    DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS, DelegateToolConfig, ExternalSkillsConfig,
-    GovernedToolApprovalConfig, GovernedToolApprovalMode, MAX_BROWSER_MAX_LINKS,
-    MAX_BROWSER_MAX_SESSIONS, MAX_BROWSER_MAX_TEXT_CHARS, MAX_RUNTIME_SELF_MAX_SOURCE_CHARS,
+    DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS, DelegateToolConfig, GovernedToolApprovalConfig,
+    GovernedToolApprovalMode, MAX_BROWSER_MAX_LINKS, MAX_BROWSER_MAX_SESSIONS,
+    MAX_BROWSER_MAX_TEXT_CHARS, MAX_RUNTIME_SELF_MAX_SOURCE_CHARS,
     MAX_RUNTIME_SELF_MAX_TOTAL_CHARS, MAX_WEB_FETCH_MAX_BYTES, RuntimePluginsConfig,
-    RuntimeSelfToolConfig, SessionVisibility, ToolConfig, ToolConsentConfig, ToolConsentMode,
-    ToolFileRootResolution, WEB_SEARCH_BRAVE_API_KEY_ENV, WEB_SEARCH_EXA_API_KEY_ENV,
-    WEB_SEARCH_FIRECRAWL_API_KEY_ENV, WEB_SEARCH_JINA_API_KEY_ENV, WEB_SEARCH_JINA_AUTH_TOKEN_ENV,
-    WEB_SEARCH_PERPLEXITY_API_KEY_ENV, WEB_SEARCH_PROVIDER_BRAVE, WEB_SEARCH_PROVIDER_DUCKDUCKGO,
-    WEB_SEARCH_PROVIDER_EXA, WEB_SEARCH_PROVIDER_FIRECRAWL, WEB_SEARCH_PROVIDER_JINA,
-    WEB_SEARCH_PROVIDER_PERPLEXITY, WEB_SEARCH_PROVIDER_TAVILY, WEB_SEARCH_PROVIDER_VALID_VALUES,
-    WEB_SEARCH_TAVILY_API_KEY_ENV, WebSearchProviderDescriptor, WebSearchToolConfig, WebToolConfig,
-    normalize_web_search_provider, parse_autonomy_profile, web_search_provider_api_key_env_names,
-    web_search_provider_default_api_key_env, web_search_provider_descriptor,
-    web_search_provider_descriptors,
+    RuntimeSelfToolConfig, SessionVisibility, SkillsConfig, ToolConfig, ToolConsentConfig,
+    ToolConsentMode, ToolFileRootResolution, WEB_SEARCH_BRAVE_API_KEY_ENV,
+    WEB_SEARCH_EXA_API_KEY_ENV, WEB_SEARCH_FIRECRAWL_API_KEY_ENV, WEB_SEARCH_JINA_API_KEY_ENV,
+    WEB_SEARCH_JINA_AUTH_TOKEN_ENV, WEB_SEARCH_PERPLEXITY_API_KEY_ENV, WEB_SEARCH_PROVIDER_BRAVE,
+    WEB_SEARCH_PROVIDER_DUCKDUCKGO, WEB_SEARCH_PROVIDER_EXA, WEB_SEARCH_PROVIDER_FIRECRAWL,
+    WEB_SEARCH_PROVIDER_JINA, WEB_SEARCH_PROVIDER_PERPLEXITY, WEB_SEARCH_PROVIDER_TAVILY,
+    WEB_SEARCH_PROVIDER_VALID_VALUES, WEB_SEARCH_TAVILY_API_KEY_ENV, WebSearchProviderDescriptor,
+    WebSearchToolConfig, WebToolConfig, normalize_web_search_provider, parse_autonomy_profile,
+    web_search_provider_api_key_env_names, web_search_provider_default_api_key_env,
+    web_search_provider_descriptor, web_search_provider_descriptors,
 };
 pub(crate) use tools::{MIN_RUNTIME_SELF_MAX_SOURCE_CHARS, MIN_RUNTIME_SELF_MAX_TOTAL_CHARS};
 #[cfg(feature = "tool-websearch")]
@@ -2396,51 +2395,6 @@ bot_token = { file = "/run/secrets/telegram" }
     }
 
     #[test]
-    fn turn_loop_policy_defaults_are_stable() {
-        let config = LoongConfig::default();
-        assert_eq!(
-            config
-                .conversation
-                .turn_loop
-                .max_followup_tool_payload_chars,
-            8_000
-        );
-        assert_eq!(
-            config
-                .conversation
-                .turn_loop
-                .max_followup_tool_payload_chars_total,
-            20_000
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "config-toml")]
-    fn turn_loop_policy_can_be_overridden_from_toml() {
-        let raw = r#"
-[conversation.turn_loop]
-max_followup_tool_payload_chars = 1200
-max_followup_tool_payload_chars_total = 3200
-"#;
-        let parsed =
-            toml::from_str::<LoongConfig>(raw).expect("parse turn-loop config should pass");
-        assert_eq!(
-            parsed
-                .conversation
-                .turn_loop
-                .max_followup_tool_payload_chars,
-            1200
-        );
-        assert_eq!(
-            parsed
-                .conversation
-                .turn_loop
-                .max_followup_tool_payload_chars_total,
-            3200
-        );
-    }
-
-    #[test]
     fn models_endpoint_resolution_for_supported_provider_profiles_is_stable() {
         let cases = vec![
             (
@@ -2807,7 +2761,7 @@ MCP_LOG = "warn"
         assert_eq!(config.queue_owner_ttl_ms(), 30_000);
         assert!(!config.bindings_enabled);
         assert!(!config.emit_runtime_events);
-        assert!(config.allow_mcp_server_injection);
+        assert!(!config.allow_mcp_server_injection);
         assert!(config.acpx_profile().is_none());
     }
 

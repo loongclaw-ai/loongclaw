@@ -107,7 +107,7 @@ use self::flow::{
     build_turn_loop_circuit_breaker_resolved_turn, prepare_provider_turn_continue_phase,
     provider_turn_usage, resolve_provider_turn, scope_provider_turn_tool_intents,
 };
-use self::lane::{assistant_preface_signals_provider_turn_followup, execute_provider_turn_lane};
+use self::lane::execute_provider_turn_lane;
 #[cfg(test)]
 use self::observer::summarize_tool_event_request;
 use self::observer::{
@@ -120,7 +120,7 @@ use self::pending_approval::*;
 use self::reply::build_turn_reply_followup_messages;
 use self::reply::{
     build_turn_reply_followup_messages_with_warning,
-    persist_active_external_skills_from_followup_payload_if_needed, resolve_provider_turn_reply,
+    persist_active_skills_from_followup_payload_if_needed, resolve_provider_turn_reply,
 };
 use self::safe_lane_events::*;
 use self::safe_lane_execution::*;
@@ -131,6 +131,7 @@ use self::safe_lane_state::{SafeLaneExecutionMetrics, SafeLanePlanLoopState};
 use self::setup::{lane_policy_from_config, require_production_kernel_binding};
 use self::skill_activation::{
     explicit_skill_activation_tool_call_id, parse_explicit_skill_activation_input,
+    parse_named_skill_activation_input,
 };
 pub use self::state::ConversationTurnOutcome;
 use self::state::*;
@@ -138,7 +139,7 @@ use super::super::config::{LoongConfig, ToolConsentMode};
 use super::ConversationSessionAddress;
 use super::ProviderErrorMode;
 #[cfg(feature = "memory-sqlite")]
-use super::active_external_skills;
+use super::active_skills;
 use super::analytics::{
     SafeLaneEventSummary, TurnCheckpointProgressStatus as AnalyticsTurnCheckpointProgressStatus,
     TurnCheckpointRecoveryAction, build_turn_checkpoint_repair_plan, summarize_safe_lane_history,
@@ -212,8 +213,7 @@ use self::support::{
     emit_discovery_first_event, emit_prompt_frame_event, estimate_tokens_for_messages,
     failed_task_progress_record, inject_delegate_workspace_metadata,
     persist_task_progress_event_best_effort, split_delegate_workspace_cleanup,
-    summarize_discovery_first_followup_turn, verifying_task_progress_record,
-    waiting_task_progress_record,
+    summarize_followup_turn, verifying_task_progress_record, waiting_task_progress_record,
 };
 use super::turn_checkpoint::{
     ContextCompactionOutcome, TurnCheckpointDiagnostics, TurnCheckpointFailure,
@@ -226,7 +226,6 @@ use super::turn_checkpoint::{
     TurnCheckpointTailRuntimeEligibility, TurnFinalizationCheckpoint, TurnLaneExecutionSnapshot,
     TurnPreparationSnapshot, TurnReplyCheckpoint, checkpoint_context_fingerprint_sha256,
     persist_turn_checkpoint_event, persist_turn_checkpoint_event_value,
-    persist_turn_checkpoint_event_with_compaction_diagnostics,
     restore_analytics_turn_checkpoint_progress_status, turn_checkpoint_result_kind,
 };
 use super::turn_engine::{
@@ -248,15 +247,14 @@ pub(super) use super::turn_shared::{
     ToolDrivenFollowupPayload, ToolDrivenReplyBaseDecision, ToolDrivenReplyPhase,
     build_tool_driven_followup_tail_with_request_summary_and_contract,
     build_tool_followup_user_prompt_with_context, build_tool_loop_guard_tail,
-    decide_provider_turn_request_action, effective_followup_tool_name,
-    effective_followup_visible_tool_name, format_approval_required_reply,
-    missing_tool_call_followup_payload, next_conversation_turn_id,
+    decide_provider_turn_request_action, effective_followup_visible_tool_name,
+    format_approval_required_reply, missing_tool_call_followup_payload, next_conversation_turn_id,
     parse_tool_driven_continuation_reply, reduce_followup_payload_for_model,
     render_tool_followup_continuation_contract, request_completion_with_raw_fallback,
-    request_completion_with_raw_fallback_detailed, summarize_provider_lane_tool_request,
-    summarize_single_tool_followup_request, tool_driven_followup_payload,
-    tool_loop_circuit_breaker_reply, tool_result_contains_truncation_signal,
-    user_requested_raw_tool_output,
+    request_completion_with_raw_fallback_detailed, salvage_missing_tool_call_reply_text,
+    summarize_provider_lane_tool_request, summarize_single_tool_followup_request,
+    tool_driven_followup_payload, tool_loop_circuit_breaker_reply,
+    tool_result_contains_truncation_signal, user_requested_raw_tool_output,
 };
 #[cfg(feature = "memory-sqlite")]
 use crate::conversation::workspace_isolation::{

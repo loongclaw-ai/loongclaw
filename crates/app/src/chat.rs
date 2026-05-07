@@ -15,6 +15,7 @@ use crate::acp::{
     AcpConversationTurnOptions, AcpTurnEventSink, AcpTurnProvenance, JsonlAcpTurnEventSink,
 };
 
+mod boot;
 mod chat_surface;
 mod checkpoint;
 mod checkpoint_labels;
@@ -22,6 +23,7 @@ mod checkpoint_labels;
 mod checkpoint_text;
 mod cli_input;
 mod cli_render;
+mod commands;
 mod control_plane;
 mod deck;
 mod fast;
@@ -36,16 +38,19 @@ mod render;
 mod report;
 mod safe;
 mod safe_text;
+mod session;
 mod startup_state;
 mod startup_view;
 mod status_view;
 
+use self::boot::*;
 use self::checkpoint::*;
 use self::checkpoint_labels::*;
 #[cfg(test)]
 use self::checkpoint_text::*;
 use self::cli_input::ConcurrentCliInputReader;
 use self::cli_render::*;
+use self::commands::*;
 use self::fast::*;
 use self::live_runtime::*;
 #[cfg(test)]
@@ -98,6 +103,11 @@ use self::safe::*;
 use self::safe_text::*;
 #[cfg(test)]
 use crate::conversation::DefaultConversationRuntime;
+
+pub(crate) use self::boot::{
+    initialize_cli_turn_runtime, initialize_cli_turn_runtime_with_loaded_config,
+    initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx,
+};
 
 use super::config::{self, ConversationConfig, LoongConfig};
 #[cfg(test)]
@@ -301,13 +311,6 @@ impl CliTurnRuntime {
     }
 }
 
-const fn should_run_cli_chat_surface(
-    config_path_is_directory: bool,
-    terminal_supported: bool,
-) -> bool {
-    terminal_supported && !config_path_is_directory
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CliSessionRequirement {
     /// Interactive entrypoints may fall back to the implicit default session
@@ -350,6 +353,47 @@ pub async fn run_cli_chat(
     }
 
     run_cli_chat_repl(config_path, session_hint, options).await
+}
+
+const fn should_run_cli_chat_surface(
+    config_path_is_directory: bool,
+    terminal_supported: bool,
+) -> bool {
+    terminal_supported && !config_path_is_directory
+}
+
+pub(crate) fn initialize_cli_chat_surface_runtime(
+    config_path: Option<&str>,
+    session_hint: Option<&str>,
+    options: &CliChatOptions,
+    kernel_scope: &'static str,
+) -> CliResult<CliTurnRuntime> {
+    let resolved_path = config_path
+        .map(config::expand_path)
+        .unwrap_or_else(config::default_config_path);
+    let config_exists = resolved_path.try_exists().map_err(|error| {
+        format!(
+            "failed to access config path {}: {error}",
+            resolved_path.display()
+        )
+    })?;
+    if config_exists {
+        return initialize_cli_turn_runtime(config_path, session_hint, options, kernel_scope);
+    }
+
+    initialize_cli_turn_runtime_with_loaded_config(
+        resolved_path,
+        LoongConfig::default(),
+        session_hint,
+        options,
+        kernel_scope,
+        CliSessionRequirement::AllowImplicitDefault,
+        false,
+    )
+    .map(|mut runtime| {
+        runtime.config_present = false;
+        runtime
+    })
 }
 
 #[allow(clippy::print_stdout)] // CLI REPL output
@@ -482,9 +526,10 @@ pub async fn run_cli_ask(
 
 pub fn run_concurrent_cli_host(options: &ConcurrentCliHostOptions) -> CliResult<()> {
     reject_disabled_cli_channel(&options.config)?;
-    // The fullscreen operator-cockpit surface is deprecated for production
-    // chat entrypoints and concurrent hosts alike. Keep the shared shell-first
-    // runtime path as the only live production host until a replacement lands.
+    if session::interactive_terminal_surface_supported() {
+        return session::run_concurrent_cli_host_surface(options);
+    }
+
     run_concurrent_cli_host_repl(options)
 }
 
@@ -510,546 +555,6 @@ fn run_concurrent_cli_host_repl(options: &ConcurrentCliHostOptions) -> CliResult
         print_turn_checkpoint_startup_health(&runtime).await;
         run_concurrent_cli_host_loop(&runtime, &chat_options, &options.shutdown).await
     })
-}
-
-pub(crate) fn reject_disabled_cli_channel(config: &LoongConfig) -> CliResult<()> {
-    if config.cli.enabled {
-        return Ok(());
-    }
-
-    Err("CLI channel is disabled by config.cli.enabled=false".to_owned())
-}
-
-fn ensure_cli_channel_enabled_for_entrypoint(config_path: Option<&str>) -> CliResult<()> {
-    let resolved_config_path = config_path
-        .map(config::expand_path)
-        .unwrap_or_else(config::default_config_path);
-    let config_exists = resolved_config_path.try_exists().map_err(|error| {
-        format!(
-            "failed to access config path {}: {error}",
-            resolved_config_path.display()
-        )
-    })?;
-    if !config_exists {
-        return Ok(());
-    }
-
-    let (_resolved_path, config) = config::load(config_path)?;
-    reject_disabled_cli_channel(&config)
-}
-
-/// Assemble a CLI turn runtime starting from a config path on disk.
-///
-/// This is the highest-level bootstrap used by `chat`/`ask`: it loads the
-/// config, permits implicit default-session resolution, exports runtime
-/// environment variables, bootstraps a fresh kernel context, and delegates the
-/// final session/memory assembly to the lower-level helpers below.
-pub(crate) fn initialize_cli_turn_runtime(
-    config_path: Option<&str>,
-    session_hint: Option<&str>,
-    options: &CliChatOptions,
-    kernel_scope: &'static str,
-) -> CliResult<CliTurnRuntime> {
-    let (resolved_path, config) = config::load(config_path)?;
-    initialize_cli_turn_runtime_with_loaded_config(
-        resolved_path,
-        config,
-        session_hint,
-        options,
-        kernel_scope,
-        CliSessionRequirement::AllowImplicitDefault,
-        true,
-    )
-}
-
-pub(crate) fn initialize_cli_chat_surface_runtime(
-    config_path: Option<&str>,
-    session_hint: Option<&str>,
-    options: &CliChatOptions,
-    kernel_scope: &'static str,
-) -> CliResult<CliTurnRuntime> {
-    let resolved_path = config_path
-        .map(config::expand_path)
-        .unwrap_or_else(config::default_config_path);
-    let config_exists = resolved_path.try_exists().map_err(|error| {
-        format!(
-            "failed to access config path {}: {error}",
-            resolved_path.display()
-        )
-    })?;
-    if config_exists {
-        return initialize_cli_turn_runtime(config_path, session_hint, options, kernel_scope);
-    }
-
-    initialize_cli_turn_runtime_with_loaded_config(
-        resolved_path,
-        LoongConfig::default(),
-        session_hint,
-        options,
-        kernel_scope,
-        CliSessionRequirement::AllowImplicitDefault,
-        false,
-    )
-    .map(|mut runtime| {
-        runtime.config_present = false;
-        runtime
-    })
-}
-
-/// Assemble a CLI turn runtime when the caller already owns a resolved config.
-///
-/// Compared with `initialize_cli_turn_runtime`, this skips config loading but
-/// still normalizes the runtime workspace root, optionally exports runtime
-/// environment variables, bootstraps a fresh kernel context, and then delegates
-/// the final session/memory assembly to
-/// `initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx`.
-///
-/// Use the `_and_kernel_ctx` variant when the caller must reuse an existing
-/// kernel authority—such as channel-triggered turns—rather than minting a new
-/// token for the same logical operation.
-pub(crate) fn initialize_cli_turn_runtime_with_loaded_config(
-    resolved_path: PathBuf,
-    config: LoongConfig,
-    session_hint: Option<&str>,
-    options: &CliChatOptions,
-    kernel_scope: &'static str,
-    session_requirement: CliSessionRequirement,
-    initialize_runtime_environment: bool,
-) -> CliResult<CliTurnRuntime> {
-    let mut config = config;
-    // Interactive chat surfaces should anchor tool-relative filesystem access
-    // to the launch directory when possible, rather than forcing every turn to
-    // inherit the static configured file root.
-    let runtime_workspace_root = std::env::current_dir()
-        .ok()
-        .unwrap_or_else(|| config.tools.resolved_file_root());
-    let runtime_workspace_root =
-        dunce::canonicalize(&runtime_workspace_root).unwrap_or(runtime_workspace_root);
-    let runtime_workspace_root = runtime_workspace_root.display().to_string();
-    config.tools.runtime_workspace_root = Some(runtime_workspace_root);
-
-    if initialize_runtime_environment {
-        crate::runtime_env::initialize_runtime_environment(&config, Some(&resolved_path));
-    }
-    let runtime_kernel =
-        crate::runtime_bridge::RuntimeKernelOwner::bootstrap(kernel_scope, &config)?;
-    let kernel_ctx = runtime_kernel.cloned_kernel_context();
-    initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx(
-        resolved_path,
-        true,
-        config,
-        session_hint,
-        options,
-        kernel_ctx,
-        session_requirement,
-    )
-}
-
-/// Final assembly step for CLI/chat turn state once config and kernel authority
-/// are already available.
-///
-/// This helper resolves ACP defaults, prepares memory/sqlite state, derives the
-/// effective session id/address, and constructs the `CliTurnRuntime`. It
-/// deliberately does not mutate process environment variables or bootstrap a
-/// new kernel context; callers use it when those concerns were already handled
-/// by an outer runtime surface.
-pub(crate) fn initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx(
-    resolved_path: PathBuf,
-    config_present: bool,
-    config: LoongConfig,
-    session_hint: Option<&str>,
-    options: &CliChatOptions,
-    kernel_ctx: crate::KernelContext,
-    session_requirement: CliSessionRequirement,
-) -> CliResult<CliTurnRuntime> {
-    let explicit_acp_request = options.requests_explicit_acp();
-    let effective_bootstrap_mcp_servers = config
-        .acp
-        .dispatch
-        .bootstrap_mcp_server_names_with_additions(&options.acp_bootstrap_mcp_servers)?;
-    let effective_working_directory = options
-        .acp_working_directory
-        .clone()
-        .or_else(|| config.acp.dispatch.resolved_working_directory());
-
-    #[cfg(feature = "memory-sqlite")]
-    let memory_config = SessionStoreConfig::from_memory_config(&config.memory);
-
-    #[cfg(feature = "memory-sqlite")]
-    let memory_label = {
-        let sqlite_path = config.memory.resolved_sqlite_path();
-        let initialized = store::ensure_session_store_ready(Some(sqlite_path), &memory_config)
-            .map_err(|error| format!("failed to initialize sqlite memory: {error}"))?;
-        initialized.display().to_string()
-    };
-
-    #[cfg(not(feature = "memory-sqlite"))]
-    let memory_label = "disabled".to_owned();
-
-    #[cfg(feature = "memory-sqlite")]
-    let session_id =
-        resolve_cli_runtime_session_id(session_hint, session_requirement, &memory_config)?;
-
-    #[cfg(not(feature = "memory-sqlite"))]
-    let session_id = resolve_cli_session_id(session_hint, session_requirement)?;
-
-    let session_address = ConversationSessionAddress::from_session_id(session_id.clone());
-    let runtime_kernel = crate::runtime_bridge::RuntimeKernelOwner::new(kernel_ctx);
-
-    Ok(CliTurnRuntime {
-        resolved_path,
-        config_present,
-        config,
-        session_id,
-        session_address,
-        turn_coordinator: ConversationTurnCoordinator::new(),
-        runtime_kernel,
-        explicit_acp_request,
-        effective_bootstrap_mcp_servers,
-        effective_working_directory,
-        memory_label,
-        #[cfg(feature = "memory-sqlite")]
-        memory_config,
-    })
-}
-
-fn resolve_cli_session_id(
-    session_hint: Option<&str>,
-    session_requirement: CliSessionRequirement,
-) -> CliResult<String> {
-    match session_hint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(session_id) => Ok(session_id.to_owned()),
-        None => match session_requirement {
-            CliSessionRequirement::AllowImplicitDefault => Ok("default".to_owned()),
-            CliSessionRequirement::RequireExplicit => {
-                Err("concurrent CLI host requires an explicit session id".to_owned())
-            }
-        },
-    }
-}
-
-#[cfg(feature = "memory-sqlite")]
-fn resolve_cli_runtime_session_id(
-    session_hint: Option<&str>,
-    session_requirement: CliSessionRequirement,
-    memory_config: &SessionStoreConfig,
-) -> CliResult<String> {
-    let session_id = resolve_cli_session_id(session_hint, session_requirement)?;
-    let should_resolve_latest = session_requirement == CliSessionRequirement::AllowImplicitDefault
-        && session_id == LATEST_SESSION_SELECTOR;
-
-    if !should_resolve_latest {
-        return Ok(session_id);
-    }
-
-    let latest_session_id = latest_resumable_root_session_id(memory_config)?;
-    let latest_session_id = latest_session_id.ok_or_else(|| {
-        "CLI session selector `latest` did not find any resumable root session".to_owned()
-    })?;
-
-    Ok(latest_session_id)
-}
-
-#[allow(clippy::print_stdout)] // CLI output
-async fn print_turn_checkpoint_startup_health(runtime: &CliTurnRuntime) {
-    ops::print_turn_checkpoint_startup_health(runtime).await;
-}
-
-#[allow(clippy::print_stdout)] // CLI output
-async fn run_concurrent_cli_host_loop(
-    runtime: &CliTurnRuntime,
-    options: &CliChatOptions,
-    shutdown: &ConcurrentCliShutdown,
-) -> CliResult<()> {
-    if shutdown.is_requested() {
-        println!("bye.");
-        return Ok(());
-    }
-
-    let mut stdin_reader = ConcurrentCliInputReader::new()?;
-
-    loop {
-        if shutdown.is_requested() {
-            break;
-        }
-
-        print!("{CLI_CHAT_COMPOSER_PROMPT}");
-        io::stdout()
-            .flush()
-            .map_err(|error| format!("flush stdout failed: {error}"))?;
-
-        let next_line = tokio::select! {
-            _ = shutdown.wait() => {
-                println!();
-                None
-            },
-            line = stdin_reader.next_line() => Some(line?),
-        };
-
-        let Some(line) = next_line else {
-            break;
-        };
-        let Some(line) = line else {
-            println!();
-            break;
-        };
-
-        match process_cli_chat_input(runtime, line.trim(), options, None).await? {
-            CliChatLoopControl::Continue => continue,
-            CliChatLoopControl::Exit => break,
-            CliChatLoopControl::AssistantText(assistant_text) => {
-                let render_width = detect_cli_chat_render_width();
-                let rendered_lines =
-                    render_cli_chat_assistant_lines_with_width(&assistant_text, render_width);
-                print_rendered_cli_chat_lines(&rendered_lines);
-            }
-        }
-    }
-
-    println!("bye.");
-    Ok(())
-}
-
-async fn process_cli_chat_input(
-    runtime: &CliTurnRuntime,
-    input: &str,
-    options: &CliChatOptions,
-    event_sink: Option<&dyn AcpTurnEventSink>,
-) -> CliResult<CliChatLoopControl> {
-    if input.is_empty() {
-        return Ok(CliChatLoopControl::Continue);
-    }
-    if is_exit_command(&runtime.config, input) {
-        return Ok(CliChatLoopControl::Exit);
-    }
-    match classify_chat_command_match_result(parse_exact_chat_command(
-        input,
-        &[CLI_CHAT_HELP_COMMAND],
-        "usage: /help",
-    ))? {
-        ChatCommandMatchResult::Matched => {
-            print_help();
-            return Ok(CliChatLoopControl::Continue);
-        }
-        ChatCommandMatchResult::UsageError(usage) => {
-            let usage_lines = render_cli_chat_command_usage_lines_with_width(
-                &usage,
-                detect_cli_chat_render_width(),
-            );
-            print_rendered_cli_chat_lines(&usage_lines);
-            return Ok(CliChatLoopControl::Continue);
-        }
-        ChatCommandMatchResult::NotMatched => {}
-    }
-    match classify_chat_command_match_result(is_cli_chat_status_command(input))? {
-        ChatCommandMatchResult::Matched => {
-            print_cli_chat_status(runtime, options).await?;
-            return Ok(CliChatLoopControl::Continue);
-        }
-        ChatCommandMatchResult::UsageError(usage) => {
-            let usage_lines = render_cli_chat_command_usage_lines_with_width(
-                &usage,
-                detect_cli_chat_render_width(),
-            );
-            print_rendered_cli_chat_lines(&usage_lines);
-            return Ok(CliChatLoopControl::Continue);
-        }
-        ChatCommandMatchResult::NotMatched => {}
-    }
-    match classify_chat_command_match_result(is_manual_compaction_command(input))? {
-        ChatCommandMatchResult::Matched => {
-            print_manual_compaction(runtime).await?;
-            return Ok(CliChatLoopControl::Continue);
-        }
-        ChatCommandMatchResult::UsageError(usage) => {
-            let usage_lines = render_cli_chat_command_usage_lines_with_width(
-                &usage,
-                detect_cli_chat_render_width(),
-            );
-            print_rendered_cli_chat_lines(&usage_lines);
-            return Ok(CliChatLoopControl::Continue);
-        }
-        ChatCommandMatchResult::NotMatched => {}
-    }
-    match classify_chat_command_match_result(parse_exact_chat_command(
-        input,
-        &[CLI_CHAT_HISTORY_COMMAND],
-        "usage: /history",
-    ))? {
-        ChatCommandMatchResult::Matched => {
-            #[cfg(feature = "memory-sqlite")]
-            print_history(
-                &runtime.session_id,
-                runtime.config.memory.sliding_window,
-                runtime.conversation_binding(),
-                &runtime.memory_config,
-            )
-            .await?;
-            #[cfg(not(feature = "memory-sqlite"))]
-            print_history(
-                &runtime.session_id,
-                runtime.config.memory.sliding_window,
-                runtime.conversation_binding(),
-            )
-            .await?;
-            return Ok(CliChatLoopControl::Continue);
-        }
-        ChatCommandMatchResult::UsageError(usage) => {
-            let usage_lines = render_cli_chat_command_usage_lines_with_width(
-                &usage,
-                detect_cli_chat_render_width(),
-            );
-            print_rendered_cli_chat_lines(&usage_lines);
-            return Ok(CliChatLoopControl::Continue);
-        }
-        ChatCommandMatchResult::NotMatched => {}
-    }
-    let fast_lane_limit_result =
-        parse_fast_lane_summary_limit(input, runtime.config.memory.sliding_window);
-    match fast_lane_limit_result {
-        Ok(Some(limit)) => {
-            #[cfg(feature = "memory-sqlite")]
-            print_fast_lane_summary(
-                &runtime.session_id,
-                limit,
-                runtime.conversation_binding(),
-                &runtime.memory_config,
-            )
-            .await?;
-            #[cfg(not(feature = "memory-sqlite"))]
-            print_fast_lane_summary(&runtime.session_id, limit, runtime.conversation_binding())
-                .await?;
-            return Ok(CliChatLoopControl::Continue);
-        }
-        Ok(None) => {}
-        Err(error) => {
-            if let Some(usage_lines) = maybe_render_nonfatal_usage_error(error.as_str()) {
-                print_rendered_cli_chat_lines(&usage_lines);
-                return Ok(CliChatLoopControl::Continue);
-            }
-
-            return Err(error);
-        }
-    }
-
-    let safe_lane_limit_result =
-        parse_safe_lane_summary_limit(input, runtime.config.memory.sliding_window);
-    match safe_lane_limit_result {
-        Ok(Some(limit)) => {
-            #[cfg(feature = "memory-sqlite")]
-            print_safe_lane_summary(
-                &runtime.session_id,
-                limit,
-                &runtime.config.conversation,
-                runtime.conversation_binding(),
-                &runtime.memory_config,
-            )
-            .await?;
-            #[cfg(not(feature = "memory-sqlite"))]
-            print_safe_lane_summary(
-                &runtime.session_id,
-                limit,
-                &runtime.config.conversation,
-                runtime.conversation_binding(),
-            )
-            .await?;
-            return Ok(CliChatLoopControl::Continue);
-        }
-        Ok(None) => {}
-        Err(error) => {
-            if let Some(usage_lines) = maybe_render_nonfatal_usage_error(error.as_str()) {
-                print_rendered_cli_chat_lines(&usage_lines);
-                return Ok(CliChatLoopControl::Continue);
-            }
-
-            return Err(error);
-        }
-    }
-
-    let turn_checkpoint_limit_result =
-        parse_turn_checkpoint_summary_limit(input, runtime.config.memory.sliding_window);
-    match turn_checkpoint_limit_result {
-        Ok(Some(limit)) => {
-            #[cfg(feature = "memory-sqlite")]
-            print_turn_checkpoint_summary(
-                &runtime.turn_coordinator,
-                &runtime.config,
-                &runtime.session_id,
-                limit,
-                runtime.conversation_binding(),
-                &runtime.memory_config,
-            )
-            .await?;
-            #[cfg(not(feature = "memory-sqlite"))]
-            print_turn_checkpoint_summary(
-                &runtime.turn_coordinator,
-                &runtime.config,
-                &runtime.session_id,
-                limit,
-                runtime.conversation_binding(),
-            )
-            .await?;
-            return Ok(CliChatLoopControl::Continue);
-        }
-        Ok(None) => {}
-        Err(error) => {
-            if let Some(usage_lines) = maybe_render_nonfatal_usage_error(error.as_str()) {
-                print_rendered_cli_chat_lines(&usage_lines);
-                return Ok(CliChatLoopControl::Continue);
-            }
-
-            return Err(error);
-        }
-    }
-    match classify_chat_command_match_result(is_turn_checkpoint_repair_command(input))? {
-        ChatCommandMatchResult::Matched => {
-            print_turn_checkpoint_repair(
-                &runtime.turn_coordinator,
-                &runtime.config,
-                &runtime.session_id,
-                runtime.conversation_binding(),
-            )
-            .await?;
-            return Ok(CliChatLoopControl::Continue);
-        }
-        ChatCommandMatchResult::UsageError(usage) => {
-            let render_width = detect_cli_chat_render_width();
-            let usage_lines = render_cli_chat_command_usage_lines_with_width(&usage, render_width);
-            print_rendered_cli_chat_lines(&usage_lines);
-            return Ok(CliChatLoopControl::Continue);
-        }
-        ChatCommandMatchResult::NotMatched => {}
-    }
-
-    let turn_request = crate::agent_runtime::AgentTurnRequest {
-        message: input.to_owned(),
-        turn_mode: crate::agent_runtime::AgentTurnMode::Interactive,
-        channel_id: runtime.session_address.channel_id.clone(),
-        account_id: runtime.session_address.account_id.clone(),
-        conversation_id: runtime.session_address.conversation_id.clone(),
-        participant_id: runtime.session_address.participant_id.clone(),
-        thread_id: runtime.session_address.thread_id.clone(),
-        metadata: BTreeMap::new(),
-        acp: runtime.explicit_acp_request,
-        acp_event_stream: event_sink.is_some(),
-        acp_bootstrap_mcp_servers: runtime.effective_bootstrap_mcp_servers.clone(),
-        acp_cwd: runtime
-            .effective_working_directory
-            .as_ref()
-            .map(|path| path.display().to_string()),
-        live_surface_enabled: true,
-    };
-    let turn_options = crate::agent_runtime::TurnExecutionOptions {
-        event_sink,
-        ..Default::default()
-    };
-    let turn_service = crate::agent_runtime::RuntimeTurnExecutionService::new(runtime);
-    let turn_result = turn_service.execute(&turn_request, turn_options).await?;
-
-    Ok(CliChatLoopControl::AssistantText(turn_result.output_text))
 }
 
 pub(crate) async fn run_cli_turn(

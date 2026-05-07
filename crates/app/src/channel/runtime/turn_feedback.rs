@@ -201,7 +201,7 @@ fn format_significant_channel_turn_tool_event(event: &ConversationTurnToolEvent)
         return None;
     }
 
-    let visible_tool_name = crate::tools::user_visible_tool_name(event.tool_name.as_str());
+    let visible_tool_name = channel_trace_visible_tool_name(event.tool_name.as_str());
     let state = event.state.as_str();
     match detail {
         Some(detail) => {
@@ -212,6 +212,15 @@ fn format_significant_channel_turn_tool_event(event: &ConversationTurnToolEvent)
             ))
         }
         None => Some(format!("- {} {}", visible_tool_name, state)),
+    }
+}
+
+fn channel_trace_visible_tool_name(tool_name: &str) -> String {
+    let canonical_tool_name = crate::tools::canonical_tool_name(tool_name);
+    match canonical_tool_name {
+        "tool.search" => "discovery".to_owned(),
+        "tool.invoke" => "hidden tool".to_owned(),
+        _ => crate::tools::user_visible_tool_name(canonical_tool_name),
     }
 }
 
@@ -267,10 +276,10 @@ mod tests {
 
         assert!(reply.contains("final reply"));
         assert!(reply.contains("execution trace:"));
-        assert!(reply.contains("- tool.search completed: returned 0 results"));
+        assert!(reply.contains("- discovery completed: returned 0 results"));
         assert!(reply.contains("- web failed: missing network egress capability"));
         assert!(
-            !reply.contains("tool.search running"),
+            !reply.contains("discovery running"),
             "the capture should keep only the latest event per tool call"
         );
     }

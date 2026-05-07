@@ -2816,10 +2816,7 @@ fn runtime_capability_activate_managed_skill_apply_installs_skill_and_is_idempot
         activate_report.outcome,
         loong_daemon::runtime_capability_cli::RuntimeCapabilityActivateOutcome::Activated
     );
-    assert_eq!(
-        activate_report.activation_surface,
-        "external_skills.install"
-    );
+    assert_eq!(activate_report.activation_surface, "skills.install");
     assert!(
         !activate_report.rollback_hints.is_empty(),
         "activation should surface rollback guidance"
@@ -2832,7 +2829,8 @@ fn runtime_capability_activate_managed_skill_apply_installs_skill_and_is_idempot
         "activation should report managed skill verification evidence"
     );
     let installed_skill_path = root
-        .join("external-skills-installed")
+        .join(mvp::config::HOME_DIR_NAME)
+        .join("skills")
         .join(apply_report.applied_artifact.artifact_id.as_str());
     let installed_skill_markdown_path = installed_skill_path.join("SKILL.md");
     assert!(
@@ -3189,14 +3187,9 @@ fn runtime_capability_activate_managed_skill_dry_run_reports_install_target() {
         activate_report.outcome,
         loong_daemon::runtime_capability_cli::RuntimeCapabilityActivateOutcome::DryRun
     );
-    assert_eq!(
-        activate_report.activation_surface,
-        "external_skills.install"
-    );
+    assert_eq!(activate_report.activation_surface, "skills.install");
     assert!(
-        activate_report
-            .target_path
-            .contains("external-skills-installed"),
+        activate_report.target_path.contains(".loong/skills"),
         "dry-run should point at the managed skill install root"
     );
     assert!(
@@ -3333,7 +3326,8 @@ fn runtime_capability_rollback_managed_skill_restores_pre_activation_state_and_i
         "rollback should verify managed skill removal"
     );
     let installed_skill_path = root
-        .join("external-skills-installed")
+        .join(mvp::config::HOME_DIR_NAME)
+        .join("skills")
         .join(activate_report.artifact_id.as_str());
     assert!(
         !installed_skill_path.exists(),

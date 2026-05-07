@@ -1,4 +1,8 @@
 use super::*;
+use loong_contracts::Capability;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::mpsc;
+use std::time::Duration;
 
 #[cfg(all(feature = "tool-file", feature = "tool-shell"))]
 #[test]
@@ -62,8 +66,8 @@ fn tool_search_includes_shell_exec_when_runtime_allowlist_is_empty() {
     let results = outcome.payload["results"].as_array().expect("results");
     let shell_entry = results
         .iter()
-        .find(|entry| entry["tool_id"] == "exec")
-        .expect("direct exec should remain discoverable");
+        .find(|entry| entry["tool_id"] == "bash")
+        .expect("direct bash should remain discoverable");
 
     assert!(shell_entry.get("lease").is_none());
 
@@ -275,7 +279,9 @@ fn tool_execution_config_timeout_for_tool_prefers_per_tool() {
     use std::collections::BTreeMap;
 
     let mut per_tool = BTreeMap::new();
-    per_tool.insert("file.read".to_owned(), 30u64);
+    per_tool.insert("read".to_owned(), 30u64);
+    per_tool.insert("write".to_owned(), 45u64);
+    per_tool.insert("edit".to_owned(), 15u64);
 
     let config = runtime_config::ToolExecutionConfig {
         default_timeout_seconds: Some(60u64),
@@ -283,7 +289,11 @@ fn tool_execution_config_timeout_for_tool_prefers_per_tool() {
     };
 
     assert_eq!(config.timeout_for_tool("file.read"), Some(30));
-    assert_eq!(config.timeout_for_tool("file.write"), Some(60));
+    assert_eq!(config.timeout_for_tool("read"), Some(30));
+    assert_eq!(config.timeout_for_tool("file.write"), Some(45));
+    assert_eq!(config.timeout_for_tool("write"), Some(45));
+    assert_eq!(config.timeout_for_tool("edit"), Some(15));
+    assert_eq!(config.timeout_for_tool("file.edit"), Some(15));
     assert_eq!(config.timeout_for_tool("unknown"), Some(60));
 }
 
@@ -295,6 +305,7 @@ fn tool_execution_config_timeout_for_tool_none_when_no_default() {
     };
 
     assert_eq!(config.timeout_for_tool("file.read"), None);
+    assert_eq!(config.timeout_for_tool("read"), None);
 }
 
 #[test]
@@ -306,10 +317,9 @@ fn tool_execution_config_default_is_no_timeout() {
 
 #[test]
 fn framework_timeout_excludes_tools_with_dedicated_timeout_controls() {
-    assert!(tool_uses_dedicated_timeout(
-        "browser.companion.session.start"
-    ));
-    assert!(tool_uses_dedicated_timeout("browser.companion.wait"));
+    assert!(tool_uses_dedicated_timeout("browser.open"));
+    assert!(tool_uses_dedicated_timeout("browser.extract"));
+    assert!(tool_uses_dedicated_timeout("browser.click"));
     assert!(tool_uses_dedicated_timeout("delegate"));
     assert!(tool_uses_dedicated_timeout("delegate_async"));
     assert!(tool_uses_dedicated_timeout("shell.exec"));
@@ -330,7 +340,7 @@ fn tool_without_timeout_config_completes_normally() {
     let config = test_tool_runtime_config(root);
 
     let request = ToolCoreRequest {
-        tool_name: "file.read".to_owned(),
+        tool_name: "read".to_owned(),
         payload: json!({
             "path": "README.md"
         }),
@@ -355,13 +365,13 @@ fn framework_timeout_returns_without_waiting_for_worker_completion() {
             Ok::<(), String>(())
         },
         1,
-        "file.read",
+        "read",
     )
     .expect_err("timeout should be reported");
 
     let elapsed = start.elapsed();
 
-    assert_eq!(error, "tool_execution_timeout: file.read exceeded 1s");
+    assert_eq!(error, "tool_execution_timeout: read exceeded 1s");
     assert!(
         elapsed < Duration::from_secs(2),
         "timeout helper should return promptly, got {elapsed:?}"
@@ -382,7 +392,7 @@ async fn framework_timeout_supports_async_core_tool_calls() {
 
     let adapter = MvpToolAdapter::with_config(config.into_inner());
     let request = ToolCoreRequest {
-        tool_name: "file.read".to_owned(),
+        tool_name: "read".to_owned(),
         payload: json!({
             "path": "README.md"
         }),
@@ -867,9 +877,9 @@ fn tool_search_result_includes_compact_argument_hints() {
 
     let results = outcome.payload["results"].as_array().expect("results");
     assert!(results.iter().any(|entry| {
-        let is_exec = entry["tool_id"] == "exec";
+        let is_exec = entry["tool_id"] == "bash";
         let argument_hint = entry["argument_hint"].as_str().unwrap_or_default();
-        is_exec && argument_hint.contains("command?:string")
+        is_exec && argument_hint.contains("command:string")
     }));
 
     std::fs::remove_dir_all(&root).ok();
@@ -902,7 +912,7 @@ fn tool_search_exact_tool_id_refresh_returns_one_current_card_with_lease() {
     assert!(
         first["usage_guidance"]
             .as_str()
-            .is_some_and(|value| value.contains("normal repo inspection"))
+            .is_some_and(|value| value.contains("repo inspection"))
     );
     assert!(first.get("lease").is_none());
 
@@ -938,10 +948,10 @@ fn tool_search_exact_tool_id_not_visible_preserves_raw_request_and_diagnostics_w
     let diagnostics = &outcome.payload["diagnostics"];
 
     assert!(!results.is_empty());
-    assert_eq!(results[0]["tool_id"], "exec");
-    assert_eq!(outcome.payload["exact_tool_id"], "file_read");
+    assert_eq!(results[0]["tool_id"], "bash");
+    assert_eq!(outcome.payload["exact_tool_id"], "read");
     assert_eq!(diagnostics["reason"], "exact_tool_id_not_visible");
-    assert_eq!(diagnostics["requested_tool_id"], "file_read");
+    assert_eq!(diagnostics["requested_tool_id"], "read");
 
     std::fs::remove_dir_all(&root).ok();
 }

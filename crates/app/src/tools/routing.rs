@@ -2,20 +2,33 @@ use loong_contracts::{ToolCoreOutcome, ToolCoreRequest};
 use serde_json::Value;
 
 use super::{
-    BASH_EXEC_TOOL_NAME, DELEGATE_ASYNC_TOOL_NAME, DELEGATE_TOOL_NAME, HIDDEN_AGENT_TOOL_NAME,
-    HIDDEN_CHANNEL_TOOL_NAME, HIDDEN_SKILLS_TOOL_NAME, SHELL_EXEC_TOOL_NAME, ToolView,
-    canonical_tool_name, config_import, execute_discoverable_tool_core_with_config,
-    resolve_tool_execution, runtime_config, runtime_tool_view_for_runtime_config, tool_surface,
+    BASH_EXEC_TOOL_NAME, ToolView, canonical_tool_name, execute_discoverable_tool_core_with_config,
+    file, runtime_config, runtime_tool_view_for_runtime_config, tool_surface,
 };
+use super::{DELEGATE_ASYNC_TOOL_NAME, DELEGATE_TOOL_NAME, config_import};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectReadRoute {
+    Path,
+    Query,
+    Pattern,
+}
+
+impl DirectReadRoute {
+    fn executor_name(self) -> &'static str {
+        match self {
+            Self::Path => "file.read",
+            Self::Query => "content.search",
+            Self::Pattern => "glob.search",
+        }
+    }
+}
 
 pub(super) fn resolved_inner_tool_name_for_logs(canonical_name: &str, payload: &Value) -> String {
     if canonical_name == "tool.invoke" {
         let inner_tool_id = payload.get("tool_id").and_then(Value::as_str);
-        let inner_arguments = payload.get("arguments").unwrap_or(&Value::Null);
-        let resolved_hidden_tool_name = inner_tool_id
-            .and_then(|tool_id| route_hidden_discoverable_tool_name(tool_id, inner_arguments).ok());
-        let inner_tool_name = resolved_hidden_tool_name
-            .or_else(|| inner_tool_id.map(canonical_tool_name))
+        let inner_tool_name = inner_tool_id
+            .map(canonical_tool_name)
             .map(display_inner_tool_name_for_logs)
             .unwrap_or("-");
         return inner_tool_name.to_owned();
@@ -23,14 +36,20 @@ pub(super) fn resolved_inner_tool_name_for_logs(canonical_name: &str, payload: &
 
     let is_direct_tool = matches!(
         canonical_name,
-        "read" | "write" | "exec" | "web" | "browser" | "memory"
+        "read" | "write" | "edit" | "bash" | "web" | "browse" | "memory" | "browser"
     );
     if !is_direct_tool {
         return "-".to_owned();
     }
 
     let direct_tool_name = canonical_name;
-    let resolved_tool_name = route_direct_tool_name(direct_tool_name, payload).ok();
+    let resolved_tool_name = if direct_tool_name == "read" {
+        classify_direct_read_route(payload)
+            .ok()
+            .map(DirectReadRoute::executor_name)
+    } else {
+        route_direct_tool_name(direct_tool_name, payload).ok()
+    };
     let resolved_tool_name = resolved_tool_name
         .map(display_inner_tool_name_for_logs)
         .unwrap_or("-");
@@ -41,8 +60,44 @@ pub(super) fn execute_direct_tool_core_with_config(
     request: ToolCoreRequest,
     config: &runtime_config::ToolRuntimeConfig,
 ) -> Result<ToolCoreOutcome, String> {
+    if request.tool_name == "read" {
+        return execute_direct_read_tool_core_with_config(request, config);
+    }
+
     let routed_request = route_direct_tool_request(request, config)?;
     execute_discoverable_tool_core_with_config(routed_request, config)
+}
+
+fn execute_direct_read_tool_core_with_config(
+    request: ToolCoreRequest,
+    config: &runtime_config::ToolRuntimeConfig,
+) -> Result<ToolCoreOutcome, String> {
+    let runtime_view = runtime_tool_view_for_runtime_config(config);
+    if !runtime_view.contains("read") {
+        let unavailable_hint = unavailable_runtime_hint("read", &runtime_view);
+        return Err(format!(
+            "tool_surface_unavailable: `read` cannot route to `read` in this runtime{}",
+            unavailable_hint
+        ));
+    }
+
+    let read_route = classify_direct_read_route(&request.payload)?;
+    let mut payload = request.payload;
+    normalize_direct_read_payload_for_route(read_route, &mut payload);
+    let direct_request = ToolCoreRequest {
+        tool_name: "read".to_owned(),
+        payload,
+    };
+
+    match read_route {
+        DirectReadRoute::Path => file::execute_file_read_tool_with_config(direct_request, config),
+        DirectReadRoute::Query => {
+            file::execute_content_search_tool_with_config(direct_request, config)
+        }
+        DirectReadRoute::Pattern => {
+            file::execute_glob_search_tool_with_config(direct_request, config)
+        }
+    }
 }
 
 fn route_direct_tool_request(
@@ -77,8 +132,21 @@ fn route_direct_tool_name_for_view(
 ) -> Result<&'static str, String> {
     match tool_name {
         "web" => route_direct_web_tool_name_for_view(payload, view),
+        "browse" | "browser" => route_direct_browser_tool_name_for_view(payload, view),
         _ => route_direct_tool_name(tool_name, payload),
     }
+}
+
+fn route_direct_browser_tool_name_for_view(
+    payload: &Value,
+    view: &ToolView,
+) -> Result<&'static str, String> {
+    let routed_tool_name = route_direct_browser_tool_name(payload)?;
+    let page_inspection_available = tool_surface::browser_page_inspection_available_in_view(view);
+    if page_inspection_available {
+        return Ok(routed_tool_name);
+    }
+    Err("browser page inspection is unavailable in this runtime".to_owned())
 }
 
 pub(crate) fn route_direct_tool_name(
@@ -88,155 +156,84 @@ pub(crate) fn route_direct_tool_name(
     match tool_name {
         "read" => route_direct_read_tool_name(payload),
         "write" => route_direct_write_tool_name(payload),
-        "exec" => route_direct_exec_tool_name(payload),
+        "edit" => route_direct_edit_tool_name(payload),
+        "bash" => route_direct_bash_tool_name(payload),
         "web" => route_direct_web_tool_name(payload),
-        "browser" => route_direct_browser_tool_name(payload),
+        "browse" | "browser" => route_direct_browser_tool_name(payload),
         "memory" => route_direct_memory_tool_name(payload),
         _ => Ok("-"),
     }
 }
 
-fn route_direct_exec_tool_name(payload: &Value) -> Result<&'static str, String> {
+fn route_direct_bash_tool_name(payload: &Value) -> Result<&'static str, String> {
     let command = payload
         .get("command")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let script = payload
-        .get("script")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let has_args = payload_has_non_null_field(payload, "args");
-    let mode_count = count_true([command.is_some(), script.is_some()]);
-
-    if mode_count == 0 {
-        return Err(
-            "direct_exec_requires_command_or_script: expected `command` for argv mode, or `script` for raw shell mode"
-                .to_owned(),
-        );
+    if command.is_none() {
+        return Err("direct_bash_requires_command: expected `command`".to_owned());
     }
-
-    if mode_count > 1 {
-        if command == script
-            && let Some(value) = command
-        {
-            return Ok(if !has_args && command_uses_shell_syntax(value) {
-                BASH_EXEC_TOOL_NAME
-            } else {
-                SHELL_EXEC_TOOL_NAME
-            });
-        }
-
-        return Err(
-            "direct_exec_ambiguous: provide either `command` or `script`, not both".to_owned(),
-        );
-    }
-
-    if script.is_some() {
-        return Ok(BASH_EXEC_TOOL_NAME);
-    }
-
-    let command = command.ok_or_else(|| {
-        "direct_exec_requires_command_or_script: expected `command` for argv mode, or `script` for raw shell mode"
-            .to_owned()
-    })?;
-    let uses_shell_syntax = command_uses_shell_syntax(command);
-
-    if !has_args && uses_shell_syntax {
-        return Ok(BASH_EXEC_TOOL_NAME);
-    }
-
-    Ok(SHELL_EXEC_TOOL_NAME)
-}
-
-fn command_uses_shell_syntax(command: &str) -> bool {
-    command.contains('\n')
-        || command.contains("&&")
-        || command.contains("||")
-        || command.contains('|')
-        || command.contains(';')
-        || command.contains('>')
-        || command.contains('<')
-        || command.contains("$(")
-        || command.contains('`')
+    Ok(BASH_EXEC_TOOL_NAME)
 }
 
 fn route_direct_read_tool_name(payload: &Value) -> Result<&'static str, String> {
-    let has_path = payload_has_non_null_field(payload, "path");
-    let has_query = payload_has_non_null_field(payload, "query");
-    let has_pattern = payload_has_non_null_field(payload, "pattern");
-    let mode_count = count_true([has_path, has_query, has_pattern]);
+    classify_direct_read_route(payload)?;
+    Ok("read")
+}
 
-    if mode_count == 0 {
+fn classify_direct_read_route(payload: &Value) -> Result<DirectReadRoute, String> {
+    let has_path = payload_has_non_empty_string_field(payload, "path");
+    let has_query = payload_has_non_empty_string_field(payload, "query");
+    let has_pattern = payload_has_non_empty_string_field(payload, "pattern")
+        || payload_has_non_empty_string_field(payload, "glob");
+
+    if !has_path && !has_query && !has_pattern {
         return Err(
             "direct_read_requires_one_of: expected exactly one of `path`, `query`, or `pattern`"
                 .to_owned(),
         );
     }
 
-    if mode_count > 1 {
-        return Err(
-            "direct_read_ambiguous: provide exactly one of `path`, `query`, or `pattern`"
-                .to_owned(),
-        );
-    }
-
     if has_path {
-        return Ok("file.read");
+        return Ok(DirectReadRoute::Path);
     }
 
     if has_query {
-        return Ok("content.search");
+        return Ok(DirectReadRoute::Query);
     }
 
-    Ok("glob.search")
+    Ok(DirectReadRoute::Pattern)
+}
+
+fn payload_has_non_empty_string_field(payload: &Value, field_name: &str) -> bool {
+    payload
+        .get(field_name)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
 }
 
 fn route_direct_write_tool_name(payload: &Value) -> Result<&'static str, String> {
     let has_content = payload_has_non_null_field(payload, "content");
-    let has_edits = payload_has_non_null_field(payload, "edits");
-    let has_old_string = payload_has_non_null_field(payload, "old_string");
-    let has_new_string = payload_has_non_null_field(payload, "new_string");
-    let legacy_exact_edit_mode = has_old_string || has_new_string;
-    let exact_edit_mode = has_edits || legacy_exact_edit_mode;
-    let create_mode = has_content;
-    let mode_count = count_true([create_mode, exact_edit_mode]);
-
-    if mode_count == 0 {
-        return Err(
-            "direct_write_requires_one_mode: expected `path` plus `content`, `path` plus `edits`, or legacy `path` plus `old_string` and `new_string`"
-                .to_owned(),
-        );
-    }
-
-    if mode_count > 1 {
-        return Err(
-            "direct_write_ambiguous: do not mix whole-file write fields with exact-edit fields"
-                .to_owned(),
-        );
-    }
-
     if !payload_has_non_null_field(payload, "path") {
         return Err("direct_write_requires_path: expected `path` for direct write".to_owned());
     }
-
-    if create_mode {
-        return Ok("file.write");
+    if !has_content {
+        return Err("direct_write_requires_content: expected `content`".to_owned());
     }
+    Ok("write")
+}
 
-    if has_edits {
-        return Ok("file.edit");
+fn route_direct_edit_tool_name(payload: &Value) -> Result<&'static str, String> {
+    let has_edits = payload_has_non_null_field(payload, "edits");
+    if !has_edits {
+        return Err("direct_edit_requires_edits: expected `edits`".to_owned());
     }
-
-    if !has_old_string || !has_new_string {
-        return Err(
-            "direct_write_edit_requires_complete_legacy_fields: expected `edits`, or legacy `old_string` and `new_string` for exact-edit mode"
-                .to_owned(),
-        );
+    if !payload_has_non_null_field(payload, "path") {
+        return Err("direct_edit_requires_path: expected `path` for direct edit".to_owned());
     }
-
-    Ok("file.edit")
+    Ok("edit")
 }
 
 pub(super) fn route_direct_web_tool_name(payload: &Value) -> Result<&'static str, String> {
@@ -324,7 +321,7 @@ pub(super) fn route_direct_web_tool_name_for_view(
     }
 }
 
-pub(super) fn route_direct_browser_tool_name(payload: &Value) -> Result<&'static str, String> {
+pub(super) fn route_browser_page_tool_name(payload: &Value) -> Result<&'static str, String> {
     let action = payload
         .get("action")
         .and_then(Value::as_str)
@@ -334,33 +331,26 @@ pub(super) fn route_direct_browser_tool_name(payload: &Value) -> Result<&'static
     let has_session_id = payload_has_non_null_field(payload, "session_id");
     let has_link_id = payload_has_non_null_field(payload, "link_id");
     let has_selector = payload_has_non_null_field(payload, "selector");
-    let has_text = payload_has_non_null_field(payload, "text");
-    let has_condition = payload_has_non_null_field(payload, "condition");
-    let has_timeout_ms = payload_has_non_null_field(payload, "timeout_ms");
     let mode_value = payload.get("mode").and_then(Value::as_str).map(str::trim);
-    let selector_text_extract_requested = mode_value == Some("selector_text");
 
     let route_for_click = || -> Result<&'static str, String> {
         if !has_session_id {
             return Err(
-                "direct_browser_click_requires_session_id: expected `session_id` for browser click actions"
+                "direct_browser_page_click_requires_session_id: expected `session_id` for page click actions"
                     .to_owned(),
             );
         }
         if has_link_id && has_selector {
             return Err(
-                "direct_browser_click_ambiguous: provide either `link_id` or `selector`, not both"
+                "direct_browser_page_click_ambiguous: provide either `link_id` or `selector`, not both"
                     .to_owned(),
             );
         }
         if has_link_id {
             return Ok("browser.click");
         }
-        if has_selector {
-            return Ok("browser.companion.click");
-        }
         Err(
-            "direct_browser_click_requires_target: expected `link_id` for page-link click or `selector` for managed browser click"
+            "direct_browser_page_click_requires_link_id: expected `link_id` for page-link click actions"
                 .to_owned(),
         )
     };
@@ -371,27 +361,7 @@ pub(super) fn route_direct_browser_tool_name(payload: &Value) -> Result<&'static
                 if has_url && !has_session_id {
                     Ok("browser.open")
                 } else {
-                    Err(
-                        "direct_browser_open_requires_url: expected `url` without `session_id`"
-                            .to_owned(),
-                    )
-                }
-            }
-            "start" => {
-                if has_url && !has_session_id {
-                    Ok("browser.companion.session.start")
-                } else {
-                    Err(
-                        "direct_browser_start_requires_url: expected `url` without `session_id`"
-                            .to_owned(),
-                    )
-                }
-            }
-            "navigate" => {
-                if has_url && has_session_id {
-                    Ok("browser.companion.navigate")
-                } else {
-                    Err("direct_browser_navigate_requires_session_and_url: expected `session_id` and `url`".to_owned())
+                    Err("direct_browser_page_open_requires_url: expected `url` without `session_id`".to_owned())
                 }
             }
             "extract" => {
@@ -399,105 +369,47 @@ pub(super) fn route_direct_browser_tool_name(payload: &Value) -> Result<&'static
                     Ok("browser.extract")
                 } else {
                     Err(
-                        "direct_browser_extract_requires_session_id: expected `session_id`"
+                        "direct_browser_page_extract_requires_session_id: expected `session_id`"
                             .to_owned(),
                     )
-                }
-            }
-            "snapshot" => {
-                if has_session_id {
-                    Ok("browser.companion.snapshot")
-                } else {
-                    Err(
-                        "direct_browser_snapshot_requires_session_id: expected `session_id`"
-                            .to_owned(),
-                    )
-                }
-            }
-            "wait" => {
-                if has_session_id {
-                    Ok("browser.companion.wait")
-                } else {
-                    Err("direct_browser_wait_requires_session_id: expected `session_id`".to_owned())
-                }
-            }
-            "stop" => {
-                if has_session_id {
-                    Ok("browser.companion.session.stop")
-                } else {
-                    Err("direct_browser_stop_requires_session_id: expected `session_id`".to_owned())
                 }
             }
             "click" => route_for_click(),
-            "type" => {
-                if has_session_id && has_selector && has_text {
-                    Ok("browser.companion.type")
-                } else {
-                    Err("direct_browser_type_requires_session_selector_text: expected `session_id`, `selector`, and `text`".to_owned())
-                }
-            }
             _ => Err(format!(
-                "direct_browser_unknown_action: unknown browser action `{action}`"
+                "direct_browser_page_unknown_action: unknown page action `{action}`"
             )),
         };
-    }
-
-    if has_text {
-        if has_session_id && has_selector {
-            return Ok("browser.companion.type");
-        }
-        return Err(
-            "direct_browser_type_requires_session_selector_text: expected `session_id`, `selector`, and `text`"
-                .to_owned(),
-        );
-    }
-
-    if has_url && has_session_id {
-        return Ok("browser.companion.navigate");
     }
 
     if has_url {
         return Ok("browser.open");
     }
 
-    if selector_text_extract_requested && has_selector {
-        if has_session_id {
-            return Ok("browser.extract");
-        }
-        return Err(
-            "direct_browser_extract_requires_session_id: expected `session_id` for selector_text extraction"
-                .to_owned(),
-        );
-    }
-
-    if has_selector {
-        return route_for_click();
-    }
-
-    if has_condition || has_timeout_ms {
-        if has_session_id {
-            return Ok("browser.companion.wait");
-        }
-        return Err(
-            "direct_browser_wait_requires_session_id: expected `session_id` for browser wait"
-                .to_owned(),
-        );
-    }
-
     if has_link_id {
         return route_for_click();
     }
 
-    if let Some(mode_value) = mode_value
-        && matches!(mode_value, "summary" | "html")
-    {
+    if has_selector {
         if has_session_id {
-            return Ok("browser.companion.snapshot");
+            return Ok("browser.extract");
         }
         return Err(
-            "direct_browser_snapshot_requires_session_id: expected `session_id` for browser snapshot"
+            "direct_browser_page_extract_requires_session_id: expected `session_id` for selector-based page extraction"
                 .to_owned(),
         );
+    }
+
+    if let Some(mode) = mode_value {
+        let extract_modes = ["page_text", "title", "links", "selector_text"];
+        if extract_modes.contains(&mode) {
+            if has_session_id {
+                return Ok("browser.extract");
+            }
+            return Err(
+                "direct_browser_page_extract_requires_session_id: expected `session_id` for page extraction"
+                    .to_owned(),
+            );
+        }
     }
 
     if has_session_id {
@@ -505,9 +417,37 @@ pub(super) fn route_direct_browser_tool_name(payload: &Value) -> Result<&'static
     }
 
     Err(
-        "direct_browser_requires_actionable_fields: expected `url`, or `session_id` plus the fields for extract, click, type, wait, snapshot, navigate, or stop"
+        "direct_browser_page_requires_actionable_fields: expected `url`, or `session_id` plus the fields for extract or click"
             .to_owned(),
     )
+}
+
+pub(super) fn route_direct_browser_tool_name(payload: &Value) -> Result<&'static str, String> {
+    let action = payload
+        .get("action")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let has_url = payload_has_non_null_field(payload, "url");
+    let has_session_id = payload_has_non_null_field(payload, "session_id");
+    let has_text = payload_has_non_null_field(payload, "text");
+    let has_condition = payload_has_non_null_field(payload, "condition");
+    let has_timeout_ms = payload_has_non_null_field(payload, "timeout_ms");
+
+    if matches!(
+        action,
+        Some("start" | "navigate" | "snapshot" | "wait" | "stop" | "type")
+    ) || has_text
+        || has_condition
+        || has_timeout_ms
+        || (has_session_id && has_url)
+    {
+        return Err(
+            "direct_browser_interactive_automation_unavailable: built-in browser only supports `open`, `extract`, and page-link `click`; use the `agent-browser` skill for richer browser automation".to_owned(),
+        );
+    }
+
+    route_browser_page_tool_name(payload)
 }
 
 fn route_direct_memory_tool_name(payload: &Value) -> Result<&'static str, String> {
@@ -534,21 +474,6 @@ fn route_direct_memory_tool_name(payload: &Value) -> Result<&'static str, String
     Ok("memory_get")
 }
 
-pub(super) fn route_hidden_discoverable_tool_name(
-    tool_name: &str,
-    payload: &Value,
-) -> Result<&'static str, String> {
-    let canonical_name = canonical_tool_name(tool_name);
-    match canonical_name {
-        HIDDEN_AGENT_TOOL_NAME => route_hidden_agent_tool_name(payload),
-        HIDDEN_SKILLS_TOOL_NAME => route_hidden_skills_tool_name(payload),
-        HIDDEN_CHANNEL_TOOL_NAME => route_hidden_channel_tool_name(payload),
-        _ => resolve_tool_execution(canonical_name)
-            .map(|resolved| resolved.canonical_name)
-            .ok_or_else(|| format!("tool_not_found: unknown tool `{canonical_name}`")),
-    }
-}
-
 fn hidden_operation(payload: &Value) -> Option<&str> {
     payload
         .get("operation")
@@ -557,7 +482,7 @@ fn hidden_operation(payload: &Value) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
-fn route_hidden_agent_tool_name(payload: &Value) -> Result<&'static str, String> {
+pub(crate) fn route_hidden_agent_tool_name(payload: &Value) -> Result<&'static str, String> {
     if let Some(operation) = hidden_operation(payload) {
         return match operation {
             "approval-list" => Ok("approval_requests_list"),
@@ -619,7 +544,7 @@ fn route_hidden_agent_tool_name(payload: &Value) -> Result<&'static str, String>
         || payload_has_non_null_field(payload, "primary_source_id")
         || payload_has_non_null_field(payload, "primary_selection_id")
         || payload_has_non_null_field(payload, "safe_profile_merge")
-        || payload_has_non_null_field(payload, "apply_external_skills_plan")
+        || payload_has_non_null_field(payload, "apply_skills_plan")
         || payload_has_non_null_field(payload, "force");
     let has_approval_status = payload_has_non_null_field(payload, "status");
     let has_query = payload_has_non_null_field(payload, "query");
@@ -754,193 +679,135 @@ fn route_hidden_agent_tool_name(payload: &Value) -> Result<&'static str, String>
     )
 }
 
-fn route_hidden_skills_tool_name(payload: &Value) -> Result<&'static str, String> {
-    if let Some(operation) = hidden_operation(payload) {
-        return match operation {
-            "search" => Ok("external_skills.search"),
-            "recommend" => Ok("external_skills.recommend"),
-            "source-search" => Ok("external_skills.source_search"),
-            "inspect" => Ok("external_skills.inspect"),
-            "install" => Ok("external_skills.install"),
-            "run" | "invoke" => Ok("external_skills.invoke"),
-            "list" => Ok("external_skills.list"),
-            "policy" => Ok("external_skills.policy"),
-            "fetch" => Ok("external_skills.fetch"),
-            "resolve" => Ok("external_skills.resolve"),
-            "remove" => Ok("external_skills.remove"),
-            _ => Err(format!(
-                "hidden_skills_unknown_operation: unknown skills operation `{operation}`"
-            )),
-        };
-    }
-
-    let has_query = payload_has_non_null_field(payload, "query");
-    let has_sources = payload_has_non_null_field(payload, "sources");
-    let has_url = payload_has_non_null_field(payload, "url");
-    let has_reference = payload_has_non_null_field(payload, "reference");
-    let has_save_as = payload_has_non_null_field(payload, "save_as");
-    let has_skill_id = payload_has_non_null_field(payload, "skill_id");
-    let has_path = payload_has_non_null_field(payload, "path");
-    let has_bundled_skill_id = payload_has_non_null_field(payload, "bundled_skill_id");
-    let has_source_skill_id = payload_has_non_null_field(payload, "source_skill_id");
-    let has_allowed_domains = payload_has_non_null_field(payload, "allowed_domains");
-    let has_blocked_domains = payload_has_non_null_field(payload, "blocked_domains");
-    let has_enabled = payload_has_non_null_field(payload, "enabled");
-
-    if has_sources {
-        return Ok("external_skills.source_search");
-    }
-
-    if has_allowed_domains || has_blocked_domains || has_enabled {
-        return Ok("external_skills.policy");
-    }
-
-    if has_path || has_bundled_skill_id || has_source_skill_id {
-        return Ok("external_skills.install");
-    }
-
-    if has_url || has_save_as {
-        return Ok("external_skills.fetch");
-    }
-
-    if has_reference {
-        let fetch_by_reference = payload_has_non_null_field(payload, "approval_granted")
-            || payload_has_non_null_field(payload, "max_bytes");
-        if fetch_by_reference {
-            return Ok("external_skills.fetch");
-        }
-        return Ok("external_skills.resolve");
-    }
-
-    if has_query {
-        return Ok("external_skills.search");
-    }
-
-    if has_skill_id {
-        let invokes_skill = payload.as_object().is_some_and(|object| {
-            object
-                .keys()
-                .any(|key| key != "skill_id" && key != "operation")
-        });
-        if invokes_skill {
-            return Ok("external_skills.invoke");
-        }
-        return Err(
-            "hidden_skills_requires_operation_for_skill_id: add `operation` (`inspect` or `run`) when payload.skill_id is present"
-                .to_owned(),
-        );
-    }
-
-    if payload.as_object().is_some_and(|object| object.is_empty()) {
-        return Ok("external_skills.list");
-    }
-
-    Err(
-        "hidden_skills_requires_actionable_fields: expected search, inspect, install, fetch, resolve, policy, or list fields; add `operation` when the request is ambiguous"
-            .to_owned(),
-    )
-}
-
-fn route_hidden_channel_tool_name(payload: &Value) -> Result<&'static str, String> {
-    let Some(operation) = hidden_operation(payload) else {
-        return Err(
-            "hidden_channel_requires_operation: provide `operation`, such as `messages.send`, `messages.reply`, `card.update`, or `feishu.whoami`"
-                .to_owned(),
-        );
-    };
-
-    let normalized_operation = operation.replace(['_', '-'], ".");
-    let mut candidates = vec![operation.to_owned()];
-    if normalized_operation != operation {
-        candidates.push(normalized_operation.clone());
-    }
-    if !normalized_operation.starts_with("feishu.") {
-        candidates.push(format!("feishu.{normalized_operation}"));
-    }
-
-    for candidate in candidates {
-        let Some(resolved) = resolve_tool_execution(candidate.as_str()) else {
-            continue;
-        };
-        if tool_surface::tool_surface_id_for_name(resolved.canonical_name) == Some("channel") {
-            return Ok(resolved.canonical_name);
-        }
-    }
-
-    Err(format!(
-        "hidden_channel_unknown_operation: unknown channel operation `{operation}`"
-    ))
-}
-
+#[cfg(test)]
 pub(crate) fn hidden_operation_for_tool_name(raw: &str) -> Option<String> {
     let canonical_name = canonical_tool_name(raw);
-    let hidden_tool_name = super::hidden_facade_tool_name_for_hidden_tool(canonical_name)?;
-
-    match hidden_tool_name {
-        HIDDEN_AGENT_TOOL_NAME => match canonical_name {
-            "approval_requests_list" => Some("approval-list".to_owned()),
-            "approval_request_status" => Some("approval-status".to_owned()),
-            "approval_request_resolve" => Some("approval-resolve".to_owned()),
-            "sessions_list" => Some("sessions-list".to_owned()),
-            "sessions_history" => Some("session-history".to_owned()),
-            "session_heads" => Some("session-heads".to_owned()),
-            "session_path" => Some("session-path".to_owned()),
-            "session_children" => Some("session-children".to_owned()),
-            "session_artifacts" => Some("session-artifacts".to_owned()),
-            "session_events" => Some("session-events".to_owned()),
-            "session_search" => Some("session-search".to_owned()),
-            "session_status" => Some("session-status".to_owned()),
-            "session_wait" => Some("session-wait".to_owned()),
-            "task_history" => Some("task-history".to_owned()),
-            "task_events" => Some("task-events".to_owned()),
-            "tasks_list" => Some("tasks-list".to_owned()),
-            "tasks_search" => Some("tasks-search".to_owned()),
-            "task_status" => Some("task-status".to_owned()),
-            "task_wait" => Some("task-wait".to_owned()),
-            "session_tool_policy_status" => Some("session-policy-status".to_owned()),
-            "session_tool_policy_set" => Some("session-policy-set".to_owned()),
-            "session_tool_policy_clear" => Some("session-policy-clear".to_owned()),
-            "session_create_branch_summary" => Some("session-create-branch-summary".to_owned()),
-            "session_create_checkpoint" => Some("session-create-checkpoint".to_owned()),
-            "session_fork_head" => Some("session-fork-head".to_owned()),
-            "session_pin_head" => Some("session-pin-head".to_owned()),
-            "session_set_active_head" => Some("session-set-active-head".to_owned()),
-            "session_unpin_head" => Some("session-unpin-head".to_owned()),
-            "session_archive" => Some("session-archive".to_owned()),
-            "session_cancel" => Some("session-cancel".to_owned()),
-            "session_continue" => Some("session-continue".to_owned()),
-            "session_recover" => Some("session-recover".to_owned()),
-            "sessions_send" => Some("sessions-send".to_owned()),
-            DELEGATE_TOOL_NAME => Some("delegate".to_owned()),
-            DELEGATE_ASYNC_TOOL_NAME => Some("delegate-background".to_owned()),
-            "provider.switch" => Some("provider-switch".to_owned()),
-            config_import::CONFIG_IMPORT_TOOL_NAME => Some("config-import".to_owned()),
-            _ => None,
-        },
-        HIDDEN_SKILLS_TOOL_NAME => match canonical_name {
-            "external_skills.search" => Some("search".to_owned()),
-            "external_skills.recommend" => Some("recommend".to_owned()),
-            "external_skills.source_search" => Some("source-search".to_owned()),
-            "external_skills.inspect" => Some("inspect".to_owned()),
-            "external_skills.install" => Some("install".to_owned()),
-            "external_skills.invoke" => Some("run".to_owned()),
-            "external_skills.list" => Some("list".to_owned()),
-            "external_skills.policy" => Some("policy".to_owned()),
-            "external_skills.fetch" => Some("fetch".to_owned()),
-            "external_skills.resolve" => Some("resolve".to_owned()),
-            "external_skills.remove" => Some("remove".to_owned()),
-            _ => None,
-        },
-        HIDDEN_CHANNEL_TOOL_NAME => canonical_name.strip_prefix("feishu.").map(str::to_owned),
-        _ => None,
+    match canonical_name {
+        "approval_requests_list" => Some("approval-list".to_owned()),
+        "approval_request_status" => Some("approval-status".to_owned()),
+        "approval_request_resolve" => Some("approval-resolve".to_owned()),
+        "sessions_list" => Some("sessions-list".to_owned()),
+        "sessions_history" => Some("session-history".to_owned()),
+        "session_heads" => Some("session-heads".to_owned()),
+        "session_path" => Some("session-path".to_owned()),
+        "session_children" => Some("session-children".to_owned()),
+        "session_artifacts" => Some("session-artifacts".to_owned()),
+        "session_events" => Some("session-events".to_owned()),
+        "session_search" => Some("session-search".to_owned()),
+        "session_status" => Some("session-status".to_owned()),
+        "session_wait" => Some("session-wait".to_owned()),
+        "task_history" => Some("task-history".to_owned()),
+        "task_events" => Some("task-events".to_owned()),
+        "tasks_list" => Some("tasks-list".to_owned()),
+        "tasks_search" => Some("tasks-search".to_owned()),
+        "task_status" => Some("task-status".to_owned()),
+        "task_wait" => Some("task-wait".to_owned()),
+        "session_tool_policy_status" => Some("session-policy-status".to_owned()),
+        "session_tool_policy_set" => Some("session-policy-set".to_owned()),
+        "session_tool_policy_clear" => Some("session-policy-clear".to_owned()),
+        "session_create_branch_summary" => Some("session-create-branch-summary".to_owned()),
+        "session_create_checkpoint" => Some("session-create-checkpoint".to_owned()),
+        "session_fork_head" => Some("session-fork-head".to_owned()),
+        "session_pin_head" => Some("session-pin-head".to_owned()),
+        "session_set_active_head" => Some("session-set-active-head".to_owned()),
+        "session_unpin_head" => Some("session-unpin-head".to_owned()),
+        "session_archive" => Some("session-archive".to_owned()),
+        "session_cancel" => Some("session-cancel".to_owned()),
+        "session_continue" => Some("session-continue".to_owned()),
+        "session_recover" => Some("session-recover".to_owned()),
+        "sessions_send" => Some("sessions-send".to_owned()),
+        DELEGATE_TOOL_NAME => Some("delegate".to_owned()),
+        DELEGATE_ASYNC_TOOL_NAME => Some("delegate-background".to_owned()),
+        "provider.switch" => Some("provider-switch".to_owned()),
+        config_import::CONFIG_IMPORT_TOOL_NAME => Some("config-import".to_owned()),
+        "skills.search" => Some("search".to_owned()),
+        "skills.recommend" => Some("recommend".to_owned()),
+        "skills.source_search" => Some("source-search".to_owned()),
+        "skills.inspect" => Some("inspect".to_owned()),
+        "skills.install" => Some("install".to_owned()),
+        "skills.list" => Some("list".to_owned()),
+        "skills.policy" => Some("policy".to_owned()),
+        "skills.fetch" => Some("fetch".to_owned()),
+        "skills.resolve" => Some("resolve".to_owned()),
+        "skills.remove" => Some("remove".to_owned()),
+        _ => canonical_name.strip_prefix("feishu.").map(str::to_owned),
     }
 }
 
 pub(super) fn payload_has_non_null_field(payload: &Value, field_name: &str) -> bool {
     payload
         .get(field_name)
-        .filter(|value| !value.is_null())
+        .filter(|value| {
+            if value.is_null() {
+                return false;
+            }
+            value
+                .as_str()
+                .map(|text| !text.trim().is_empty())
+                .unwrap_or(true)
+        })
         .is_some()
+}
+
+fn normalize_direct_read_payload_for_route(route: DirectReadRoute, payload: &mut Value) {
+    let Some(payload_object) = payload.as_object_mut() else {
+        return;
+    };
+
+    match route {
+        DirectReadRoute::Path => {
+            payload_object.remove("query");
+            payload_object.remove("pattern");
+            payload_object.remove("glob");
+            payload_object.remove("root");
+            payload_object.remove("max_results");
+            payload_object.remove("max_bytes_per_file");
+            payload_object.remove("case_sensitive");
+            payload_object.remove("include_directories");
+        }
+        DirectReadRoute::Query => {
+            payload_object.remove("path");
+            payload_object.remove("pattern");
+            payload_object.remove("include_directories");
+            payload_object.remove("offset");
+            payload_object.remove("limit");
+        }
+        DirectReadRoute::Pattern => {
+            let pattern_missing = payload_object
+                .get("pattern")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_none_or(str::is_empty);
+            if pattern_missing
+                && let Some(glob_value) = payload_object
+                    .get("glob")
+                    .cloned()
+                    .filter(|value| value.as_str().map(str::trim).is_some_and(|v| !v.is_empty()))
+            {
+                let normalized_glob = glob_value
+                    .as_str()
+                    .map(normalize_direct_read_glob_alias_pattern)
+                    .map(Value::String)
+                    .unwrap_or(glob_value);
+                payload_object.insert("pattern".to_owned(), normalized_glob);
+            }
+        }
+    }
+}
+
+fn normalize_direct_read_glob_alias_pattern(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.contains('|') && !trimmed.contains('{') && !trimmed.contains('}') {
+        let parts = trimmed
+            .split('|')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        if parts.len() > 1 {
+            return format!("{{{}}}", parts.join(","));
+        }
+    }
+    trimmed.to_owned()
 }
 
 pub(super) fn count_true<const N: usize>(values: [bool; N]) -> usize {
@@ -956,30 +823,21 @@ pub(super) fn count_true<const N: usize>(values: [bool; N]) -> usize {
 }
 
 fn unavailable_runtime_hint(routed_tool_name: &str, runtime_view: &ToolView) -> &'static str {
-    if !routed_tool_name.starts_with("browser.companion.") {
-        return "";
-    }
-
-    if runtime_view.contains("browser.open") || runtime_view.contains("browser.extract") {
-        return "; read-only browser inspection is still available";
-    }
-
-    "; browser interaction is unavailable in this runtime"
+    let _ = (routed_tool_name, runtime_view);
+    ""
 }
 
 fn routed_tool_display_name(routed_tool_name: &str) -> &str {
-    if routed_tool_name.starts_with("browser.companion.") {
-        return "managed browser actions";
-    }
-
     routed_tool_name
 }
 
 fn display_inner_tool_name_for_logs(tool_name: &str) -> &str {
-    if tool_name.starts_with("browser.companion.") {
-        return "browser";
+    if matches!(
+        tool_name,
+        "browser.open" | "browser.extract" | "browser.click"
+    ) {
+        return "browse";
     }
-
     tool_name
 }
 
@@ -989,25 +847,23 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn direct_exec_normalizes_duplicate_command_and_script_sources() {
-        let routed = route_direct_exec_tool_name(&json!({
-            "command": "echo hello",
-            "script": "echo hello"
+    fn direct_bash_routes_command_to_bash_exec() {
+        let routed = route_direct_bash_tool_name(&json!({
+            "command": "echo hello"
         }))
-        .expect("equivalent exec sources should normalize");
+        .expect("bash command should route");
 
-        assert_eq!(routed, SHELL_EXEC_TOOL_NAME);
+        assert_eq!(routed, BASH_EXEC_TOOL_NAME);
     }
 
     #[test]
-    fn direct_exec_ignores_blank_aliases() {
-        let routed = route_direct_exec_tool_name(&json!({
-            "command": "   ",
-            "script": "echo hello"
+    fn direct_bash_requires_command() {
+        let error = route_direct_bash_tool_name(&json!({
+            "command": "   "
         }))
-        .expect("blank command alias should be ignored");
+        .expect_err("blank command should fail");
 
-        assert_eq!(routed, BASH_EXEC_TOOL_NAME);
+        assert!(error.contains("direct_bash_requires_command"));
     }
 
     #[test]
@@ -1019,36 +875,80 @@ mod tests {
             "text": "hello"
         });
         let request = loong_contracts::ToolCoreRequest {
-            tool_name: "browser".to_owned(),
-            payload: payload.clone(),
+            tool_name: "browse".to_owned(),
+            payload,
         };
-        let managed_browser_route =
-            route_direct_browser_tool_name(&payload).expect("managed browser payload should route");
-
         let error =
             route_direct_tool_request(request, &runtime_config::ToolRuntimeConfig::default())
-                .expect_err("managed browser type should be unavailable in default runtime");
+                .expect_err("interactive browser automation should be unavailable");
 
-        assert!(error.contains("managed browser actions"));
-        assert!(error.contains("read-only browser inspection"));
-        assert!(
-            unavailable_runtime_hint(managed_browser_route, &runtime_view)
-                .contains("read-only browser inspection")
+        assert!(error.contains("agent-browser"));
+        assert_eq!(
+            unavailable_runtime_hint("browser.extract", &runtime_view),
+            ""
         );
     }
 
     #[test]
-    fn browser_companion_routes_collapse_to_browser_in_logs() {
+    fn direct_browse_routes_page_actions() {
+        let open = route_direct_browser_tool_name(&json!({
+            "action": "open",
+            "url": "https://example.com"
+        }))
+        .expect("browse open should route");
+        assert_eq!(open, "browser.open");
+
+        let extract = route_direct_browser_tool_name(&json!({
+            "session_id": "browser-1",
+            "mode": "links"
+        }))
+        .expect("browse extract should route");
+        assert_eq!(extract, "browser.extract");
+
+        let click = route_direct_browser_tool_name(&json!({
+            "session_id": "browser-1",
+            "link_id": 1
+        }))
+        .expect("browse click should route");
+        assert_eq!(click, "browser.click");
+    }
+
+    #[test]
+    fn direct_browse_ignores_empty_optional_fields_when_routing_open() {
+        let open = route_direct_browser_tool_name(&json!({
+            "action": "open",
+            "url": "https://example.com",
+            "session_id": "",
+            "mode": "",
+            "selector": "",
+            "link_id": "",
+        }))
+        .expect("browse open should ignore empty optional fields");
+        assert_eq!(open, "browser.open");
+    }
+
+    #[test]
+    fn interactive_browser_payloads_surface_agent_browser_guidance() {
+        let error = route_direct_browser_tool_name(&json!({
+            "session_id": "browser-1",
+            "selector": "#submit",
+            "text": "hello"
+        }))
+        .expect_err("DOM interaction should not route through browse");
+        assert!(error.contains("agent-browser"));
+    }
+
+    #[test]
+    fn browse_routes_collapse_to_browse_in_logs() {
         let logged_tool_name = resolved_inner_tool_name_for_logs(
-            "browser",
+            "browse",
             &json!({
-                "session_id": "browser-companion-1",
-                "selector": "#submit",
-                "text": "hello"
+                "session_id": "browser-1",
+                "link_id": 1
             }),
         );
 
-        assert_eq!(logged_tool_name, "browser");
+        assert_eq!(logged_tool_name, "browse");
     }
 
     #[test]

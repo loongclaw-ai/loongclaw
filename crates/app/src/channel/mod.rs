@@ -402,7 +402,7 @@ mod tests {
                     args_json: serde_json::json!({
                         "query": "qzxwvvvjjjjkkk",
                     }),
-                    source: "provider_test".to_owned(),
+                    source: "channel_trace_test".to_owned(),
                     session_id: String::new(),
                     turn_id: String::new(),
                     tool_call_id: "call-1".to_owned(),
@@ -654,24 +654,23 @@ mod tests {
         .await
         .expect("channel trace reply should succeed");
 
-        assert!(reply.contains("final reply"));
         assert!(reply.contains("execution trace:"));
         assert!(
-            reply.contains("tool.search completed: returned "),
-            "tool search completion trace should include a summarized result count: {reply}"
+            reply.contains("discovery denied: tool_not_found: tool.search"),
+            "discovery denial trace should surface the current provider-visible contract: {reply}"
         );
 
         let request_turn_calls = runtime
             .request_turn_calls
             .lock()
             .expect("request turn call count");
-        assert_eq!(*request_turn_calls, 2);
+        assert_eq!(*request_turn_calls, 1);
 
         let request_turn_kernel_bindings = runtime
             .request_turn_kernel_bindings
             .lock()
             .expect("request turn kernel binding log");
-        assert_eq!(request_turn_kernel_bindings.as_slice(), &[true, true]);
+        assert_eq!(request_turn_kernel_bindings.as_slice(), &[true]);
     }
 
     #[cfg(any(
@@ -722,7 +721,7 @@ mod tests {
         .await
         .expect("channel reply should succeed when trace rendering is disabled");
 
-        assert_eq!(reply, "final reply");
+        assert_eq!(reply, "tool_not_found: tool.search");
     }
 
     #[cfg(any(

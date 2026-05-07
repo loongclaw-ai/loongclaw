@@ -25,11 +25,13 @@ struct BrowserPage {
     final_url: String,
     host: String,
     title: Option<String>,
+    summary: Option<String>,
     content_type: Option<String>,
     raw_html: String,
     page_text: String,
     links: Vec<BrowserLink>,
     bytes_downloaded: usize,
+    truncated: bool,
     redirect_count: usize,
 }
 
@@ -157,16 +159,37 @@ fn execute_browser_extract(
     touch_browser_session(scope_id.as_str(), session_id.as_str(), sequence)?;
 
     let payload = match mode {
-        BrowserExtractMode::PageText => json!({
-            "adapter": "core-tools",
-            "tool_name": "browser.extract",
-            "execution_tier": config.browser_execution_security_tier().as_str(),
-            "session_id": session_id,
-            "mode": mode.as_str(),
-            "final_url": page.final_url,
-            "title": page.title,
-            "content": truncate_chars(&page.page_text, config.browser.max_text_chars),
-        }),
+        BrowserExtractMode::PageText => {
+            let content = truncate_chars(&page.page_text, config.browser.max_text_chars);
+            let continuation = super::web_fetch::html_page_has_insufficient_evidence(
+                page.summary.as_deref(),
+                content.as_str(),
+            )
+            .then(|| {
+                json!({
+                    "state": "insufficient_page_evidence",
+                    "is_terminal": false,
+                    "recommended_tool": "web",
+                    "recommended_payload": {
+                        "url": page.final_url,
+                        "mode": "raw_text",
+                    },
+                    "note": "The extracted page text still looks like shell or navigation content. Continue with a fuller web fetch before finalizing."
+                })
+            });
+            json!({
+                "adapter": "core-tools",
+                "tool_name": "browser.extract",
+                "execution_tier": config.browser_execution_security_tier().as_str(),
+                "session_id": session_id,
+                "mode": mode.as_str(),
+                "final_url": page.final_url,
+                "title": page.title,
+                "summary": page.summary,
+                "content": content,
+                "continuation": continuation,
+            })
+        }
         BrowserExtractMode::Title => json!({
             "adapter": "core-tools",
             "tool_name": "browser.extract",
@@ -361,34 +384,31 @@ fn fetch_browser_page(
                 .and_then(|value| value.to_str().ok())
                 .map(|value| value.to_owned());
             let mut budget = super::download_guard::ByteBudget::new(max_bytes);
-            budget
-                .reject_if_content_length_exceeds(response.content_length(), "browser response")?;
+            let mut truncated = response
+                .content_length()
+                .is_some_and(|value| value > max_bytes as u64);
 
             let mut body = Vec::new();
             let mut stream = response.bytes_stream();
-            let mut remaining_read = (max_bytes as u64).saturating_add(1) as usize;
-            const BROWSER_READ_BUFFER_BYTES: usize = 8_192;
-            while remaining_read > 0 {
-                let Some(chunk) = stream.next().await else {
-                    break;
-                };
+            while let Some(chunk) = stream.next().await {
                 let chunk = chunk
                     .map_err(|error| format!("failed to read browser response body: {error}"))?;
-                let mut offset = 0usize;
-                while offset < chunk.len() && remaining_read > 0 {
-                    let read = chunk
-                        .len()
-                        .saturating_sub(offset)
-                        .min(remaining_read)
-                        .min(BROWSER_READ_BUFFER_BYTES);
-                    budget.try_consume(read, "browser response")?;
-                    let end = offset.saturating_add(read);
-                    let chunk_slice = chunk
-                        .get(offset..end)
-                        .ok_or_else(|| "failed to slice browser response buffer".to_owned())?;
-                    body.extend_from_slice(chunk_slice);
-                    remaining_read = remaining_read.saturating_sub(read);
-                    offset = end;
+                let remaining = max_bytes.saturating_sub(budget.consumed());
+                if remaining == 0 {
+                    truncated = true;
+                    break;
+                }
+                let chunk_len = chunk.len().min(remaining);
+                if chunk_len < chunk.len() {
+                    truncated = true;
+                }
+                budget.try_consume(chunk_len, "browser response")?;
+                let prefix = chunk
+                    .get(..chunk_len)
+                    .ok_or_else(|| "failed to clip browser response chunk".to_owned())?;
+                body.extend_from_slice(prefix);
+                if truncated {
+                    break;
                 }
             }
 
@@ -407,8 +427,12 @@ fn fetch_browser_page(
             let title = is_html
                 .then(|| super::web_fetch::extract_html_title(raw_text.as_str()))
                 .flatten();
+            let summary = is_html
+                .then(|| super::web_fetch::extract_html_summary(raw_text.as_str()))
+                .flatten();
             let page_text = if is_html {
-                super::web_fetch::extract_readable_text_from_html(&raw_text)
+                let readable = super::web_fetch::extract_readable_text_from_html(&raw_text);
+                super::web_fetch::compose_html_readable_content(summary.as_deref(), readable)
             } else {
                 raw_text.trim().to_owned()
             };
@@ -429,11 +453,13 @@ fn fetch_browser_page(
                 final_url: current_url.to_string(),
                 host: current_host,
                 title,
+                summary,
                 content_type,
                 raw_html: raw_text,
                 page_text,
                 links,
                 bytes_downloaded: budget.consumed(),
+                truncated,
                 redirect_count,
             });
         }
@@ -544,6 +570,34 @@ fn browser_page_payload(
     clicked_link: Option<Value>,
     execution_tier: &str,
 ) -> Value {
+    let continuation = if page.truncated {
+        Some(json!({
+            "state": "truncated_page",
+            "is_terminal": false,
+            "recommended_tool": "browse",
+            "recommended_payload": {
+                "session_id": session_id,
+                "mode": "page_text",
+            },
+            "note": "The opened page was truncated before enough evidence could be gathered. Continue with a narrower browser extract before finalizing."
+        }))
+    } else if super::web_fetch::html_page_has_insufficient_evidence(
+        page.summary.as_deref(),
+        page.page_text.as_str(),
+    ) {
+        Some(json!({
+            "state": "insufficient_page_evidence",
+            "is_terminal": false,
+            "recommended_tool": "web",
+            "recommended_payload": {
+                "url": page.final_url,
+                "mode": "raw_text",
+            },
+            "note": "The opened page still looks like shell or navigation content. Continue with a fuller web fetch before finalizing."
+        }))
+    } else {
+        None
+    };
     json!({
         "adapter": "core-tools",
         "tool_name": tool_name,
@@ -553,12 +607,15 @@ fn browser_page_payload(
         "final_url": page.final_url,
         "host": page.host,
         "title": page.title,
+        "summary": page.summary,
         "content_type": page.content_type,
         "page_text": page.page_text,
         "available_links": page.links.iter().map(browser_link_json).collect::<Vec<_>>(),
         "bytes_downloaded": page.bytes_downloaded,
+        "truncated": page.truncated,
         "redirect_count": page.redirect_count,
         "clicked_link": clicked_link,
+        "continuation": continuation,
     })
 }
 
@@ -603,7 +660,7 @@ fn reject_caller_supplied_session_id(
     payload: &Map<String, Value>,
     tool_name: &str,
 ) -> Result<(), String> {
-    if payload.contains_key("session_id") {
+    if parse_optional_string(payload, "session_id").is_some() {
         return Err(format!(
             "{tool_name} does not accept payload.session_id; use the opaque session_id returned by browser.open"
         ));
@@ -861,15 +918,33 @@ mod tests {
     }
 
     #[test]
-    fn browser_open_rejects_private_hosts_by_default() {
+    fn browser_open_allows_private_hosts_in_yolo_default_mode() {
         let config = super::super::runtime_config::ToolRuntimeConfig::default();
+        let base_url = "http://127.0.0.1:6553".to_owned();
+
+        let outcome = execute_browser_tool_with_config(
+            request("browser.open", json!({"url": base_url})),
+            &config,
+        );
+        assert!(
+            outcome.is_err(),
+            "the local fixture still lacks a listener, but the yolo default should no longer fail at the private-host guard"
+        );
+        let error = outcome.expect_err("localhost fixture should still fail without a listener");
+        assert!(!error.contains("private or special-use"));
+    }
+
+    #[test]
+    fn browser_open_rejects_private_hosts_when_runtime_policy_disables_them() {
+        let mut config = super::super::runtime_config::ToolRuntimeConfig::default();
+        config.web_fetch.allow_private_hosts = false;
         let base_url = "http://127.0.0.1:6553".to_owned();
 
         let error = execute_browser_tool_with_config(
             request("browser.open", json!({"url": base_url})),
             &config,
         )
-        .expect_err("private hosts should be blocked by default");
+        .expect_err("private hosts should be blocked when the runtime policy disables them");
 
         assert!(error.contains("private or special-use"));
     }
@@ -910,6 +985,7 @@ mod tests {
         );
         assert_eq!(outcome.payload["execution_tier"], json!("restricted"));
         assert_eq!(outcome.payload["title"], json!("Fixture Home"));
+        assert_eq!(outcome.payload["summary"], Value::Null);
         assert!(
             outcome.payload["page_text"]
                 .as_str()
@@ -949,7 +1025,92 @@ mod tests {
     }
 
     #[test]
-    fn browser_open_rejects_declared_content_length_above_limit() {
+    fn browser_open_promotes_meta_description_into_summary_and_page_text() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept stream");
+            let body = "<html><head><title>Profile</title><meta name=\"description\" content=\"Short profile summary for the target page.\"></head><body><header>Marketing nav</header><main><h1>Profile</h1><p>Main profile content with links and details.</p></main></body></html>";
+            let response = build_http_response("200 OK", "text/html; charset=utf-8", body, None);
+            let mut request_buffer = [0_u8; 4_096];
+
+            stream
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .expect("set read timeout");
+            let _ = stream.read(&mut request_buffer);
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        });
+        let url = format!("http://127.0.0.1:{}/", address.port());
+        let config = local_browser_config();
+
+        let outcome = execute_browser_tool_with_config(
+            scoped_request("browser.open", json!({"url": url}), "test-open-summary"),
+            &config,
+        )
+        .expect("browser.open should succeed");
+
+        assert_eq!(
+            outcome.payload["summary"],
+            "Short profile summary for the target page."
+        );
+        let page_text = outcome.payload["page_text"]
+            .as_str()
+            .expect("page_text should be string");
+        assert!(page_text.starts_with("Summary: Short profile summary for the target page."));
+        assert!(page_text.contains("Main profile content with links and details."));
+        assert!(!page_text.contains("Marketing nav"));
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn browser_open_marks_shell_heavy_page_as_insufficient_evidence() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept stream");
+            let body = "<html><head><title>Profile</title><meta name=\"description\" content=\"Short profile summary for the target page.\"></head><body><header>Marketing nav</header><nav>Docs Pricing Sign in</nav><footer>Footer links and policies</footer></body></html>";
+            let response = build_http_response("200 OK", "text/html; charset=utf-8", body, None);
+            let mut request_buffer = [0_u8; 4_096];
+
+            stream
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .expect("set read timeout");
+            let _ = stream.read(&mut request_buffer);
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        });
+        let url = format!("http://127.0.0.1:{}/", address.port());
+        let config = local_browser_config();
+
+        let outcome = execute_browser_tool_with_config(
+            scoped_request(
+                "browser.open",
+                json!({"url": url}),
+                "test-open-insufficient",
+            ),
+            &config,
+        )
+        .expect("browser.open should succeed");
+
+        assert_eq!(outcome.payload["truncated"], json!(false));
+        assert_eq!(
+            outcome.payload["continuation"]["state"],
+            "insufficient_page_evidence"
+        );
+        assert_eq!(outcome.payload["continuation"]["is_terminal"], json!(false));
+        assert_eq!(outcome.payload["continuation"]["recommended_tool"], "web");
+        assert_eq!(
+            outcome.payload["continuation"]["recommended_payload"]["url"],
+            outcome.payload["final_url"]
+        );
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn browser_open_truncates_declared_content_length_above_limit() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let address = listener.local_addr().expect("listener addr");
         let handle = thread::spawn(move || {
@@ -970,7 +1131,7 @@ mod tests {
         let mut config = local_browser_config();
         config.web_fetch.max_bytes = 8;
 
-        let error = execute_browser_tool_with_config(
+        let outcome = execute_browser_tool_with_config(
             scoped_request(
                 "browser.open",
                 json!({"url": format!("http://127.0.0.1:{}/", address.port())}),
@@ -978,9 +1139,23 @@ mod tests {
             ),
             &config,
         )
-        .expect_err("oversize declared content length should fail closed");
+        .expect("oversize declared content length should truncate");
 
-        assert!(error.contains("max_bytes limit"));
+        assert_eq!(outcome.payload["truncated"], json!(true));
+        assert_eq!(outcome.payload["continuation"]["state"], "truncated_page");
+        assert_eq!(outcome.payload["continuation"]["is_terminal"], json!(false));
+        assert_eq!(
+            outcome.payload["continuation"]["recommended_tool"],
+            "browse"
+        );
+        assert_eq!(
+            outcome.payload["continuation"]["recommended_payload"]["session_id"],
+            outcome.payload["session_id"]
+        );
+        assert_eq!(
+            outcome.payload["continuation"]["recommended_payload"]["mode"],
+            "page_text"
+        );
         handle.join().expect("server thread");
     }
 
@@ -1026,6 +1201,63 @@ mod tests {
         .expect("browser.extract selector_text should succeed");
         assert_eq!(selector_text.payload["execution_tier"], json!("restricted"));
         assert_eq!(selector_text.payload["items"], json!(["Alpha", "Beta"]));
+        handle.join().expect("server thread");
+    }
+
+    #[test]
+    fn browser_extract_page_text_marks_shell_heavy_page_as_insufficient_evidence() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept stream");
+            let body = "<html><head><title>Profile</title><meta name=\"description\" content=\"Short profile summary for the target page.\"></head><body><header>Marketing nav</header><nav>Docs Pricing Sign in</nav><footer>Footer links and policies</footer></body></html>";
+            let response = build_http_response("200 OK", "text/html; charset=utf-8", body, None);
+            let mut request_buffer = [0_u8; 4_096];
+
+            stream
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .expect("set read timeout");
+            let _ = stream.read(&mut request_buffer);
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        });
+        let url = format!("http://127.0.0.1:{}/", address.port());
+        let config = local_browser_config();
+
+        let opened = execute_browser_tool_with_config(
+            scoped_request(
+                "browser.open",
+                json!({"url": url}),
+                "test-extract-insufficient",
+            ),
+            &config,
+        )
+        .expect("browser.open should succeed");
+        let session_id = opened.payload["session_id"]
+            .as_str()
+            .expect("session id")
+            .to_owned();
+
+        let extracted = execute_browser_tool_with_config(
+            scoped_request(
+                "browser.extract",
+                json!({"session_id": session_id, "mode": "page_text"}),
+                "test-extract-insufficient",
+            ),
+            &config,
+        )
+        .expect("browser.extract page_text should succeed");
+
+        assert_eq!(
+            extracted.payload["continuation"]["state"],
+            "insufficient_page_evidence"
+        );
+        assert_eq!(extracted.payload["continuation"]["recommended_tool"], "web");
+        assert_eq!(
+            extracted.payload["continuation"]["recommended_payload"]["url"],
+            extracted.payload["final_url"]
+        );
         handle.join().expect("server thread");
     }
 

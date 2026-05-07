@@ -115,10 +115,9 @@ pub fn run_memory_context_benchmark_cli(
 
 pub use {base64, kernel, sha2};
 
+mod access_terms;
 pub mod acp_cli;
 pub mod audit_cli;
-mod browser_companion_diagnostics;
-pub mod browser_preview;
 mod channel_access_policy_render;
 mod channel_bridge_render;
 mod channel_cli_specs;
@@ -138,10 +137,9 @@ mod copilot_onboarding;
 pub mod debug_cli;
 mod delegate_child_cli;
 pub mod doctor_cli;
-mod doctor_compaction_hygiene;
+mod doctor_presentation;
 pub mod doctor_security_cli;
 mod env_compat;
-mod external_skills_policy_probe;
 pub mod feishu_cli;
 mod feishu_onboarding;
 pub mod feishu_support;
@@ -159,6 +157,7 @@ mod observability;
 pub mod onboard_cli;
 mod onboard_finalize;
 mod onboard_preflight;
+mod onboard_preflight_presentation;
 pub mod onboard_presentation;
 mod onboard_types;
 mod onboard_web_search;
@@ -170,9 +169,13 @@ mod personalize_presentation;
 mod plugin_bridge_account_summary;
 pub mod plugins_cli;
 mod provider_credential_policy;
+mod provider_credentials_guidance;
 mod provider_model_probe_policy;
 pub mod provider_presentation;
 mod provider_route_diagnostics;
+mod query_search_guidance;
+mod query_search_surface;
+mod runtime_access;
 pub mod runtime_capability_cli;
 pub mod runtime_cli;
 pub mod runtime_experiment_cli;
@@ -189,7 +192,9 @@ mod session_prompt_frame_cli;
 mod session_runtime_truth_cli;
 pub mod sessions_cli;
 pub mod skills_cli;
+mod skills_policy_probe;
 pub mod source_presentation;
+mod status_access;
 pub mod status_cli;
 pub mod supervisor;
 mod task_execution;
@@ -236,8 +241,8 @@ use runtime_snapshot_compaction_hygiene::collect_runtime_snapshot_compaction_hyg
 pub use runtime_snapshot_render::render_runtime_snapshot_text;
 pub(crate) use runtime_snapshot_render::{
     runtime_snapshot_acp_json, runtime_snapshot_context_engine_json,
-    runtime_snapshot_external_skills_json, runtime_snapshot_memory_system_json,
-    runtime_snapshot_provider_json, runtime_snapshot_runtime_plugins_json,
+    runtime_snapshot_memory_system_json, runtime_snapshot_provider_json,
+    runtime_snapshot_runtime_plugins_json, runtime_snapshot_skills_json,
     runtime_snapshot_tool_runtime_json,
 };
 pub use runtime_snapshot_types::{
@@ -340,7 +345,7 @@ fn render_import_long_about(command_name: &str) -> String {
 
 fn render_migrate_long_about(command_name: &str) -> String {
     format!(
-        "Power-user config import flow for discovering, previewing, or applying external workspace state explicitly.\n\nUse this when you want exact CLI control over import mode selection and output handling for compatibility sources and older workspace roots. If you want the guided path, use `{command_name} onboard` instead.\n\nMode quick reference:\n- discover, plan_many, recommend_primary, merge_profiles, map_external_skills: require `--input`\n- plan: requires `--input`; `--output` is optional preview target\n- apply: requires `--input` and `--output`\n- apply_selected: requires `--input` and `--output`; use `--source-id` to pin one discovered source, and `--apply-external-skills-plan` to bridge installable local external skills into the managed runtime\n- rollback_last_apply: requires `--output`"
+        "Power-user config import flow for discovering, previewing, or applying external workspace state explicitly.\n\nUse this when you want exact CLI control over import mode selection and output handling for older workspace roots. If you want the guided path, use `{command_name} onboard` instead.\n\nMode quick reference:\n- discover, plan_many, recommend_primary, merge_profiles, map_skills: require `--input`\n- plan: requires `--input`; `--output` is optional preview target\n- apply: requires `--input` and `--output`\n- apply_selected: requires `--input` and `--output`; use `--source-id` to pin one discovered source, and `--apply-skills-plan` to bridge installable local skills into the managed runtime\n- rollback_last_apply: requires `--output`"
     )
 }
 
@@ -760,7 +765,7 @@ pub enum Commands {
     },
     #[command(
         about = "Preview or apply config import modes explicitly",
-        long_about = "Power-user config import flow for discovering, previewing, or applying external workspace state explicitly.\n\nUse this when you want exact CLI control over import mode selection and output handling for compatibility sources and older workspace roots. If you want the guided path, use `loong onboard` instead.\n\nMode quick reference:\n- discover, plan_many, recommend_primary, merge_profiles, map_external_skills: require `--input`\n- plan: requires `--input`; `--output` is optional preview target\n- apply: requires `--input` and `--output`\n- apply_selected: requires `--input` and `--output`; use `--source-id` to pin one discovered source, and `--apply-external-skills-plan` to bridge installable local external skills into the managed runtime\n- rollback_last_apply: requires `--output`"
+        long_about = "Power-user config import flow for discovering, previewing, or applying external workspace state explicitly.\n\nUse this when you want exact CLI control over import mode selection and output handling for older workspace roots. If you want the guided path, use `loong onboard` instead.\n\nMode quick reference:\n- discover, plan_many, recommend_primary, merge_profiles, map_skills: require `--input`\n- plan: requires `--input`; `--output` is optional preview target\n- apply: requires `--input` and `--output`\n- apply_selected: requires `--input` and `--output`; use `--source-id` to pin one discovered source, and `--apply-skills-plan` to bridge installable local skills into the managed runtime\n- rollback_last_apply: requires `--output`"
     )]
     Migrate {
         /// Path to the legacy agent workspace or root to inspect
@@ -787,9 +792,13 @@ pub enum Commands {
         /// Explicit primary source id when safe profile merge is enabled
         #[arg(long)]
         primary_source_id: Option<String>,
-        /// Bridge installable local external skills into the managed runtime during apply_selected
-        #[arg(long, default_value_t = false)]
-        apply_external_skills_plan: bool,
+        /// Bridge installable local skills into the managed runtime during apply_selected
+        #[arg(
+            long = "apply-skills-plan",
+            alias = "apply-external-skills-plan",
+            default_value_t = false
+        )]
+        apply_skills_plan: bool,
         /// Overwrite an existing target config path instead of stopping for manual review
         #[arg(long, default_value_t = false)]
         force: bool,
@@ -834,7 +843,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: audit_cli::AuditCommands,
     },
-    /// Manage installed external skills through an operator-facing CLI surface
+    /// Manage installed skills through an operator-facing CLI surface
     Skills {
         #[arg(long, global = true)]
         config: Option<String>,
@@ -1724,13 +1733,14 @@ pub struct RuntimeSnapshotCliState {
     pub enabled_outbound_only_channel_ids: Vec<String>,
     pub channels: mvp::channel::ChannelInventory,
     pub tool_runtime: mvp::tools::runtime_config::ToolRuntimeConfig,
+    pub tool_access: RuntimeToolAccessSummary,
     pub visible_tool_names: Vec<String>,
     pub discoverable_tool_summary: mvp::tools::DiscoverableToolSurfaceSummary,
     pub capability_snapshot: String,
     pub capability_snapshot_sha256: String,
     pub tool_calling: RuntimeSnapshotToolCallingState,
     pub runtime_plugins: RuntimeSnapshotRuntimePluginsState,
-    pub external_skills: RuntimeSnapshotExternalSkillsState,
+    pub skills: RuntimeSnapshotSkillsState,
     pub restore_spec: RuntimeSnapshotRestoreSpec,
 }
 
@@ -1752,8 +1762,8 @@ impl RuntimeSnapshotInventoryStatus {
 }
 
 #[derive(Debug, Clone)]
-pub struct RuntimeSnapshotExternalSkillsState {
-    pub policy: mvp::tools::runtime_config::ExternalSkillsRuntimePolicy,
+pub struct RuntimeSnapshotSkillsState {
+    pub policy: mvp::tools::runtime_config::SkillsRuntimePolicy,
     pub override_active: bool,
     pub inventory_status: RuntimeSnapshotInventoryStatus,
     pub inventory_error: Option<String>,
@@ -1802,66 +1812,9 @@ pub struct RuntimeSnapshotRuntimePluginState {
     pub missing_required_config_keys: Vec<String>,
 }
 
-pub(crate) const RUNTIME_WEB_ACCESS_SEPARATION_NOTE: &str = "web-search provider settings affect only query search mode; ordinary network access stays separately governed";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RuntimeWebAccessSummary {
-    pub ordinary_network_access_enabled: bool,
-    pub query_search_enabled: bool,
-    pub query_search_default_provider: String,
-    pub query_search_credential_ready: bool,
-    pub separation_note: &'static str,
-}
-
-pub(crate) fn runtime_web_access_summary(
-    runtime: &mvp::tools::runtime_config::ToolRuntimeConfig,
-) -> RuntimeWebAccessSummary {
-    let ordinary_network_access_enabled = runtime.web_fetch.enabled;
-    let query_search_enabled = runtime.web_search.enabled;
-    let query_search_default_provider = runtime.web_search.default_provider.clone();
-    let query_search_credential_ready = web_search_provider_credential_ready(&runtime.web_search);
-    let separation_note = RUNTIME_WEB_ACCESS_SEPARATION_NOTE;
-
-    RuntimeWebAccessSummary {
-        ordinary_network_access_enabled,
-        query_search_enabled,
-        query_search_default_provider,
-        query_search_credential_ready,
-        separation_note,
-    }
-}
-
-fn web_search_provider_credential_ready(
-    policy: &mvp::tools::runtime_config::WebSearchRuntimePolicy,
-) -> bool {
-    let provider = policy.default_provider.trim();
-    match provider {
-        mvp::config::WEB_SEARCH_PROVIDER_DUCKDUCKGO => true,
-        mvp::config::WEB_SEARCH_PROVIDER_BRAVE => {
-            option_has_non_empty_runtime_text(policy.brave_api_key.as_deref())
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_TAVILY => {
-            option_has_non_empty_runtime_text(policy.tavily_api_key.as_deref())
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_PERPLEXITY => {
-            option_has_non_empty_runtime_text(policy.perplexity_api_key.as_deref())
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_EXA => {
-            option_has_non_empty_runtime_text(policy.exa_api_key.as_deref())
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_FIRECRAWL => {
-            option_has_non_empty_runtime_text(policy.firecrawl_api_key.as_deref())
-        }
-        mvp::config::WEB_SEARCH_PROVIDER_JINA => {
-            option_has_non_empty_runtime_text(policy.jina_api_key.as_deref())
-        }
-        _ => false,
-    }
-}
-
-fn option_has_non_empty_runtime_text(value: Option<&str>) -> bool {
-    value.is_some_and(|value| !value.trim().is_empty())
-}
+pub(crate) use runtime_access::{
+    RUNTIME_TOOL_ACCESS_SEPARATION_NOTE, RuntimeToolAccessSummary, runtime_tool_access_summary,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeSnapshotArtifactMetadata {
@@ -1887,7 +1840,7 @@ pub struct RuntimeSnapshotRestoreSpec {
     pub memory: mvp::config::MemoryConfig,
     pub acp: mvp::config::AcpConfig,
     pub tools: mvp::config::ToolConfig,
-    pub external_skills: mvp::config::ExternalSkillsConfig,
+    pub skills: mvp::config::SkillsConfig,
     #[serde(default)]
     pub runtime_plugins: mvp::config::RuntimePluginsConfig,
     pub managed_skills: RuntimeSnapshotRestoreManagedSkillsSpec,
@@ -1937,7 +1890,7 @@ pub struct RuntimeSnapshotArtifactDocument {
     pub tools: Value,
     #[serde(default)]
     pub runtime_plugins: Value,
-    pub external_skills: Value,
+    pub skills: Value,
     pub restore_spec: RuntimeSnapshotRestoreSpec,
 }
 
@@ -2009,8 +1962,8 @@ fn collect_runtime_snapshot_cli_state_from_parts(
         config,
         Some(resolved_path),
     );
-    let (external_skills, snapshot_tool_runtime) =
-        collect_runtime_snapshot_external_skills_state(&tool_runtime);
+    let (skills, snapshot_tool_runtime) = collect_runtime_snapshot_skills_state(&tool_runtime);
+    let tool_access = runtime_tool_access_summary(config, &snapshot_tool_runtime);
     let tool_view = mvp::tools::runtime_tool_view_for_runtime_config(&snapshot_tool_runtime);
     let visible_tools = tool_view
         .tool_names()
@@ -2026,7 +1979,7 @@ fn collect_runtime_snapshot_cli_state_from_parts(
         runtime_snapshot_tool_digest(&visible_tools, &capability_snapshot)?;
     let tool_calling = collect_runtime_snapshot_tool_calling_state(config, visible_tools.len());
     let runtime_plugins = collect_runtime_snapshot_runtime_plugins_state(config);
-    let restore_spec = build_runtime_snapshot_restore_spec(config, &external_skills);
+    let restore_spec = build_runtime_snapshot_restore_spec(config, &skills);
     Ok(RuntimeSnapshotCliState {
         config: config_display,
         provider,
@@ -2041,13 +1994,14 @@ fn collect_runtime_snapshot_cli_state_from_parts(
         enabled_outbound_only_channel_ids,
         channels,
         tool_runtime: snapshot_tool_runtime,
+        tool_access,
         visible_tool_names: visible_tools,
         discoverable_tool_summary,
         capability_snapshot,
         capability_snapshot_sha256,
         tool_calling,
         runtime_plugins,
-        external_skills,
+        skills,
         restore_spec,
     })
 }
@@ -2149,10 +2103,10 @@ fn runtime_snapshot_provider_credentials_resolved(provider: &mvp::config::Provid
     provider_credential_policy::provider_has_locally_available_credentials(provider)
 }
 
-fn collect_runtime_snapshot_external_skills_state(
+fn collect_runtime_snapshot_skills_state(
     tool_runtime: &mvp::tools::runtime_config::ToolRuntimeConfig,
 ) -> (
-    RuntimeSnapshotExternalSkillsState,
+    RuntimeSnapshotSkillsState,
     mvp::tools::runtime_config::ToolRuntimeConfig,
 ) {
     let empty_inventory = json!({
@@ -2161,12 +2115,12 @@ fn collect_runtime_snapshot_external_skills_state(
     });
 
     let (effective_policy, override_active) =
-        match runtime_snapshot_effective_external_skills_policy(tool_runtime) {
+        match runtime_snapshot_effective_skills_policy(tool_runtime) {
             Ok(policy_state) => policy_state,
             Err(error) => {
                 return (
-                    RuntimeSnapshotExternalSkillsState {
-                        policy: tool_runtime.external_skills.clone(),
+                    RuntimeSnapshotSkillsState {
+                        policy: tool_runtime.skills.clone(),
                         override_active: false,
                         inventory_status: RuntimeSnapshotInventoryStatus::Error,
                         inventory_error: Some(error.clone()),
@@ -2184,11 +2138,11 @@ fn collect_runtime_snapshot_external_skills_state(
         };
 
     let mut effective_tool_runtime = tool_runtime.clone();
-    effective_tool_runtime.external_skills = effective_policy.clone();
+    effective_tool_runtime.skills = effective_policy.clone();
 
     if !effective_policy.enabled {
         return (
-            RuntimeSnapshotExternalSkillsState {
+            RuntimeSnapshotSkillsState {
                 policy: effective_policy,
                 override_active,
                 inventory_status: RuntimeSnapshotInventoryStatus::Disabled,
@@ -2201,15 +2155,9 @@ fn collect_runtime_snapshot_external_skills_state(
         );
     }
 
-    match mvp::tools::execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "external_skills.list".to_owned(),
-            payload: json!({}),
-        },
-        &effective_tool_runtime,
-    ) {
+    match mvp::tools::skills_list_with_config(&effective_tool_runtime) {
         Ok(outcome) => (
-            RuntimeSnapshotExternalSkillsState {
+            RuntimeSnapshotSkillsState {
                 policy: effective_policy,
                 override_active,
                 inventory_status: RuntimeSnapshotInventoryStatus::Ok,
@@ -2221,7 +2169,7 @@ fn collect_runtime_snapshot_external_skills_state(
             effective_tool_runtime,
         ),
         Err(error) => (
-            RuntimeSnapshotExternalSkillsState {
+            RuntimeSnapshotSkillsState {
                 policy: effective_policy,
                 override_active,
                 inventory_status: RuntimeSnapshotInventoryStatus::Error,
@@ -2552,27 +2500,13 @@ fn collect_config_paths(value: &Value, prefix: Option<&str>, out: &mut BTreeSet<
     }
 }
 
-fn runtime_snapshot_effective_external_skills_policy(
+fn runtime_snapshot_effective_skills_policy(
     tool_runtime: &mvp::tools::runtime_config::ToolRuntimeConfig,
-) -> Result<
-    (
-        mvp::tools::runtime_config::ExternalSkillsRuntimePolicy,
-        bool,
-    ),
-    String,
-> {
-    let outcome = mvp::tools::execute_tool_core_with_config(
-        ToolCoreRequest {
-            tool_name: "external_skills.policy".to_owned(),
-            payload: json!({
-                "action": "get",
-            }),
-        },
-        tool_runtime,
-    )
-    .map_err(|error| format!("resolve effective external skills policy failed: {error}"))?;
+) -> Result<(mvp::tools::runtime_config::SkillsRuntimePolicy, bool), String> {
+    let outcome = mvp::tools::skills_policy_get_with_config(tool_runtime)
+        .map_err(|error| format!("resolve effective skills policy failed: {error}"))?;
 
-    let policy = runtime_snapshot_external_skills_policy_from_payload(&outcome.payload)?;
+    let policy = runtime_snapshot_skills_policy_from_payload(&outcome.payload)?;
     let override_active = outcome
         .payload
         .get("override_active")
@@ -2581,37 +2515,32 @@ fn runtime_snapshot_effective_external_skills_policy(
     Ok((policy, override_active))
 }
 
-fn runtime_snapshot_external_skills_policy_from_payload(
+fn runtime_snapshot_skills_policy_from_payload(
     payload: &Value,
-) -> Result<mvp::tools::runtime_config::ExternalSkillsRuntimePolicy, String> {
+) -> Result<mvp::tools::runtime_config::SkillsRuntimePolicy, String> {
     let policy = payload
         .get("policy")
         .and_then(Value::as_object)
-        .ok_or_else(|| {
-            "runtime snapshot external skills policy payload missing `policy`".to_owned()
-        })?;
+        .ok_or_else(|| "runtime snapshot skills policy payload missing `policy`".to_owned())?;
 
-    Ok(mvp::tools::runtime_config::ExternalSkillsRuntimePolicy {
+    Ok(mvp::tools::runtime_config::SkillsRuntimePolicy {
         enabled: policy
             .get("enabled")
             .and_then(Value::as_bool)
-            .ok_or_else(|| {
-                "runtime snapshot external skills policy missing `enabled`".to_owned()
-            })?,
+            .ok_or_else(|| "runtime snapshot skills policy missing `enabled`".to_owned())?,
         require_download_approval: policy
             .get("require_download_approval")
             .and_then(Value::as_bool)
             .ok_or_else(|| {
-                "runtime snapshot external skills policy missing `require_download_approval`"
-                    .to_owned()
+                "runtime snapshot skills policy missing `require_download_approval`".to_owned()
             })?,
         allowed_domains: json_string_array_to_set(
             policy.get("allowed_domains"),
-            "runtime snapshot external skills policy.allowed_domains",
+            "runtime snapshot skills policy.allowed_domains",
         )?,
         blocked_domains: json_string_array_to_set(
             policy.get("blocked_domains"),
-            "runtime snapshot external skills policy.blocked_domains",
+            "runtime snapshot skills policy.blocked_domains",
         )?,
         install_root: policy
             .get("install_root")
@@ -2622,7 +2551,7 @@ fn runtime_snapshot_external_skills_policy_from_payload(
             .get("auto_expose_installed")
             .and_then(Value::as_bool)
             .ok_or_else(|| {
-                "runtime snapshot external skills policy missing `auto_expose_installed`".to_owned()
+                "runtime snapshot skills policy missing `auto_expose_installed`".to_owned()
             })?,
     })
 }
@@ -2666,7 +2595,7 @@ fn json_string_array_to_set(
 
 fn build_runtime_snapshot_restore_spec(
     config: &mvp::config::LoongConfig,
-    external_skills: &RuntimeSnapshotExternalSkillsState,
+    skills: &RuntimeSnapshotSkillsState,
 ) -> RuntimeSnapshotRestoreSpec {
     let mut warnings = Vec::new();
     let mut profiles = runtime_snapshot_restore_provider_profiles(config);
@@ -2684,12 +2613,9 @@ fn build_runtime_snapshot_restore_spec(
         memory: config.memory.clone(),
         acp: config.acp.clone(),
         tools: config.tools.clone(),
-        external_skills: config.external_skills.clone(),
+        skills: config.skills.clone(),
         runtime_plugins: config.runtime_plugins.clone(),
-        managed_skills: build_runtime_snapshot_restore_managed_skills_spec(
-            external_skills,
-            &mut warnings,
-        ),
+        managed_skills: build_runtime_snapshot_restore_managed_skills_spec(skills, &mut warnings),
         warnings,
     }
 }
@@ -2894,20 +2820,20 @@ fn runtime_snapshot_is_valid_env_name(raw: &str) -> bool {
 }
 
 fn build_runtime_snapshot_restore_managed_skills_spec(
-    external_skills: &RuntimeSnapshotExternalSkillsState,
+    skills: &RuntimeSnapshotSkillsState,
     warnings: &mut Vec<String>,
 ) -> RuntimeSnapshotRestoreManagedSkillsSpec {
-    match external_skills.inventory_status {
+    match skills.inventory_status {
         RuntimeSnapshotInventoryStatus::Disabled => {
             warnings.push(
-                "restore spec could not enumerate managed external skills because runtime inventory is disabled"
+                "restore spec could not enumerate managed skills because runtime inventory is disabled"
                     .to_owned(),
             );
             return RuntimeSnapshotRestoreManagedSkillsSpec::default();
         }
         RuntimeSnapshotInventoryStatus::Error => {
             warnings.push(
-                "restore spec could not enumerate managed external skills because runtime inventory collection failed"
+                "restore spec could not enumerate managed skills because runtime inventory collection failed"
                     .to_owned(),
             );
             return RuntimeSnapshotRestoreManagedSkillsSpec::default();
@@ -2915,11 +2841,7 @@ fn build_runtime_snapshot_restore_managed_skills_spec(
         RuntimeSnapshotInventoryStatus::Ok => {}
     }
 
-    let Some(skills) = external_skills
-        .inventory
-        .get("skills")
-        .and_then(Value::as_array)
-    else {
+    let Some(skills) = skills.inventory.get("skills").and_then(Value::as_array) else {
         return RuntimeSnapshotRestoreManagedSkillsSpec::default();
     };
 
@@ -3081,10 +3003,7 @@ pub fn build_runtime_snapshot_artifact_json_payload(
             .get("runtime_plugins")
             .cloned()
             .unwrap_or(Value::Null),
-        external_skills: base_payload
-            .get("external_skills")
-            .cloned()
-            .unwrap_or(Value::Null),
+        skills: base_payload.get("skills").cloned().unwrap_or(Value::Null),
         restore_spec: snapshot.restore_spec.clone(),
     };
     serde_json::to_value(document)

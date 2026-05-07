@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 
 use crate::RuntimeSnapshotCompactionHygieneState;
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeSnapshotCompactionHygieneStatusValues {
     pub(crate) hygiene: String,
@@ -93,6 +94,7 @@ pub(crate) fn render_runtime_snapshot_compaction_lines(
     ]
 }
 
+#[cfg(test)]
 pub(crate) fn build_compaction_hygiene_status_values(
     state: &RuntimeSnapshotCompactionHygieneState,
 ) -> RuntimeSnapshotCompactionHygieneStatusValues {

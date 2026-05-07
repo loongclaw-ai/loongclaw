@@ -16,11 +16,10 @@ pub const DEFAULT_WEB_FETCH_MAX_REDIRECTS: usize = 3;
 pub const DEFAULT_BROWSER_MAX_SESSIONS: usize = 8;
 pub const DEFAULT_BROWSER_MAX_LINKS: usize = 40;
 pub const DEFAULT_BROWSER_MAX_TEXT_CHARS: usize = 6000;
-pub const DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS: u64 = 30;
 pub const DEFAULT_RUNTIME_SELF_MAX_SOURCE_CHARS: usize = 20_000;
 pub const DEFAULT_RUNTIME_SELF_MAX_TOTAL_CHARS: usize = 150_000;
 pub const DEFAULT_DELEGATE_MAX_FROZEN_BYTES: usize = 256 * 1024;
-pub const DEFAULT_EXTERNAL_SKILLS_BLOCKED_DOMAIN_RULES: [&str; 1] = ["*.clawhub.io"];
+pub const DEFAULT_EXTERNAL_SKILLS_BLOCKED_DOMAIN_RULES: [&str; 0] = [];
 pub(crate) const MIN_DELEGATE_MAX_FROZEN_BYTES: usize = 1;
 pub(crate) const MIN_WEB_FETCH_MAX_BYTES: usize = 1024;
 pub const MAX_WEB_FETCH_MAX_BYTES: usize = 5 * 1024 * 1024;
@@ -78,8 +77,6 @@ pub struct ToolConfig {
     #[serde(default)]
     pub browser: BrowserToolConfig,
     #[serde(default)]
-    pub browser_companion: BrowserCompanionToolConfig,
-    #[serde(default)]
     pub bash: BashToolConfig,
     #[serde(default)]
     pub web: WebToolConfig,
@@ -109,9 +106,9 @@ pub const AUTONOMY_PROFILE_VALID_VALUES: &str =
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AutonomyProfile {
+    #[default]
     DiscoveryOnly,
     GuidedAcquisition,
-    #[default]
     BoundedAutonomous,
 }
 
@@ -277,24 +274,6 @@ pub struct BrowserToolConfig {
     pub max_links: usize,
     #[serde(default = "default_browser_max_text_chars")]
     pub max_text_chars: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BrowserCompanionToolConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub command: Option<String>,
-    #[serde(default)]
-    pub expected_version: Option<String>,
-    #[serde(default = "default_browser_companion_timeout_seconds")]
-    pub timeout_seconds: u64,
-    #[serde(default)]
-    pub allow_private_hosts: bool,
-    #[serde(default)]
-    pub allowed_domains: Vec<String>,
-    #[serde(default)]
-    pub blocked_domains: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -474,10 +453,6 @@ fn default_shell_default_mode() -> String {
     "allow".to_owned()
 }
 
-const fn default_browser_companion_timeout_seconds() -> u64 {
-    DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS
-}
-
 const fn default_runtime_self_max_source_chars() -> usize {
     DEFAULT_RUNTIME_SELF_MAX_SOURCE_CHARS
 }
@@ -505,19 +480,19 @@ fn default_shell_allow() -> Vec<String> {
         .collect()
 }
 
-fn default_external_skills_blocked_domains() -> Vec<String> {
+fn default_skills_blocked_domains() -> Vec<String> {
     Vec::new()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExternalSkillsConfig {
-    #[serde(default = "default_enabled")]
+pub struct SkillsConfig {
+    #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_require_download_approval")]
     pub require_download_approval: bool,
     #[serde(default)]
     pub allowed_domains: Vec<String>,
-    #[serde(default = "default_external_skills_blocked_domains")]
+    #[serde(default = "default_skills_blocked_domains")]
     pub blocked_domains: Vec<String>,
     #[serde(default)]
     pub install_root: Option<String>,
@@ -554,26 +529,11 @@ impl Default for ToolConfig {
             delegate: DelegateToolConfig::default(),
             runtime_self: RuntimeSelfToolConfig::default(),
             browser: BrowserToolConfig::default(),
-            browser_companion: BrowserCompanionToolConfig::default(),
             bash: BashToolConfig::default(),
             web: WebToolConfig::default(),
             web_search: WebSearchToolConfig::default(),
             tool_execution: ToolExecutionToolConfig::default(),
             autonomy_profile: AutonomyProfile::default(),
-        }
-    }
-}
-
-impl Default for BrowserCompanionToolConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            command: None,
-            expected_version: None,
-            timeout_seconds: default_browser_companion_timeout_seconds(),
-            allow_private_hosts: false,
-            allowed_domains: Vec::new(),
-            blocked_domains: Vec::new(),
         }
     }
 }
@@ -631,7 +591,7 @@ impl Default for WebToolConfig {
     fn default() -> Self {
         Self {
             enabled: default_enabled(),
-            allow_private_hosts: false,
+            allow_private_hosts: true,
             allowed_domains: Vec::new(),
             blocked_domains: Vec::new(),
             max_bytes: default_web_fetch_max_bytes(),
@@ -652,13 +612,13 @@ impl Default for BrowserToolConfig {
     }
 }
 
-impl Default for ExternalSkillsConfig {
+impl Default for SkillsConfig {
     fn default() -> Self {
         Self {
-            enabled: default_enabled(),
+            enabled: false,
             require_download_approval: default_require_download_approval(),
             allowed_domains: Vec::new(),
-            blocked_domains: default_external_skills_blocked_domains(),
+            blocked_domains: default_skills_blocked_domains(),
             install_root: None,
             auto_expose_installed: default_auto_expose_installed(),
         }
@@ -1033,17 +993,7 @@ pub(crate) fn web_search_provider_parameter_description() -> String {
     )
 }
 
-impl BrowserCompanionToolConfig {
-    pub fn normalized_allowed_domains(&self) -> Vec<String> {
-        normalize_domain_entries(&self.allowed_domains)
-    }
-
-    pub fn normalized_blocked_domains(&self) -> Vec<String> {
-        normalize_domain_entries(&self.blocked_domains)
-    }
-}
-
-impl ExternalSkillsConfig {
+impl SkillsConfig {
     pub fn normalized_allowed_domains(&self) -> Vec<String> {
         normalize_domain_entries(&self.allowed_domains)
     }
@@ -1377,11 +1327,7 @@ const fn default_browser_max_text_chars() -> usize {
 }
 
 fn default_delegate_child_tool_allowlist() -> Vec<String> {
-    vec![
-        "file.read".to_owned(),
-        "file.write".to_owned(),
-        "file.edit".to_owned(),
-    ]
+    vec!["read".to_owned(), "write".to_owned(), "edit".to_owned()]
 }
 
 const fn default_web_fetch_max_bytes() -> usize {
@@ -1409,11 +1355,11 @@ const fn default_web_search_max_results() -> usize {
 }
 
 const fn default_require_download_approval() -> bool {
-    false
+    true
 }
 
 const fn default_auto_expose_installed() -> bool {
-    true
+    false
 }
 
 fn normalize_domain_entries(entries: &[String]) -> Vec<String> {
@@ -1438,7 +1384,7 @@ mod tests {
         assert!(config.shell_allow.is_empty());
         assert!(config.shell_deny.is_empty());
         assert_eq!(config.shell_default_mode, "allow");
-        assert_eq!(config.autonomy_profile, AutonomyProfile::BoundedAutonomous);
+        assert_eq!(config.autonomy_profile, AutonomyProfile::DiscoveryOnly);
         assert_eq!(config.consent.default_mode, ToolConsentMode::Full);
         assert_eq!(config.approval.mode, GovernedToolApprovalMode::Disabled);
         assert!(config.approval.approved_calls.is_empty());
@@ -1461,11 +1407,7 @@ mod tests {
         assert_eq!(config.delegate.announce_max_batch, 20);
         assert_eq!(
             config.delegate.child_tool_allowlist,
-            vec![
-                "file.read".to_owned(),
-                "file.write".to_owned(),
-                "file.edit".to_owned()
-            ]
+            vec!["read".to_owned(), "write".to_owned(), "edit".to_owned()]
         );
         assert!(!config.delegate.allow_shell_in_child);
         assert_eq!(
@@ -1480,15 +1422,8 @@ mod tests {
         assert_eq!(config.browser.max_sessions, 8);
         assert_eq!(config.browser.max_links, 40);
         assert_eq!(config.browser.max_text_chars, 6000);
-        assert!(!config.browser_companion.enabled);
-        assert!(config.browser_companion.command.is_none());
-        assert!(config.browser_companion.expected_version.is_none());
-        assert_eq!(
-            config.browser_companion.timeout_seconds,
-            DEFAULT_BROWSER_COMPANION_TIMEOUT_SECONDS
-        );
         assert!(config.web.enabled);
-        assert!(!config.web.allow_private_hosts);
+        assert!(config.web.allow_private_hosts);
         assert!(config.web.allowed_domains.is_empty());
         assert!(config.web.blocked_domains.is_empty());
         assert_eq!(config.web.timeout_seconds, 15);
@@ -1751,14 +1686,14 @@ mod tests {
         config
             .tool_execution
             .per_tool_timeout
-            .insert("file.read".to_owned(), 0);
+            .insert("read".to_owned(), 0);
 
         let issues = config.validate();
 
         assert!(
             issues
                 .iter()
-                .any(|issue| issue.field_path == "tools.tool_execution.per_tool_timeout.file.read"),
+                .any(|issue| issue.field_path == "tools.tool_execution.per_tool_timeout.read"),
             "expected per-tool timeout validation issue, got {issues:?}"
         );
     }
@@ -1792,7 +1727,7 @@ default_mode = "{raw_mode}"
         let raw = r#"
 [tools.tool_execution]
 default_timeout_seconds = 12
-per_tool_timeout = { "file.read" = 3, "web.search" = 9 }
+per_tool_timeout = { "read" = 3, "web.search" = 9 }
 "#;
         let parsed = toml::from_str::<crate::config::LoongConfig>(raw).expect("parse tool config");
 
@@ -1801,11 +1736,7 @@ per_tool_timeout = { "file.read" = 3, "web.search" = 9 }
             Some(12)
         );
         assert_eq!(
-            parsed
-                .tools
-                .tool_execution
-                .per_tool_timeout
-                .get("file.read"),
+            parsed.tools.tool_execution.per_tool_timeout.get("read"),
             Some(&3)
         );
         assert_eq!(
@@ -1860,7 +1791,7 @@ allow_shell_in_child = true
 max_frozen_bytes = 131072
 announce_debounce_ms = 250
 announce_max_batch = 7
-child_tool_allowlist = ["file.read", "shell.exec"]
+child_tool_allowlist = ["read", "shell.exec"]
 
 [tools.delegate.child_runtime.web]
 allow_private_hosts = false
@@ -1904,7 +1835,7 @@ max_text_chars = 1024
         assert_eq!(parsed.tools.delegate.announce_max_batch, 7);
         assert_eq!(
             parsed.tools.delegate.child_tool_allowlist,
-            vec!["file.read".to_owned(), "shell.exec".to_owned()]
+            vec!["read".to_owned(), "shell.exec".to_owned()]
         );
         assert_eq!(
             parsed
@@ -2018,42 +1949,6 @@ max_text_chars = 2048
 
     #[cfg(feature = "config-toml")]
     #[test]
-    fn tool_config_parses_browser_companion_controls_from_toml() {
-        let raw = r#"
-[tools.browser_companion]
-enabled = true
-command = "loong-browser-companion"
-expected_version = "1.2.3"
-timeout_seconds = 7
-allow_private_hosts = true
-allowed_domains = ["Docs.Example.com", "docs.example.com", " api.example.com "]
-blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
-"#;
-        let parsed = toml::from_str::<crate::config::LoongConfig>(raw).expect("parse tool config");
-
-        assert!(parsed.tools.browser_companion.enabled);
-        assert_eq!(
-            parsed.tools.browser_companion.command.as_deref(),
-            Some("loong-browser-companion")
-        );
-        assert_eq!(
-            parsed.tools.browser_companion.expected_version.as_deref(),
-            Some("1.2.3")
-        );
-        assert_eq!(parsed.tools.browser_companion.timeout_seconds, 7);
-        assert!(parsed.tools.browser_companion.allow_private_hosts);
-        assert_eq!(
-            parsed.tools.browser_companion.normalized_allowed_domains(),
-            vec!["api.example.com".to_owned(), "docs.example.com".to_owned()]
-        );
-        assert_eq!(
-            parsed.tools.browser_companion.normalized_blocked_domains(),
-            vec!["internal.example".to_owned()]
-        );
-    }
-
-    #[cfg(feature = "config-toml")]
-    #[test]
     fn tool_config_parses_bash_rules_dir_override() {
         let config: ToolConfig =
             toml::from_str("[bash]\nrules_dir = \"custom/rules\"\n").expect("bash tool config");
@@ -2138,19 +2033,6 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
         assert_eq!(configured_file_root, Some(expected_file_root));
     }
 
-    #[test]
-    fn browser_companion_defaults_to_safe_public_mode() {
-        let config = BrowserCompanionToolConfig::default();
-        assert!(!config.enabled);
-        assert!(!config.allow_private_hosts);
-        assert!(config.allowed_domains.is_empty());
-        assert!(config.blocked_domains.is_empty());
-        assert_eq!(
-            config.timeout_seconds,
-            default_browser_companion_timeout_seconds()
-        );
-    }
-
     /// When `shell_deny` is absent, it must default to empty — users start
     /// with no blocked commands beyond the default-deny fallback.
     #[test]
@@ -2179,19 +2061,19 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
     }
 
     #[test]
-    fn external_skills_defaults_to_yolo_on_mode() {
-        let config = ExternalSkillsConfig::default();
-        assert!(config.enabled);
-        assert!(!config.require_download_approval);
+    fn skills_defaults_to_fail_closed_mode() {
+        let config = SkillsConfig::default();
+        assert!(!config.enabled);
+        assert!(config.require_download_approval);
         assert!(config.allowed_domains.is_empty());
         assert!(config.blocked_domains.is_empty());
         assert!(config.install_root.is_none());
-        assert!(config.auto_expose_installed);
+        assert!(!config.auto_expose_installed);
     }
 
     #[test]
-    fn external_skills_normalized_domains_are_lowercase_and_deduped() {
-        let config = ExternalSkillsConfig {
+    fn skills_normalized_domains_are_lowercase_and_deduped() {
+        let config = SkillsConfig {
             enabled: true,
             require_download_approval: true,
             allowed_domains: vec![
@@ -2218,10 +2100,10 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
     }
 
     #[test]
-    fn external_skills_resolved_install_root_expands_user_home() {
-        let config = ExternalSkillsConfig {
+    fn skills_resolved_install_root_expands_user_home() {
+        let config = SkillsConfig {
             install_root: Some("~/demo-skills".to_owned()),
-            ..ExternalSkillsConfig::default()
+            ..SkillsConfig::default()
         };
 
         assert!(
@@ -2389,10 +2271,10 @@ blocked_domains = ["internal.example", " INTERNAL.EXAMPLE "]
     }
 
     #[test]
-    fn web_tool_defaults_to_safe_public_fetch_mode() {
+    fn web_tool_defaults_to_yolo_private_fetch_mode() {
         let config = WebToolConfig::default();
         assert!(config.enabled);
-        assert!(!config.allow_private_hosts);
+        assert!(config.allow_private_hosts);
         assert!(config.allowed_domains.is_empty());
         assert!(config.blocked_domains.is_empty());
         assert_eq!(config.timeout_seconds, 15);

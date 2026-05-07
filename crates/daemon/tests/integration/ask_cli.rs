@@ -562,6 +562,69 @@ impl BrowserFixtureServer {
     }
 }
 
+struct WebSummaryFixtureServer {
+    base_url: String,
+    join_handle: std::thread::JoinHandle<Vec<String>>,
+}
+
+impl WebSummaryFixtureServer {
+    fn spawn(expected_requests: usize) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local web summary listener");
+        let address = listener.local_addr().expect("local web summary address");
+        let join_handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+
+            while requests.len() < expected_requests {
+                let (mut stream, _) = listener.accept().expect("accept web summary request");
+                let request = read_provider_request(&mut stream);
+                let body = r#"<!doctype html>
+<html>
+  <head>
+    <title>Example Summary Fixture</title>
+    <meta name="description" content="Short profile summary for the target page.">
+  </head>
+  <body>
+    <header>Marketing Nav Pricing Docs</header>
+    <main>
+      <h1>Summary Fixture</h1>
+      <p>Main profile content with links and details.</p>
+    </main>
+    <footer>Footer noise</footer>
+  </body>
+</html>"#;
+                let content_type = "text/html; charset=utf-8";
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write web summary fixture response");
+                requests.push(request);
+            }
+
+            requests
+        });
+        let base_url = format!("http://{address}");
+
+        Self {
+            base_url,
+            join_handle,
+        }
+    }
+
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    fn finish(self) -> Vec<String> {
+        self.join_handle
+            .join()
+            .expect("join web summary fixture server")
+    }
+}
+
 fn browser_fixture_body_for_request(request: &str) -> &'static str {
     if request.starts_with("GET /next ") {
         return r#"<!doctype html>
@@ -837,24 +900,14 @@ fn ask_cli_latest_session_selector_process_wait_budget_starts_with_process_run()
 #[test]
 fn ask_cli_openai_preface_plus_tool_search_then_exec_runs_full_e2e() {
     let fixture = LatestSelectorCliFixture::new("ask-tool-search-exec-e2e");
-    let final_reply = "E2E PASS tool search then exec.";
+    let final_reply = "E2E PASS direct bash execution.";
     let provider_responses = vec![
         MockProviderResponse::ok_json(openai_chat_tool_call_body(
-            "I'll find the right runtime tool first.",
-            "call-search-exec-tool",
-            "tool_search",
+            "I'll run the guarded workspace command.",
+            "call-run-bash-tool",
+            "bash",
             json!({
-                "query": "run a guarded workspace command",
-                "limit": 5,
-            }),
-        )),
-        MockProviderResponse::ok_json(openai_chat_tool_call_body(
-            "Now I'll run the discovered command tool.",
-            "call-run-exec-tool",
-            "exec",
-            json!({
-                "command": "printf",
-                "args": ["LOONG_E2E_EXEC_OK"],
+                "command": "printf LOONG_E2E_EXEC_OK",
             }),
         )),
         MockProviderResponse::ok_json(openai_chat_final_body(final_reply)),
@@ -867,6 +920,7 @@ fn ask_cli_openai_preface_plus_tool_search_then_exec_runs_full_e2e() {
         config.provider.model = "test-model".to_owned();
         config.provider.wire_api = ProviderWireApi::ChatCompletions;
         config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.shell_default_mode = "allow".to_owned();
     });
 
     provider_server.arm();
@@ -884,14 +938,14 @@ fn ask_cli_openai_preface_plus_tool_search_then_exec_runs_full_e2e() {
 
     assert!(
         output.status.success(),
-        "ask tool-search e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+        "ask bash e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
     );
     assert!(
         stdout.contains(final_reply),
         "stdout should contain only the terminal assistant answer: {stdout:?}"
     );
     assert!(
-        !stdout.contains("I'll find the right runtime tool first"),
+        !stdout.contains("I'll run the guarded workspace command."),
         "stdout should not finalize the first assistant preface: {stdout:?}"
     );
     assert!(
@@ -900,39 +954,27 @@ fn ask_cli_openai_preface_plus_tool_search_then_exec_runs_full_e2e() {
     );
     assert_eq!(
         provider_requests.len(),
-        3,
-        "ask should continue through tool_search and exec follow-up turns: {provider_requests:#?}"
+        2,
+        "ask should continue through bash execution and final reply: {provider_requests:#?}"
     );
 
     let initial_request = &provider_requests[0];
     assert_provider_request_contains_text(
         initial_request,
-        "Search for the command tool",
+        "run printf",
         "initial provider request",
     );
 
-    let search_followup_request = &provider_requests[1];
-    assert_provider_request_contains_text(
-        search_followup_request,
-        "[tool_result]",
-        "tool_search follow-up provider request",
-    );
-    assert_provider_request_contains_text(
-        search_followup_request,
-        "exec",
-        "tool_search follow-up provider request",
-    );
-
-    let exec_followup_request = &provider_requests[2];
+    let exec_followup_request = &provider_requests[1];
     assert_provider_request_contains_text(
         exec_followup_request,
         "[tool_result]",
-        "exec follow-up provider request",
+        "bash follow-up provider request",
     );
     assert_provider_request_contains_text(
         exec_followup_request,
         "LOONG_E2E_EXEC_OK",
-        "exec follow-up provider request",
+        "bash follow-up provider request",
     );
 }
 
@@ -1064,6 +1106,1702 @@ fn ask_cli_browser_open_extract_click_runs_full_e2e() {
 }
 
 #[test]
+fn ask_cli_browser_continues_after_shell_heavy_page_without_confirmation() {
+    let fixture = LatestSelectorCliFixture::new("ask-browser-shell-heavy-followup-e2e");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind shell-heavy browser listener");
+    let address = listener
+        .local_addr()
+        .expect("shell-heavy browser local address");
+    let browser_join = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        while requests.len() < 2 {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("accept shell-heavy browser request");
+            let request = read_provider_request(&mut stream);
+            let body = if requests.is_empty() {
+                r#"<!doctype html>
+<html>
+  <head>
+    <title>Browser Shell Heavy Fixture</title>
+    <meta name="description" content="Short profile summary for the target page.">
+  </head>
+  <body>
+    <header>Marketing Nav Pricing Docs</header>
+    <nav>Overview Repositories Projects Stars</nav>
+    <footer>Footer policies and links</footer>
+  </body>
+</html>"#
+            } else {
+                r#"<!doctype html>
+<html>
+  <head>
+    <title>Browser Rich Fixture</title>
+    <meta name="description" content="Short profile summary for the target page.">
+  </head>
+  <body>
+    <header>Marketing Nav Pricing Docs</header>
+    <main>
+      <h1 id="headline">Rich Browser Fixture</h1>
+      <p>Main profile content with links and details.</p>
+    </main>
+    <footer>Footer noise</footer>
+  </body>
+</html>"#
+            };
+            let content_type = "text/html; charset=utf-8";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write shell-heavy browser fixture response");
+            requests.push(request);
+        }
+        requests
+    });
+    let browser_base_url = format!("http://{address}");
+    let permission_reply = "I still need a narrower browser extract because the page looks like shell-heavy navigation.";
+    let final_reply = "E2E PASS shell-heavy browser continuation.";
+    let provider_server = DynamicMockProviderServer::spawn(4, move |request_index, request| {
+        match request_index {
+            0 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Open the browser fixture",
+                    "initial shell-heavy browser provider request",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "I will open the fixture page first.",
+                    "call-browser-open-shell",
+                    "browser",
+                    json!({
+                        "url": browser_base_url,
+                    }),
+                ))
+            }
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "insufficient_page_evidence",
+                    "shell-heavy browser follow-up request should include continuation state",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "continue with `web`",
+                    "shell-heavy browser follow-up request should recommend a fuller web fetch",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(permission_reply))
+            }
+            2 => {
+                assert_provider_request_contains_text(
+                    request,
+                    permission_reply,
+                    "runtime should preserve the shell-heavy browser permission reply inside the forced follow-up context",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "",
+                    "call-web-refetch-from-browser-shell",
+                    "web",
+                    json!({
+                        "url": browser_base_url,
+                    }),
+                ))
+            }
+            3 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Main profile content with links and details.",
+                    "follow-up after shell-heavy browser permission reply should include actual page content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(final_reply))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.browser.enabled = true;
+        config.tools.browser.max_sessions = 4;
+        config.tools.web.allow_private_hosts = true;
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--message",
+            "Open the browser fixture and summarize what the page says without asking for confirmation.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+    let browser_requests = browser_join
+        .join()
+        .expect("join shell-heavy browser fixture");
+
+    assert!(
+        output.status.success(),
+        "ask shell-heavy browser continuation e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the terminal browser answer after continuing: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains(permission_reply),
+        "stdout should not stop at the shell-heavy browser permission reply: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        4,
+        "ask should continue after the shell-heavy browser permission reply: {provider_requests:#?}"
+    );
+    assert_eq!(
+        browser_requests.len(),
+        2,
+        "shell-heavy browser fixture should receive the initial open and follow-up extract requests: {browser_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_web_summary_uses_page_metadata_and_hides_tool_markup() {
+    let fixture = LatestSelectorCliFixture::new("ask-web-summary-e2e");
+    let web_server = WebSummaryFixtureServer::spawn(1);
+    let web_base_url = web_server.base_url().to_owned();
+    let final_reply = "E2E PASS web summary.";
+    let provider_server =
+        DynamicMockProviderServer::spawn(2, move |request_index, request| match request_index {
+            0 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Summarize the fixture page",
+                    "initial web summary provider request",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "I will fetch the page first.",
+                    "call-web-fetch",
+                    "web",
+                    json!({
+                        "url": web_base_url,
+                    }),
+                ))
+            }
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Summary: Short profile summary for the target page.",
+                    "web follow-up provider request",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "Main profile content with links and details.",
+                    "web follow-up provider request",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(final_reply))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.web.allow_private_hosts = true;
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--message",
+            "Summarize the fixture page without asking for confirmation.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+    let web_requests = web_server.finish();
+
+    assert!(
+        output.status.success(),
+        "ask web summary e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the terminal web summary answer: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("[tool_request]"),
+        "stdout should not leak tool request markup: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        2,
+        "ask should continue through one web fetch and final reply: {provider_requests:#?}"
+    );
+    assert_eq!(
+        web_requests.len(),
+        1,
+        "web summary fixture should receive a single fetch request: {web_requests:#?}"
+    );
+    assert!(
+        web_requests[0].starts_with("GET / "),
+        "web summary fixture should receive a fetch for the root page: {web_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_repairs_pseudo_done_browser_reply_before_finishing() {
+    let fixture = LatestSelectorCliFixture::new("ask-browser-pseudo-done-followup-e2e");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind pseudo-done browser listener");
+    let address = listener
+        .local_addr()
+        .expect("pseudo-done browser local address");
+    let browser_join = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        while requests.len() < 2 {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("accept pseudo-done browser request");
+            let request = read_provider_request(&mut stream);
+            let body = if requests.is_empty() {
+                r#"<!doctype html>
+<html>
+  <head>
+    <title>Browser Shell Heavy Fixture</title>
+    <meta name="description" content="Short profile summary for the target page.">
+  </head>
+  <body>
+    <header>Marketing Nav Pricing Docs</header>
+    <nav>Overview Repositories Projects Stars</nav>
+    <footer>Footer policies and links</footer>
+  </body>
+</html>"#
+            } else {
+                r#"<!doctype html>
+<html>
+  <head>
+    <title>Browser Rich Fixture</title>
+    <meta name="description" content="Short profile summary for the target page.">
+  </head>
+  <body>
+    <header>Marketing Nav Pricing Docs</header>
+    <main>
+      <h1 id="headline">Browser Rich Fixture</h1>
+      <p>Main profile content with links and details.</p>
+    </main>
+    <footer>Footer noise</footer>
+  </body>
+</html>"#
+            };
+            let content_type = "text/html; charset=utf-8";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write pseudo-done browser fixture response");
+            requests.push(request);
+        }
+        requests
+    });
+    let browser_base_url = format!("http://{address}");
+    let pseudo_done_reply = "[followup_state:done]\nI still need a narrower browser extract because the page looks like shell-heavy navigation.";
+    let final_reply = "E2E PASS pseudo-done browser continuation.";
+    let provider_server = DynamicMockProviderServer::spawn(4, move |request_index, request| {
+        match request_index {
+            0 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Open the browser fixture",
+                    "initial pseudo-done browser provider request",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "I will open the fixture page first.",
+                    "call-browser-open-pseudo-done",
+                    "browser",
+                    json!({
+                        "url": browser_base_url,
+                    }),
+                ))
+            }
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "insufficient_page_evidence",
+                    "pseudo-done browser follow-up request should include continuation state",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(pseudo_done_reply))
+            }
+            2 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "I still need a narrower browser extract because the page looks like shell-heavy navigation.",
+                    "runtime should preserve the pseudo-done browser reply text inside the repair follow-up context",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "continue with `web`",
+                    "repair follow-up should retain the structured browser continuation guidance",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "",
+                    "call-web-after-browser-pseudo-done",
+                    "web",
+                    json!({
+                        "url": browser_base_url,
+                    }),
+                ))
+            }
+            3 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Main profile content with links and details.",
+                    "follow-up after browser pseudo-done repair should include actual page content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(&format!(
+                    "[followup_state:done]\n{final_reply}"
+                )))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.browser.enabled = true;
+        config.tools.browser.max_sessions = 4;
+        config.tools.web.allow_private_hosts = true;
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--message",
+            "Open the browser fixture and summarize what the page says without asking for confirmation.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+    let browser_requests = browser_join
+        .join()
+        .expect("join pseudo-done browser fixture");
+
+    assert!(
+        output.status.success(),
+        "ask pseudo-done browser continuation e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the final answer after repairing the pseudo-done browser reply: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains(pseudo_done_reply),
+        "stdout should not stop at the pseudo-done browser reply: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        4,
+        "ask should request one more provider round after the pseudo-done browser reply: {provider_requests:#?}"
+    );
+    assert_eq!(
+        browser_requests.len(),
+        2,
+        "pseudo-done browser fixture should receive the initial open and the web follow-up fetch: {browser_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_web_summary_continues_after_shell_heavy_page_without_confirmation() {
+    let fixture = LatestSelectorCliFixture::new("ask-web-summary-shell-heavy-followup-e2e");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind shell-heavy web summary listener");
+    let address = listener
+        .local_addr()
+        .expect("shell-heavy web summary local address");
+    let web_join = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        while requests.len() < 2 {
+            let (mut stream, _) = listener.accept().expect("accept shell-heavy web request");
+            let request = read_provider_request(&mut stream);
+            let body = if requests.is_empty() {
+                r#"<!doctype html>
+<html>
+  <head>
+    <title>Shell Heavy Fixture</title>
+    <meta name="description" content="Short profile summary for the target page.">
+  </head>
+  <body>
+    <header>Marketing Nav Pricing Docs</header>
+    <nav>Overview Repositories Projects Stars</nav>
+    <footer>Footer policies and links</footer>
+  </body>
+</html>"#
+            } else {
+                r#"<!doctype html>
+<html>
+  <head>
+    <title>Rich Fixture</title>
+    <meta name="description" content="Short profile summary for the target page.">
+  </head>
+  <body>
+    <header>Marketing Nav Pricing Docs</header>
+    <main>
+      <h1>Rich Fixture</h1>
+      <p>Main profile content with links and details.</p>
+    </main>
+    <footer>Footer noise</footer>
+  </body>
+</html>"#
+            };
+            let content_type = "text/html; charset=utf-8";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write shell-heavy web summary fixture response");
+            requests.push(request);
+        }
+        requests
+    });
+    let web_base_url = format!("http://{address}");
+    let permission_reply =
+        "I still need a narrower fetch because the page looks like shell-heavy navigation.";
+    let final_reply = "E2E PASS shell-heavy web continuation.";
+    let provider_server = DynamicMockProviderServer::spawn(4, move |request_index, request| {
+        match request_index {
+            0 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Summarize the fixture page",
+                    "initial shell-heavy web summary provider request",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "I will fetch the page first.",
+                    "call-web-fetch-shell",
+                    "web",
+                    json!({
+                        "url": web_base_url,
+                    }),
+                ))
+            }
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "insufficient_page_evidence",
+                    "shell-heavy web follow-up provider request should include continuation state",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(permission_reply))
+            }
+            2 => {
+                assert_provider_request_contains_text(
+                    request,
+                    permission_reply,
+                    "runtime should preserve the shell-heavy permission reply inside the forced follow-up context",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "",
+                    "call-web-refetch-shell",
+                    "web",
+                    json!({
+                        "url": web_base_url,
+                    }),
+                ))
+            }
+            3 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Main profile content with links and details.",
+                    "follow-up after shell-heavy permission reply should include actual page content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(final_reply))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.web.allow_private_hosts = true;
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--message",
+            "Summarize the fixture page without asking for confirmation.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+    let web_requests = web_join
+        .join()
+        .expect("join shell-heavy web summary fixture");
+
+    assert!(
+        output.status.success(),
+        "ask shell-heavy web continuation e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the terminal web summary answer after continuing: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains(permission_reply),
+        "stdout should not stop at the shell-heavy permission reply: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        4,
+        "ask should continue after the shell-heavy web permission reply: {provider_requests:#?}"
+    );
+    assert_eq!(
+        web_requests.len(),
+        2,
+        "shell-heavy web fixture should receive the initial and follow-up fetches: {web_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_repairs_pseudo_done_web_reply_before_finishing() {
+    let fixture = LatestSelectorCliFixture::new("ask-web-summary-pseudo-done-followup-e2e");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind pseudo-done web summary listener");
+    let address = listener
+        .local_addr()
+        .expect("pseudo-done web summary local address");
+    let web_join = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        while requests.len() < 2 {
+            let (mut stream, _) = listener.accept().expect("accept pseudo-done web request");
+            let request = read_provider_request(&mut stream);
+            let body = if requests.is_empty() {
+                r#"<!doctype html>
+<html>
+  <head>
+    <title>Shell Heavy Fixture</title>
+    <meta name="description" content="Short profile summary for the target page.">
+  </head>
+  <body>
+    <header>Marketing Nav Pricing Docs</header>
+    <nav>Overview Repositories Projects Stars</nav>
+    <footer>Footer policies and links</footer>
+  </body>
+</html>"#
+            } else {
+                r#"<!doctype html>
+<html>
+  <head>
+    <title>Rich Fixture</title>
+    <meta name="description" content="Short profile summary for the target page.">
+  </head>
+  <body>
+    <header>Marketing Nav Pricing Docs</header>
+    <main>
+      <h1>Rich Fixture</h1>
+      <p>Main profile content with links and details.</p>
+    </main>
+    <footer>Footer noise</footer>
+  </body>
+</html>"#
+            };
+            let content_type = "text/html; charset=utf-8";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write pseudo-done web summary fixture response");
+            requests.push(request);
+        }
+        requests
+    });
+    let web_base_url = format!("http://{address}");
+    let pseudo_done_reply = "[followup_state:done]\nI still need a narrower fetch because the page looks like shell-heavy navigation. Please allow another fetch before I summarize it.";
+    let final_reply = "E2E PASS pseudo-done web continuation.";
+    let provider_server = DynamicMockProviderServer::spawn(4, move |request_index, request| {
+        match request_index {
+            0 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Summarize the fixture page",
+                    "initial pseudo-done web summary provider request",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "I will fetch the page first.",
+                    "call-web-fetch-pseudo-done",
+                    "web",
+                    json!({
+                        "url": web_base_url,
+                    }),
+                ))
+            }
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "insufficient_page_evidence",
+                    "pseudo-done web follow-up provider request should include continuation state",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(pseudo_done_reply))
+            }
+            2 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "I still need a narrower fetch because the page looks like shell-heavy navigation.",
+                    "runtime should preserve the pseudo-done web reply text inside the repair follow-up context",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "continue with `web`",
+                    "repair follow-up should retain the structured web continuation guidance",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "",
+                    "call-web-refetch-after-pseudo-done",
+                    "web",
+                    json!({
+                        "url": web_base_url,
+                    }),
+                ))
+            }
+            3 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Main profile content with links and details.",
+                    "follow-up after web pseudo-done repair should include actual page content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(&format!(
+                    "[followup_state:done]\n{final_reply}"
+                )))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.web.allow_private_hosts = true;
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--message",
+            "Summarize the fixture page without asking for confirmation.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+    let web_requests = web_join
+        .join()
+        .expect("join pseudo-done web summary fixture");
+
+    assert!(
+        output.status.success(),
+        "ask pseudo-done web continuation e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the final answer after repairing the pseudo-done web reply: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains(pseudo_done_reply),
+        "stdout should not stop at the pseudo-done permission reply: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        4,
+        "ask should request one more provider round after the pseudo-done web reply: {provider_requests:#?}"
+    );
+    assert_eq!(
+        web_requests.len(),
+        2,
+        "pseudo-done web fixture should receive the initial and follow-up fetches: {web_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_recovers_textual_tool_request_wrappers_and_completes() {
+    let fixture = LatestSelectorCliFixture::new("ask-text-tool-request-e2e");
+    std::fs::create_dir_all(fixture.root_path().join("docs")).expect("create docs dir");
+    std::fs::write(
+        fixture.root_path().join("AGENTS.md"),
+        "Repository guidance for E2E textual tool request recovery.",
+    )
+    .expect("write AGENTS fixture");
+    std::fs::write(
+        fixture.root_path().join("docs/README.md"),
+        "Documentation overview for E2E textual tool request recovery.",
+    )
+    .expect("write docs README fixture");
+
+    let final_reply = "E2E PASS textual tool request recovery.";
+    let provider_server = DynamicMockProviderServer::spawn(2, move |request_index, request| {
+        match request_index {
+            0 => MockProviderResponse::ok_json(openai_chat_final_body(
+                "[tool_request]\n{\"arguments\":{\"path\":\"AGENTS.md\"},\"name\":\"read\"}[tool_request]\n{\"arguments\":{\"path\":\"docs/README.md\"},\"name\":\"read\"}I need the contents of `AGENTS.md` and `docs/README.md` to ground the summary, but I do not have their tool outputs yet.",
+            )),
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Repository guidance for E2E textual tool request recovery.",
+                    "textual tool request follow-up provider request",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "Documentation overview for E2E textual tool request recovery.",
+                    "textual tool request follow-up provider request",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(&format!(
+                    "[followup_state:done]\n{final_reply}"
+                )))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.file_root = Some(fixture.root_path().display().to_string());
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--message",
+            "Summarize this repository and suggest the best next step.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+
+    assert!(
+        output.status.success(),
+        "ask textual tool request e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the terminal answer after recovering textual tool requests: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("[tool_request]"),
+        "stdout should not leak textual tool request markup: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        2,
+        "ask should continue after recovering textual tool request wrappers: {provider_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_recovers_textual_tool_request_wrappers_without_trailing_text_and_completes() {
+    let fixture = LatestSelectorCliFixture::new("ask-text-tool-request-no-tail-e2e");
+    std::fs::create_dir_all(fixture.root_path().join("docs")).expect("create docs dir");
+    std::fs::write(
+        fixture.root_path().join("README.md"),
+        "Repository overview for no-tail textual tool request recovery.",
+    )
+    .expect("write README fixture");
+    std::fs::write(
+        fixture.root_path().join("ARCHITECTURE.md"),
+        "Architecture notes for no-tail textual tool request recovery.",
+    )
+    .expect("write ARCHITECTURE fixture");
+    std::fs::write(
+        fixture.root_path().join("docs/ROADMAP.md"),
+        "Roadmap notes for no-tail textual tool request recovery.",
+    )
+    .expect("write ROADMAP fixture");
+
+    let final_reply = "E2E PASS no-tail textual tool request recovery.";
+    let provider_server = DynamicMockProviderServer::spawn(2, move |request_index, request| {
+        match request_index {
+            0 => MockProviderResponse::ok_json(openai_chat_final_body(
+                "[tool_request]\n{\"arguments\":{\"path\":\"README.md\"},\"name\":\"read\"}[tool_request]\n{\"arguments\":{\"path\":\"ARCHITECTURE.md\"},\"name\":\"read\"}[tool_request]\n{\"arguments\":{\"path\":\"docs/ROADMAP.md\"},\"name\":\"read\"}",
+            )),
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Repository overview for no-tail textual tool request recovery.",
+                    "no-tail textual tool request follow-up provider request",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "Architecture notes for no-tail textual tool request recovery.",
+                    "no-tail textual tool request follow-up provider request",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "Roadmap notes for no-tail textual tool request recovery.",
+                    "no-tail textual tool request follow-up provider request",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(final_reply))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.file_root = Some(fixture.root_path().display().to_string());
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--message",
+            "Summarize this repository and suggest the best next step.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+
+    assert!(
+        output.status.success(),
+        "ask no-tail textual tool request e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the terminal answer after recovering no-tail textual tool requests: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("[tool_request]"),
+        "stdout should not leak no-tail textual tool request markup: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        2,
+        "ask should continue after recovering no-tail textual tool request wrappers: {provider_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_continues_after_glob_path_listing_instead_of_returning_permission_request() {
+    let fixture = LatestSelectorCliFixture::new("ask-glob-listing-followup-e2e");
+    std::fs::create_dir_all(fixture.root_path().join("docs")).expect("create docs dir");
+    std::fs::write(
+        fixture.root_path().join("README.md"),
+        "Repository overview for glob listing continuation.",
+    )
+    .expect("write README fixture");
+    std::fs::write(
+        fixture.root_path().join("ARCHITECTURE.md"),
+        "Architecture notes for glob listing continuation.",
+    )
+    .expect("write ARCHITECTURE fixture");
+    std::fs::write(
+        fixture.root_path().join("docs/ROADMAP.md"),
+        "Roadmap notes for glob listing continuation.",
+    )
+    .expect("write ROADMAP fixture");
+
+    let permission_reply = "I need one more inspection step to ground the summary in the actual docs. Please allow me to read the top-level docs.";
+    let final_reply = "E2E PASS glob listing continuation.";
+    let provider_server = DynamicMockProviderServer::spawn(4, move |request_index, request| {
+        match request_index {
+            0 => MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                "",
+                "call-glob",
+                "read",
+                json!({
+                    "glob": "README.md|ARCHITECTURE.md|docs/ROADMAP.md",
+                    "root": ".",
+                    "max_results": 20
+                }),
+            )),
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "path_listing",
+                    "glob listing follow-up provider request should include continuation state",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "ARCHITECTURE.md",
+                    "glob listing follow-up provider request should include the recommended follow-up read path",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(permission_reply))
+            }
+            2 => {
+                assert_provider_request_contains_text(
+                    request,
+                    permission_reply,
+                    "runtime should preserve the provider permission reply inside the forced follow-up context",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "",
+                    "call-readme",
+                    "read",
+                    json!({
+                        "path": "README.md"
+                    }),
+                ))
+            }
+            3 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Repository overview for glob listing continuation.",
+                    "follow-up after permission reply should include actual file content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(final_reply))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.file_root = Some(fixture.root_path().display().to_string());
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--session",
+            "fresh-glob-followup-session",
+            "--message",
+            "Summarize this repository and suggest the best next step.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+
+    assert!(
+        output.status.success(),
+        "ask glob listing continuation e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the terminal answer after continuing past the permission reply: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains(permission_reply),
+        "stdout should not stop at the permission reply: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        4,
+        "ask should force a follow-up after the path-listing permission reply: {provider_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_repairs_pseudo_done_glob_path_listing_reply_before_finishing() {
+    let fixture = LatestSelectorCliFixture::new("ask-glob-listing-pseudo-done-followup-e2e");
+    std::fs::create_dir_all(fixture.root_path().join("docs")).expect("create docs dir");
+    std::fs::write(
+        fixture.root_path().join("README.md"),
+        "Repository overview for pseudo-done glob continuation.",
+    )
+    .expect("write README fixture");
+    std::fs::write(
+        fixture.root_path().join("ARCHITECTURE.md"),
+        "Architecture notes for pseudo-done glob continuation.",
+    )
+    .expect("write ARCHITECTURE fixture");
+    std::fs::write(
+        fixture.root_path().join("docs/ROADMAP.md"),
+        "Roadmap notes for pseudo-done glob continuation.",
+    )
+    .expect("write ROADMAP fixture");
+
+    let pseudo_done_reply = "[followup_state:done]\nI need one more inspection step to ground the summary in the actual docs. Please allow me to read the top-level docs.";
+    let final_reply = "E2E PASS pseudo-done glob listing continuation.";
+    let provider_server = DynamicMockProviderServer::spawn(4, move |request_index, request| {
+        match request_index {
+            0 => MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                "",
+                "call-glob-pseudo-done",
+                "read",
+                json!({
+                    "glob": "README.md|ARCHITECTURE.md|docs/ROADMAP.md",
+                    "root": ".",
+                    "max_results": 20
+                }),
+            )),
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "path_listing",
+                    "pseudo-done glob listing follow-up should include continuation state",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(pseudo_done_reply))
+            }
+            2 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "I need one more inspection step to ground the summary in the actual docs.",
+                    "runtime should preserve the pseudo-done reply text inside the repair follow-up context",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "Please allow me to read the top-level docs.",
+                    "repair follow-up should preserve the permission-style evidence gap text",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "Continuation guidance:",
+                    "repair follow-up should retain path-listing continuation guidance",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "",
+                    "call-readme-after-pseudo-done",
+                    "read",
+                    json!({
+                        "path": "README.md"
+                    }),
+                ))
+            }
+            3 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Repository overview for pseudo-done glob continuation.",
+                    "follow-up after pseudo-done repair should include actual file content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(&format!(
+                    "[followup_state:done]\n{final_reply}"
+                )))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.file_root = Some(fixture.root_path().display().to_string());
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--session",
+            "fresh-glob-pseudo-done-followup-session",
+            "--message",
+            "Summarize this repository and suggest the best next step.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+
+    assert!(
+        output.status.success(),
+        "ask pseudo-done glob listing continuation e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the final answer after repairing the pseudo-done reply: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains(pseudo_done_reply),
+        "stdout should not stop at the pseudo-done reply: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        4,
+        "ask should request one more provider round after the pseudo-done glob reply: {provider_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_recovers_same_line_tool_request_wrapper_after_leading_preface() {
+    let fixture = LatestSelectorCliFixture::new("ask-same-line-tool-request-preface-e2e");
+    std::fs::create_dir_all(fixture.root_path().join("docs")).expect("create docs dir");
+    std::fs::write(
+        fixture.root_path().join("docs/README.md"),
+        "Documentation overview for same-line tool request preface recovery.",
+    )
+    .expect("write docs README fixture");
+
+    let final_reply = "E2E PASS same-line textual tool request recovery.";
+    let provider_server = DynamicMockProviderServer::spawn(2, move |request_index, request| {
+        match request_index {
+            0 => MockProviderResponse::ok_json(openai_chat_final_body(
+                "to summarize repo need inspect key docs.[tool_request]\n{\"arguments\":{\"path\":\"docs/README.md\"},\"name\":\"read\"}",
+            )),
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Documentation overview for same-line tool request preface recovery.",
+                    "same-line textual tool request follow-up provider request",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(&format!(
+                    "[followup_state:done]\n{final_reply}"
+                )))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.file_root = Some(fixture.root_path().display().to_string());
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--session",
+            "same-line-tool-request-preface-session",
+            "--message",
+            "Summarize this repository and suggest the best next step.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+
+    assert!(
+        output.status.success(),
+        "ask same-line textual tool request e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the final answer after recovering the same-line textual tool request: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("[tool_request]"),
+        "stdout should not leak same-line textual tool request markup: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        2,
+        "ask should continue after recovering same-line textual tool request wrapper: {provider_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_continues_after_same_line_textual_tool_preface_permission_reply() {
+    let fixture = LatestSelectorCliFixture::new("ask-same-line-preface-followup-e2e");
+    std::fs::create_dir_all(fixture.root_path().join("docs")).expect("create docs dir");
+    std::fs::write(
+        fixture.root_path().join("docs/README.md"),
+        "Documentation overview for same-line preface follow-up recovery.",
+    )
+    .expect("write docs README fixture");
+    std::fs::write(
+        fixture.root_path().join("ARCHITECTURE.md"),
+        "Architecture overview for same-line preface follow-up recovery.",
+    )
+    .expect("write ARCHITECTURE fixture");
+
+    let permission_reply = "I do not yet have usable repository evidence. Please allow another read of `ARCHITECTURE.md` so I can finish the summary.";
+    let final_reply = "E2E PASS same-line textual tool preface continuation.";
+    let provider_server = DynamicMockProviderServer::spawn(4, move |request_index, request| {
+        match request_index {
+            0 => MockProviderResponse::ok_json(openai_chat_final_body(
+                "to summarize repo need inspect key docs.[tool_request]\n{\"arguments\":{\"path\":\"docs/README.md\"},\"name\":\"read\"}",
+            )),
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Documentation overview for same-line preface follow-up recovery.",
+                    "same-line preface follow-up provider request should include first file content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(permission_reply))
+            }
+            2 => {
+                assert_provider_request_contains_text(
+                    request,
+                    permission_reply,
+                    "runtime should continue after the permission reply instead of returning it",
+                );
+                MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                    "",
+                    "call-architecture",
+                    "read",
+                    json!({
+                        "path": "ARCHITECTURE.md"
+                    }),
+                ))
+            }
+            3 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Architecture overview for same-line preface follow-up recovery.",
+                    "same-line preface continuation should include second file content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(final_reply))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.file_root = Some(fixture.root_path().display().to_string());
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--session",
+            "same-line-preface-followup-session",
+            "--message",
+            "Summarize this repository and suggest the best next step.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+
+    assert!(
+        output.status.success(),
+        "ask same-line textual preface follow-up e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the final answer after continuing past the permission reply: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains(permission_reply),
+        "stdout should not stop at the permission reply: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        4,
+        "ask should continue after the same-line textual preface permission reply: {provider_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_continues_after_second_same_line_textual_tool_request_reply() {
+    let fixture = LatestSelectorCliFixture::new("ask-second-same-line-preface-followup-e2e");
+    std::fs::create_dir_all(fixture.root_path().join("docs")).expect("create docs dir");
+    std::fs::write(
+        fixture.root_path().join("docs/README.md"),
+        "Documentation overview for second same-line follow-up recovery.",
+    )
+    .expect("write docs README fixture");
+    std::fs::write(
+        fixture.root_path().join("ARCHITECTURE.md"),
+        "Architecture overview for second same-line follow-up recovery.",
+    )
+    .expect("write ARCHITECTURE fixture");
+
+    let final_reply = "E2E PASS second same-line textual tool request continuation.";
+    let provider_server = DynamicMockProviderServer::spawn(3, move |request_index, request| {
+        match request_index {
+            0 => MockProviderResponse::ok_json(openai_chat_final_body(
+                "to summarize repo, inspect docs first.[tool_request]\n{\"arguments\":{\"path\":\"docs/README.md\"},\"name\":\"read\"}",
+            )),
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Documentation overview for second same-line follow-up recovery.",
+                    "second same-line follow-up should include first file content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(
+                    "to summarize repo, inspect architecture next.[tool_request]\n{\"arguments\":{\"path\":\"ARCHITECTURE.md\"},\"name\":\"read\"}",
+                ))
+            }
+            2 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Architecture overview for second same-line follow-up recovery.",
+                    "second same-line continuation should include second file content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(&format!(
+                    "[followup_state:done]\n{final_reply}"
+                )))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.file_root = Some(fixture.root_path().display().to_string());
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--session",
+            "second-same-line-preface-followup-session",
+            "--message",
+            "Summarize this repository and suggest the best next step.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+
+    assert!(
+        output.status.success(),
+        "ask second same-line textual preface follow-up e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the final answer after continuing past the second same-line textual tool request: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("[tool_request]"),
+        "stdout should not leak the second same-line textual tool request markup: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        3,
+        "ask should continue after the second same-line textual tool request reply: {provider_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_recovers_tool_request_array_wrapper_and_hides_markup() {
+    let fixture = LatestSelectorCliFixture::new("ask-tool-request-array-wrapper-e2e");
+    std::fs::create_dir_all(fixture.root_path().join("docs")).expect("create docs dir");
+    std::fs::write(
+        fixture.root_path().join("AGENTS.md"),
+        "Repository guidance for tool-request array wrapper recovery.",
+    )
+    .expect("write AGENTS fixture");
+    std::fs::write(
+        fixture.root_path().join("docs/README.md"),
+        "Documentation overview for tool-request array wrapper recovery.",
+    )
+    .expect("write docs README fixture");
+
+    let final_reply = "E2E PASS tool-request array wrapper recovery.";
+    let provider_server = DynamicMockProviderServer::spawn(2, move |request_index, request| {
+        match request_index {
+            0 => MockProviderResponse::ok_json(openai_chat_final_body(
+                "[tool_request]\n[{\"arguments\":{\"path\":\"AGENTS.md\"},\"name\":\"read\"},{\"arguments\":{\"path\":\"docs/README.md\"},\"name\":\"read\"}]This repository is a Rust workspace.",
+            )),
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Repository guidance for tool-request array wrapper recovery.",
+                    "array wrapper follow-up provider request should include AGENTS content",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "Documentation overview for tool-request array wrapper recovery.",
+                    "array wrapper follow-up provider request should include docs README content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(&format!(
+                    "[followup_state:done]\n{final_reply}"
+                )))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.file_root = Some(fixture.root_path().display().to_string());
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--session",
+            "tool-request-array-wrapper-session",
+            "--message",
+            "Summarize this repository and suggest the best next step.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+
+    assert!(
+        output.status.success(),
+        "ask tool-request array wrapper e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the final answer after recovering the tool-request array wrapper: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("[tool_request]"),
+        "stdout should not leak tool-request array markup: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        2,
+        "ask should continue after recovering the tool-request array wrapper: {provider_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_executes_large_recovered_tool_request_batch_without_legacy_step_limit() {
+    let fixture = LatestSelectorCliFixture::new("ask-large-tool-request-array-batch-e2e");
+    std::fs::create_dir_all(fixture.root_path().join("docs")).expect("create docs dir");
+    std::fs::create_dir_all(fixture.root_path().join("src")).expect("create src dir");
+    std::fs::write(
+        fixture.root_path().join("AGENTS.md"),
+        "Repository guidance for large recovered tool batch.",
+    )
+    .expect("write AGENTS fixture");
+    std::fs::write(
+        fixture.root_path().join("README.md"),
+        "Repository overview for large recovered tool batch.",
+    )
+    .expect("write README fixture");
+    std::fs::write(
+        fixture.root_path().join("ARCHITECTURE.md"),
+        "Architecture notes for large recovered tool batch.",
+    )
+    .expect("write ARCHITECTURE fixture");
+    std::fs::write(
+        fixture.root_path().join("docs/README.md"),
+        "Documentation overview for large recovered tool batch.",
+    )
+    .expect("write docs README fixture");
+    std::fs::write(
+        fixture.root_path().join("docs/ROADMAP.md"),
+        "Roadmap notes for large recovered tool batch.",
+    )
+    .expect("write ROADMAP fixture");
+    std::fs::write(
+        fixture.root_path().join("docs/RELIABILITY.md"),
+        "Reliability notes for large recovered tool batch.",
+    )
+    .expect("write RELIABILITY fixture");
+    std::fs::write(
+        fixture.root_path().join("Cargo.toml"),
+        "[workspace]\nmembers = []\n",
+    )
+    .expect("write Cargo fixture");
+
+    let final_reply = "E2E PASS large recovered tool batch.";
+    let provider_server = DynamicMockProviderServer::spawn(2, move |request_index, request| {
+        match request_index {
+            0 => MockProviderResponse::ok_json(openai_chat_final_body(
+                "[tool_request]\n[{\"arguments\":{\"path\":\"AGENTS.md\"},\"name\":\"read\"},{\"arguments\":{\"path\":\"README.md\"},\"name\":\"read\"},{\"arguments\":{\"path\":\"ARCHITECTURE.md\"},\"name\":\"read\"},{\"arguments\":{\"path\":\"docs/README.md\"},\"name\":\"read\"},{\"arguments\":{\"path\":\"docs/ROADMAP.md\"},\"name\":\"read\"},{\"arguments\":{\"path\":\"docs/RELIABILITY.md\"},\"name\":\"read\"}]This repository is a Rust workspace with layered architecture.",
+            )),
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Repository guidance for large recovered tool batch.",
+                    "large recovered batch follow-up should include AGENTS content",
+                );
+                assert_provider_request_contains_text(
+                    request,
+                    "Reliability notes for large recovered tool batch.",
+                    "large recovered batch follow-up should include RELIABILITY content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(&format!(
+                    "[followup_state:done]\n{final_reply}"
+                )))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.file_root = Some(fixture.root_path().display().to_string());
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--session",
+            "large-tool-request-array-batch-session",
+            "--message",
+            "Summarize this repository and suggest the best next step.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+
+    assert!(
+        output.status.success(),
+        "ask large recovered tool batch e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the final answer after executing the large recovered tool batch: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("max_tool_steps_exceeded"),
+        "stdout should not trip the legacy max-tool-steps gate: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        2,
+        "ask should finish the large recovered tool batch in one follow-up turn: {provider_requests:#?}"
+    );
+}
+
+#[test]
+fn ask_cli_strips_textual_tool_wrapper_when_structured_tool_call_is_also_present() {
+    let fixture = LatestSelectorCliFixture::new("ask-structured-plus-textual-wrapper-e2e");
+    std::fs::create_dir_all(fixture.root_path().join("docs")).expect("create docs dir");
+    std::fs::write(
+        fixture.root_path().join("docs/README.md"),
+        "Documentation overview for structured plus textual wrapper recovery.",
+    )
+    .expect("write docs README fixture");
+
+    let final_reply = "E2E PASS structured tool call plus textual wrapper recovery.";
+    let provider_server = DynamicMockProviderServer::spawn(2, move |request_index, request| {
+        match request_index {
+            0 => MockProviderResponse::ok_json(openai_chat_tool_call_body(
+                "To summarize the repository, I will inspect the main docs first.[tool_request]\n{\"arguments\":{\"path\":\"docs/README.md\"},\"name\":\"read\"}",
+                "call-docs-readme",
+                "read",
+                json!({
+                    "path": "docs/README.md"
+                }),
+            )),
+            1 => {
+                assert_provider_request_contains_text(
+                    request,
+                    "Documentation overview for structured plus textual wrapper recovery.",
+                    "structured plus textual wrapper follow-up should include docs README content",
+                );
+                MockProviderResponse::ok_json(openai_chat_final_body(&format!(
+                    "[followup_state:done]\n{final_reply}"
+                )))
+            }
+            _ => MockProviderResponse::unexpected_extra_request(),
+        }
+    });
+    let provider_base_url = provider_server.base_url().to_owned();
+    fixture.write_config_with(|config| {
+        config.provider.kind = ProviderKind::Openai;
+        config.provider.base_url = provider_base_url;
+        config.provider.model = "test-model".to_owned();
+        config.provider.wire_api = ProviderWireApi::ChatCompletions;
+        config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
+        config.tools.file_root = Some(fixture.root_path().display().to_string());
+    });
+
+    provider_server.arm();
+    let output = fixture.run_process(
+        &[
+            "ask",
+            "--session",
+            "structured-plus-textual-wrapper-session",
+            "--message",
+            "Summarize this repository and suggest the best next step.",
+        ],
+        None,
+    );
+    let stdout = render_output(&output.stdout);
+    let stderr = render_output(&output.stderr);
+    let provider_requests = provider_server.finish(&stdout, &stderr);
+
+    assert!(
+        output.status.success(),
+        "ask structured plus textual wrapper e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains(final_reply),
+        "stdout should contain the final answer after stripping the leaked textual wrapper: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("[tool_request]"),
+        "stdout should not leak textual tool wrapper when structured tool calls are present: {stdout:?}"
+    );
+    assert_eq!(
+        provider_requests.len(),
+        2,
+        "ask should continue normally when structured tool calls are paired with leaked textual wrappers: {provider_requests:#?}"
+    );
+}
+
+#[test]
 fn ask_cli_installed_skill_can_be_discovered_and_loaded_e2e() {
     let fixture = LatestSelectorCliFixture::new("ask-installed-skill-e2e");
     let skill_source_dir = fixture.root_path().join("source/release-guard");
@@ -1085,9 +2823,9 @@ fn ask_cli_installed_skill_can_be_discovered_and_loaded_e2e() {
     std::fs::write(skill_source_path.as_path(), skill_source).expect("write skill source");
 
     fixture.write_config_with(|config| {
-        config.external_skills.enabled = true;
-        config.external_skills.auto_expose_installed = true;
-        config.external_skills.install_root = Some(
+        config.skills.enabled = true;
+        config.skills.auto_expose_installed = true;
+        config.skills.install_root = Some(
             fixture
                 .root_path()
                 .join("managed-skills")
@@ -1143,64 +2881,22 @@ fn ask_cli_installed_skill_can_be_discovered_and_loaded_e2e() {
 
     let final_reply = "E2E PASS installed skill loaded.";
     let provider_server =
-        DynamicMockProviderServer::spawn(3, move |request_index, request| match request_index {
+        DynamicMockProviderServer::spawn(1, move |request_index, request| match request_index {
             0 => {
                 assert_provider_request_contains_text(
                     request,
-                    "[available_external_skills]",
+                    "[available_skills]",
                     "initial skill provider request",
                 );
                 assert_provider_request_contains_text(
                     request,
                     "release-guard",
                     "initial skill provider request",
-                );
-                MockProviderResponse::ok_json(openai_chat_tool_call_body(
-                    "I will find the installed release guard skill.",
-                    "call-skill-search",
-                    "tool_search",
-                    json!({
-                        "query": "release guard skill",
-                        "limit": 5,
-                    }),
-                ))
-            }
-            1 => {
-                assert_provider_request_contains_text(
-                    request,
-                    "Matching installed skills",
-                    "skill search follow-up request",
-                );
-                assert_provider_request_contains_text(
-                    request,
-                    "release-guard",
-                    "skill search follow-up request",
-                );
-                let lease = extract_tool_lease_from_request(request);
-                MockProviderResponse::ok_json(openai_chat_tool_call_body(
-                    "I will load the installed skill instructions.",
-                    "call-skill-invoke",
-                    "tool_invoke",
-                    json!({
-                        "tool_id": "skills",
-                        "lease": lease,
-                        "arguments": {
-                            "operation": "run",
-                            "skill_id": "release-guard",
-                        },
-                    }),
-                ))
-            }
-            2 => {
-                assert_provider_request_contains_text(
-                    request,
-                    "Loaded external skill",
-                    "skill invoke follow-up request",
                 );
                 assert_provider_request_contains_text(
                     request,
                     "SKILL_E2E_INVOCATION_MARKER",
-                    "skill invoke follow-up request",
+                    "initial skill provider request",
                 );
                 MockProviderResponse::ok_json(openai_chat_final_body(final_reply))
             }
@@ -1213,9 +2909,9 @@ fn ask_cli_installed_skill_can_be_discovered_and_loaded_e2e() {
         config.provider.model = "test-model".to_owned();
         config.provider.wire_api = ProviderWireApi::ChatCompletions;
         config.provider.api_key = Some(SecretRef::Inline("test-provider-key".to_owned()));
-        config.external_skills.enabled = true;
-        config.external_skills.auto_expose_installed = true;
-        config.external_skills.install_root = Some(
+        config.skills.enabled = true;
+        config.skills.auto_expose_installed = true;
+        config.skills.install_root = Some(
             fixture
                 .root_path()
                 .join("managed-skills")
@@ -1241,13 +2937,13 @@ fn ask_cli_installed_skill_can_be_discovered_and_loaded_e2e() {
         output.status.success(),
         "ask installed-skill e2e should succeed, stdout={stdout:?}, stderr={stderr:?}"
     );
+    assert_eq!(
+        provider_requests.len(),
+        1,
+        "ask should reach the provider with injected skill context in one request: {provider_requests:#?}"
+    );
     assert!(
         stdout.contains(final_reply),
         "stdout should contain the terminal skill answer: {stdout:?}"
-    );
-    assert_eq!(
-        provider_requests.len(),
-        3,
-        "ask should continue through skill search and invoke: {provider_requests:#?}"
     );
 }

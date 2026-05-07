@@ -7,6 +7,15 @@ use super::{canonical_tool_name, required_capabilities_for_request};
 
 #[test]
 fn required_capabilities_follow_effective_tool_request() {
+    let direct_read = ToolCoreRequest {
+        tool_name: "read".to_owned(),
+        payload: json!({"path": "README.md"}),
+    };
+    assert_eq!(
+        required_capabilities_for_request(&direct_read),
+        BTreeSet::from([Capability::InvokeTool, Capability::FilesystemRead])
+    );
+
     let direct_file_read = ToolCoreRequest {
         tool_name: "file.read".to_owned(),
         payload: json!({"path": "README.md"}),
@@ -43,12 +52,30 @@ fn required_capabilities_follow_effective_tool_request() {
         BTreeSet::from([Capability::InvokeTool, Capability::FilesystemWrite])
     );
 
+    let direct_write = ToolCoreRequest {
+        tool_name: "write".to_owned(),
+        payload: json!({"path": "notes.txt", "content": "hello"}),
+    };
+    assert_eq!(
+        required_capabilities_for_request(&direct_write),
+        BTreeSet::from([Capability::InvokeTool, Capability::FilesystemWrite])
+    );
+
     let direct_file_edit = ToolCoreRequest {
         tool_name: "file.edit".to_owned(),
-        payload: json!({"path": "notes.txt", "old_string": "a", "new_string": "b"}),
+        payload: json!({"path": "notes.txt", "edits": [{"old_text": "a", "new_text": "b"}]}),
     };
     assert_eq!(
         required_capabilities_for_request(&direct_file_edit),
+        BTreeSet::from([Capability::InvokeTool, Capability::FilesystemWrite])
+    );
+
+    let direct_edit = ToolCoreRequest {
+        tool_name: "edit".to_owned(),
+        payload: json!({"path": "notes.txt", "edits": [{"old_text": "a", "new_text": "b"}]}),
+    };
+    assert_eq!(
+        required_capabilities_for_request(&direct_edit),
         BTreeSet::from([Capability::InvokeTool, Capability::FilesystemWrite])
     );
 
@@ -201,6 +228,19 @@ fn required_capabilities_follow_effective_tool_request() {
         BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
     );
 
+    let invoked_browser_click = ToolCoreRequest {
+        tool_name: "tool.invoke".to_owned(),
+        payload: json!({
+            "tool_id": "browser.click",
+            "lease": "unused",
+            "arguments": {"selector": "#submit"}
+        }),
+    };
+    assert_eq!(
+        required_capabilities_for_request(&invoked_browser_click),
+        BTreeSet::from([Capability::InvokeTool, Capability::NetworkEgress])
+    );
+
     let invoked_bash_exec = ToolCoreRequest {
         tool_name: "tool.invoke".to_owned(),
         payload: json!({
@@ -304,5 +344,5 @@ fn required_capabilities_follow_effective_tool_request() {
         BTreeSet::from([Capability::InvokeTool])
     );
 
-    assert_eq!(canonical_tool_name("file.read"), "file.read");
+    assert_eq!(canonical_tool_name("file.read"), "read");
 }

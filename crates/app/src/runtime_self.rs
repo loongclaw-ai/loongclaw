@@ -183,7 +183,7 @@ fn read_runtime_self_source(
         tool_runtime_config.with_file_root_override(workspace_root.to_path_buf());
     let request_path = runtime_self_source_request_path(workspace_root, path)?;
     let request = ToolCoreRequest {
-        tool_name: "file.read".to_owned(),
+        tool_name: "read".to_owned(),
         payload: json!({
             "path": request_path,
         }),

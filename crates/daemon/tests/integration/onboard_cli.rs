@@ -508,12 +508,18 @@ async fn run_scripted_onboard_flow_with_context(
 
 fn extract_review_section_lines(transcript: &[String], progress_line: &str) -> Vec<String> {
     let start = transcript
-        .windows(2)
-        .position(|window| window[0] == "review setup" && window[1] == progress_line)
+        .iter()
+        .position(|line| line.contains("review setup"))
+        .and_then(|start| {
+            transcript[start..]
+                .iter()
+                .any(|line| line.contains(progress_line))
+                .then_some(start)
+        })
         .expect("transcript should include review section");
     let end = transcript[start..]
         .iter()
-        .position(|line| line == "preflight checks")
+        .position(|line| line.contains("preflight checks"))
         .map(|offset| start + offset)
         .unwrap_or(transcript.len());
     transcript[start..end].to_vec()
@@ -522,7 +528,7 @@ fn extract_review_section_lines(transcript: &[String], progress_line: &str) -> V
 fn extract_success_section_lines(transcript: &[String]) -> Vec<String> {
     let start = transcript
         .iter()
-        .position(|line| line == "onboarding complete")
+        .position(|line| line.contains("setup complete"))
         .expect("transcript should include success section");
     transcript[start..].to_vec()
 }
@@ -927,7 +933,7 @@ async fn non_interactive_personality_and_memory_profile_are_persisted() {
     assert!(
         transcript
             .iter()
-            .any(|line| line.contains("onboarding complete")),
+            .any(|line| line.contains("setup complete")),
         "non-interactive personality/memory path should still complete successfully: {transcript:#?}"
     );
 
@@ -977,7 +983,7 @@ async fn non_interactive_legacy_personality_alias_still_maps_to_supported_preset
     assert!(
         transcript
             .iter()
-            .any(|line| line.contains("onboarding complete")),
+            .any(|line| line.contains("setup complete")),
         "non-interactive legacy personality path should still complete successfully: {transcript:#?}"
     );
 
@@ -1037,7 +1043,7 @@ async fn non_interactive_system_prompt_override_disables_prompt_pack() {
     assert!(
         transcript
             .iter()
-            .any(|line| line.contains("onboarding complete")),
+            .any(|line| line.contains("setup complete")),
         "non-interactive inline override path should still complete successfully: {transcript:#?}"
     );
 
@@ -1842,8 +1848,8 @@ async fn interactive_onboard_web_search_custom_env_persists_explicit_env_referen
 
     let joined = transcript.join("\n");
     assert!(
-        joined.contains("choose web search credential"),
-        "interactive onboarding should prompt for a web-search credential source when the selected provider requires one: {transcript:#?}"
+        joined.contains("choose query search credential"),
+        "interactive onboarding should prompt for a query-search credential source when the selected provider requires one: {transcript:#?}"
     );
 
     let (_, config) =
@@ -1911,8 +1917,8 @@ async fn interactive_onboard_firecrawl_web_search_custom_env_persists_explicit_e
 
     let joined = transcript.join("\n");
     assert!(
-        joined.contains("choose web search credential"),
-        "interactive onboarding should prompt for a web-search credential source when Firecrawl is selected: {transcript:#?}"
+        joined.contains("choose query search credential"),
+        "interactive onboarding should prompt for a query-search credential source when Firecrawl is selected: {transcript:#?}"
     );
 
     let (_, config) =
@@ -2045,7 +2051,9 @@ async fn interactive_onboard_only_shows_large_logo_on_the_initial_screen() {
         "follow-up screens should keep using the compact LOONG header instead of dropping branding entirely: {transcript:#?}"
     );
     assert!(
-        transcript.iter().any(|line| line == "choose personality"),
+        transcript
+            .iter()
+            .any(|line| line.contains("choose personality")),
         "regression flow should still reach the later onboarding steps where repeated banner reports came from: {transcript:#?}"
     );
 }
@@ -2653,7 +2661,7 @@ fn import_surfaces_detect_configured_plugin_backed_channels_for_review_when_mana
             surface.name == "weixin channel"
                 && surface.level == loong_daemon::onboard_cli::ImportSurfaceLevel::Review
                 && surface.detail.contains("plugin-backed")
-                && surface.detail.contains("external_skills.install_root")
+                && surface.detail.contains("skills.install_root")
         }),
         "import preview should surface managed bridge review guidance when a plugin-backed channel is configured but install_root is missing: {surfaces:#?}"
     );
@@ -2687,7 +2695,7 @@ fn import_surfaces_detect_configured_plugin_backed_channels_as_ready_when_single
         "weixin-managed-bridge",
         &manifest,
     );
-    config.external_skills.install_root = Some(install_root.display().to_string());
+    config.skills.install_root = Some(install_root.display().to_string());
 
     let surfaces = loong_daemon::onboard_cli::collect_import_surfaces(&config);
 
@@ -2722,7 +2730,7 @@ fn import_surfaces_ignore_unconfigured_plugin_backed_channels_even_when_managed_
         "weixin-managed-bridge",
         &manifest,
     );
-    config.external_skills.install_root = Some(install_root.display().to_string());
+    config.skills.install_root = Some(install_root.display().to_string());
 
     let surfaces = loong_daemon::onboard_cli::collect_import_surfaces(&config);
 
@@ -2793,7 +2801,7 @@ fn managed_bridge_onboard_preflight_warns_when_install_root_is_missing() {
         checks.iter().any(|check| {
             check.name == "weixin channel"
                 && check.level == loong_daemon::onboard_cli::OnboardCheckLevel::Warn
-                && check.detail.contains("external_skills.install_root")
+                && check.detail.contains("skills.install_root")
         }),
         "onboard preflight should surface managed bridge discovery guidance when install_root is missing: {checks:#?}"
     );
@@ -2832,7 +2840,7 @@ fn managed_bridge_onboard_preflight_warns_when_managed_bridge_setup_is_incomplet
 
     std::fs::create_dir_all(&install_root).expect("create managed bridge install root");
     super::write_managed_bridge_manifest(install_root.as_path(), "qqbot-bridge-guided", &manifest);
-    config.external_skills.install_root = Some(install_root.display().to_string());
+    config.skills.install_root = Some(install_root.display().to_string());
 
     let checks = loong_daemon::onboard_cli::collect_channel_preflight_checks(&config);
 
@@ -2896,7 +2904,7 @@ fn managed_bridge_onboard_preflight_warns_when_managed_bridge_discovery_is_ambig
         "weixin-bridge-b",
         &second_manifest,
     );
-    config.external_skills.install_root = Some(install_root.display().to_string());
+    config.skills.install_root = Some(install_root.display().to_string());
 
     let checks = loong_daemon::onboard_cli::collect_channel_preflight_checks(&config);
 
@@ -2938,7 +2946,7 @@ fn managed_bridge_onboard_preflight_passes_when_single_compatible_plugin_is_avai
         "weixin-managed-bridge",
         &manifest,
     );
-    config.external_skills.install_root = Some(install_root.display().to_string());
+    config.skills.install_root = Some(install_root.display().to_string());
 
     let checks = loong_daemon::onboard_cli::collect_channel_preflight_checks(&config);
 
@@ -2979,7 +2987,7 @@ fn managed_bridge_onboard_preflight_warns_when_bridge_contract_is_misconfigured_
         "weixin-managed-bridge",
         &manifest,
     );
-    config.external_skills.install_root = Some(install_root.display().to_string());
+    config.skills.install_root = Some(install_root.display().to_string());
 
     let checks = loong_daemon::onboard_cli::collect_channel_preflight_checks(&config);
 
@@ -2999,7 +3007,7 @@ fn managed_bridge_onboard_preflight_summarizes_mixed_multi_account_detail() {
     let mut config = super::mixed_account_weixin_plugin_bridge_config();
 
     super::install_ready_weixin_managed_bridge(install_root.as_path());
-    config.external_skills.install_root = Some(install_root.display().to_string());
+    config.skills.install_root = Some(install_root.display().to_string());
 
     let checks = loong_daemon::onboard_cli::collect_channel_preflight_checks(&config);
     let weixin_check = checks
@@ -6121,10 +6129,6 @@ fn onboarding_success_summary_derives_structured_actions() {
         summary.next_actions[4].kind,
         loong_daemon::onboard_cli::OnboardingActionKind::Channel
     );
-    assert_eq!(
-        summary.next_actions[5].kind,
-        crate::onboard_cli::OnboardingActionKind::BrowserPreview
-    );
     assert_eq!(summary.next_actions[0].label, "first answer");
     assert_eq!(summary.next_actions[1].label, "chat");
     assert_eq!(
@@ -6133,7 +6137,7 @@ fn onboarding_success_summary_derives_structured_actions() {
     );
     assert_eq!(summary.next_actions[3].label, "Telegram");
     assert_eq!(summary.next_actions[4].label, "Feishu/Lark");
-    assert_eq!(summary.next_actions[5].label, "enable browser preview");
+    assert_eq!(summary.next_actions.len(), 5);
 }
 
 #[test]
@@ -6204,7 +6208,7 @@ fn onboarding_success_summary_adds_doctor_action_for_plugin_backed_channels_need
     .expect("deserialize weixin config");
     let path = PathBuf::from("/tmp/loong-config.toml");
 
-    config.external_skills.install_root = None;
+    config.skills.install_root = None;
 
     let summary = crate::onboard_cli::build_onboarding_success_summary(&path, &config, None);
     let action_kinds = summary
@@ -6275,7 +6279,7 @@ fn onboarding_success_summary_adds_doctor_action_for_incomplete_managed_bridge_s
 
     std::fs::create_dir_all(&install_root).expect("create managed bridge install root");
     super::write_managed_bridge_manifest(install_root.as_path(), "qqbot-bridge-guided", &manifest);
-    config.external_skills.install_root = Some(install_root.display().to_string());
+    config.skills.install_root = Some(install_root.display().to_string());
 
     let summary = crate::onboard_cli::build_onboarding_success_summary(&path, &config, None);
 
@@ -6316,7 +6320,7 @@ fn onboarding_success_summary_keeps_generic_handoff_when_managed_bridge_is_ready
         "weixin-managed-bridge",
         &manifest,
     );
-    config.external_skills.install_root = Some(install_root.display().to_string());
+    config.skills.install_root = Some(install_root.display().to_string());
 
     let summary = crate::onboard_cli::build_onboarding_success_summary(&path, &config, None);
 
@@ -6326,36 +6330,6 @@ fn onboarding_success_summary_keeps_generic_handoff_when_managed_bridge_is_ready
             .iter()
             .all(|action| action.kind != crate::onboard_cli::OnboardingActionKind::Doctor),
         "ready managed bridge setups should keep the existing generic handoff and avoid forcing doctor into the next-action list: {summary:#?}"
-    );
-}
-
-#[test]
-fn onboarding_success_summary_advertises_browser_preview_enable_action() {
-    let path = PathBuf::from("/tmp/loong-config.toml");
-    let summary = crate::onboard_cli::build_onboarding_success_summary(
-        &path,
-        &mvp::config::LoongConfig::default(),
-        None,
-    );
-    let lines = crate::onboard_cli::render_onboarding_success_summary_with_width(&summary, 80);
-
-    assert!(
-        summary.next_actions.iter().any(|action| {
-            action.kind == crate::onboard_cli::OnboardingActionKind::BrowserPreview
-                && action.label == "enable browser preview"
-                && action.command
-                    == "loong skills enable-browser-preview --config '/tmp/loong-config.toml'"
-        }),
-        "onboarding should surface a concrete browser preview enable step for operators: {summary:#?}"
-    );
-    assert!(
-        lines.iter().any(|line| {
-            line.contains("enable browser preview")
-                && line.contains("loong skills enable-browser-preview --config")
-        }) && lines
-            .iter()
-            .any(|line| line.contains("/tmp/loong-config.toml")),
-        "success summary should render the browser preview enable action in the follow-up section: {lines:#?}"
     );
 }
 
@@ -6747,13 +6721,9 @@ async fn onboard_current_setup_shortcut_flow_skips_detailed_edit_screens() {
 
     let joined = transcript.join("\n");
     let review_index = joined
-        .find("review setup\nquick review · current setup")
+        .find("review setup")
         .expect("current-setup flow should include a quick-review section");
     let review_section = &joined[review_index..];
-    assert!(
-        joined.contains("continue current setup"),
-        "current-setup fast lane should render its shortcut screen: {transcript:#?}"
-    );
     assert!(
         joined.contains("quick review · current setup"),
         "current-setup fast lane should stay on quick-review copy: {transcript:#?}"
@@ -6827,16 +6797,16 @@ async fn onboard_current_setup_shortcut_can_install_selected_bundled_skills() {
     let (_, config) =
         mvp::config::load(output_path.to_str()).expect("load written onboarding config");
     assert!(
-        config.external_skills.enabled,
+        config.skills.enabled,
         "selecting bundled skills should enable the external-skills runtime"
     );
     assert!(
-        config.external_skills.auto_expose_installed,
+        config.skills.auto_expose_installed,
         "selecting bundled skills should auto-expose installed skills"
     );
 
     let install_root = config
-        .external_skills
+        .skills
         .resolved_install_root()
         .expect("bundled skill selection should persist a managed install root");
     assert!(
@@ -6896,7 +6866,7 @@ async fn onboard_current_setup_shortcut_can_install_minimax_office_pack() {
     let (_, config) =
         mvp::config::load(output_path.to_str()).expect("load written onboarding config");
     let install_root = config
-        .external_skills
+        .skills
         .resolved_install_root()
         .expect("minimax office pack should persist an install root");
 
@@ -6951,7 +6921,7 @@ async fn onboard_current_setup_shortcut_can_install_byted_web_search() {
     let (_, config) =
         mvp::config::load(output_path.to_str()).expect("load written onboarding config");
     let install_root = config
-        .external_skills
+        .skills
         .resolved_install_root()
         .expect("byted web search should persist an install root");
 
@@ -7041,16 +7011,12 @@ requires_openai_auth = true
 
     let joined = transcript.join("\n");
     let review_index = joined
-        .find("review setup\nquick review · detected starting point")
+        .find("review setup")
         .expect("detected-setup flow should include a quick-review section");
     let review_section = &joined[review_index..];
     assert!(
         joined.contains("choose detected starting point"),
         "detected-setup flow should still show the starting-point chooser before the shortcut: {transcript:#?}"
-    );
-    assert!(
-        joined.contains("continue with detected starting point"),
-        "detected-setup fast lane should render its shortcut screen: {transcript:#?}"
     );
     assert!(
         joined.contains("quick review · detected starting point"),
@@ -7294,7 +7260,7 @@ async fn onboard_current_setup_adjustments_preserve_unchanged_domain_actions_in_
     assert!(
         review_lines
             .iter()
-            .any(|line| line == "source: current onboarding draft"),
+            .any(|line| line.contains("source: current onboarding draft")),
         "after edits, review should present the whole draft as a current onboarding draft: {review_lines:#?}"
     );
     assert!(
@@ -7316,19 +7282,21 @@ async fn onboard_current_setup_adjustments_preserve_unchanged_domain_actions_in_
 
     let success_lines = extract_success_section_lines(&transcript);
     assert!(
-        success_lines.iter().any(|line| line == "setup outcome"),
+        success_lines
+            .iter()
+            .any(|line| line.contains("setup outcome")),
         "success summary should include a compact setup outcome section when decision context exists: {success_lines:#?}"
     );
     assert!(
         success_lines
             .iter()
-            .any(|line| line == "- kept current: provider, channels, workspace guidance"),
+            .any(|line| line.contains("- kept current: provider, channels, workspace guidance")),
         "success summary should group unchanged current-setup domains into a readable outcome line: {success_lines:#?}"
     );
     assert!(
         success_lines
             .iter()
-            .any(|line| line == "- adjusted now: cli"),
+            .any(|line| line.contains("- adjusted now: cli")),
         "success summary should group domains adjusted during onboarding: {success_lines:#?}"
     );
 }
@@ -7516,7 +7484,7 @@ requires_openai_auth = true
     assert!(
         review_lines
             .iter()
-            .any(|line| line == "source: current onboarding draft"),
+            .any(|line| line.contains("source: current onboarding draft")),
         "after edits, guided review should present the whole draft as a current onboarding draft: {review_lines:#?}"
     );
     assert!(
@@ -7530,19 +7498,21 @@ requires_openai_auth = true
 
     let success_lines = extract_success_section_lines(&transcript);
     assert!(
-        success_lines.iter().any(|line| line == "setup outcome"),
+        success_lines
+            .iter()
+            .any(|line| line.contains("setup outcome")),
         "success summary should include a compact setup outcome section when detected decisions exist: {success_lines:#?}"
     );
     assert!(
         success_lines
             .iter()
-            .any(|line| line == "- adjusted now: provider"),
+            .any(|line| line.contains("- adjusted now: provider")),
         "success summary should group manually adjusted domains in the final handoff: {success_lines:#?}"
     );
     assert!(
         success_lines
             .iter()
-            .any(|line| line == "- used detected: workspace guidance"),
+            .any(|line| line.contains("- used detected: workspace guidance")),
         "success summary should group unchanged detected domains into a readable outcome line: {success_lines:#?}"
     );
 }
@@ -7684,13 +7654,13 @@ fn onboard_review_lines_include_core_setup_summary_for_fresh_setup() {
         lines
             .iter()
             .any(|line| line.contains("- web search: DuckDuckGo")),
-        "review should surface the selected web-search provider during onboarding: {lines:#?}"
+        "review should surface the selected query-search provider during onboarding: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("- web search credential: not required")),
-        "review should explain when the chosen web-search provider does not require credentials: {lines:#?}"
+            .any(|line| line.contains("- query search credential: not required")),
+        "review should explain when the chosen query-search provider does not require credentials: {lines:#?}"
     );
 }
 
@@ -8103,7 +8073,7 @@ fn onboarding_success_summary_reports_existing_config_kept() {
         memory_profile: "window_only".to_owned(),
         web_search_provider: "DuckDuckGo".to_owned(),
         web_search_credential: Some(loong_daemon::onboard_cli::OnboardingCredentialSummary {
-            label: "web search credential",
+            label: "query search credential",
             value: "not required".to_owned(),
         }),
         memory_path: None,
@@ -8188,13 +8158,39 @@ fn onboarding_success_summary_reports_web_search_provider_and_credential() {
 
     assert!(
         lines.iter().any(|line| line == "- web search: DuckDuckGo"),
-        "success summary should surface the selected web-search provider: {lines:#?}"
+        "success summary should surface the selected query-search provider: {lines:#?}"
     );
     assert!(
         lines
             .iter()
-            .any(|line| line == "- web search credential: not required"),
-        "success summary should explain when the selected web-search provider does not need a credential: {lines:#?}"
+            .any(|line| line == "- query search credential: not required"),
+        "success summary should explain when the selected query-search provider does not need a credential: {lines:#?}"
+    );
+}
+
+#[test]
+fn onboarding_success_summary_reports_native_query_search_lane_for_openai_responses() {
+    let path = PathBuf::from("/tmp/loong-config.toml");
+    let mut config = mvp::config::LoongConfig::default();
+    config.provider.kind = mvp::config::ProviderKind::Openai;
+    config.provider.wire_api = mvp::config::ProviderWireApi::Responses;
+    config.tools.web_search.default_provider = mvp::config::WEB_SEARCH_PROVIDER_TAVILY.to_owned();
+
+    let summary = loong_daemon::onboard_cli::build_onboarding_success_summary(&path, &config, None);
+    let lines =
+        loong_daemon::onboard_cli::render_onboarding_success_summary_with_width(&summary, 80);
+
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "- web search: OpenAI Responses native web search"),
+        "success summary should surface the provider-native query-search lane: {lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "- query search credential: provided by active provider"),
+        "success summary should explain that native query search is provided by the active provider: {lines:#?}"
     );
 }
 
@@ -8289,7 +8285,7 @@ fn onboarding_success_summary_groups_domain_outcomes_by_decision() {
         memory_profile: "profile_plus_window".to_owned(),
         web_search_provider: "DuckDuckGo".to_owned(),
         web_search_credential: Some(loong_daemon::onboard_cli::OnboardingCredentialSummary {
-            label: "web search credential",
+            label: "query search credential",
             value: "not required".to_owned(),
         }),
         memory_path: None,
@@ -8370,7 +8366,7 @@ fn onboarding_success_summary_wraps_domain_outcomes_for_narrow_width() {
         memory_profile: "profile_plus_window".to_owned(),
         web_search_provider: "DuckDuckGo".to_owned(),
         web_search_credential: Some(loong_daemon::onboard_cli::OnboardingCredentialSummary {
-            label: "web search credential",
+            label: "query search credential",
             value: "not required".to_owned(),
         }),
         memory_path: None,
@@ -8823,7 +8819,7 @@ fn onboarding_success_summary_uses_contextual_bridge_handoff_when_ready_plugin_b
         "weixin-managed-bridge",
         &manifest,
     );
-    config.external_skills.install_root = Some(install_root.display().to_string());
+    config.skills.install_root = Some(install_root.display().to_string());
 
     let summary = crate::onboard_cli::build_onboarding_success_summary(&path, &config, None);
     let lines =

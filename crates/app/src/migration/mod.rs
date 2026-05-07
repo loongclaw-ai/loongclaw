@@ -621,7 +621,7 @@ fn external_skill_probe_roots(input_path: &Path) -> Vec<PathBuf> {
 
 fn external_skill_warning(artifact: &ExternalSkillArtifact) -> String {
     format!(
-        "detected external skills artifact `{}` ({}); Loong imports prompt/profile content by default, and installable local skills can be bridged into the managed runtime with `{} migrate --mode apply_selected --apply-external-skills-plan` or the explicit external skills lifecycle (`fetch` -> `install` -> `list` -> `invoke`)",
+        "detected skills artifact `{}` ({}); Loong imports prompt/profile content by default, and installable local skills can be bridged into the managed runtime with `{} migrate --mode apply_selected --apply-skills-plan` or the explicit skills lifecycle (`fetch` -> `install` -> `list` -> `invoke`)",
         artifact.path.display(),
         artifact.kind.as_id(),
         active_cli_command_name()
@@ -1250,8 +1250,8 @@ mod tests {
         assert!(
             plan.warnings
                 .iter()
-                .any(|warning| warning.contains("external skills artifact")),
-            "expected at least one external skills warning"
+                .any(|warning| warning.contains("skills artifact")),
+            "expected at least one skills warning"
         );
 
         fs::remove_dir_all(&root).ok();
@@ -1299,7 +1299,7 @@ mod tests {
             path: PathBuf::from("/tmp/demo/skills"),
         });
         assert!(warning.contains("apply_selected"));
-        assert!(warning.contains("apply-external-skills-plan"));
+        assert!(warning.contains("--apply-skills-plan"));
         assert!(warning.contains("fetch"));
         assert!(warning.contains("install"));
         assert!(warning.contains("invoke"));

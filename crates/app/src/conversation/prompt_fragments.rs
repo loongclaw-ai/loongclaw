@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 use super::context_engine::ContextArtifactKind;
-use super::tool_discovery_state::ToolDiscoveryState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -158,7 +157,6 @@ pub struct PromptFragment {
     pub frame_layer: PromptFrameLayer,
     pub frame_authority: PromptFrameAuthority,
     pub dedupe_key: Option<String>,
-    pub(crate) tool_discovery_state: Option<ToolDiscoveryState>,
 }
 
 impl PromptFragment {
@@ -187,7 +185,6 @@ impl PromptFragment {
             frame_layer,
             frame_authority,
             dedupe_key: None,
-            tool_discovery_state: None,
         }
     }
 
@@ -226,15 +223,6 @@ impl PromptFragment {
     #[must_use]
     pub fn with_frame_authority(mut self, frame_authority: PromptFrameAuthority) -> Self {
         self.frame_authority = frame_authority;
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn with_tool_discovery_state(
-        mut self,
-        tool_discovery_state: ToolDiscoveryState,
-    ) -> Self {
-        self.tool_discovery_state = Some(tool_discovery_state);
         self
     }
 }

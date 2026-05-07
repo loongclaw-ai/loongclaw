@@ -98,6 +98,12 @@ impl LatestSelectorCliFixture {
         let config_path_text = self.config_path.to_string_lossy();
         let config_path_text = config_path_text.as_ref();
         mvp::config::write(Some(config_path_text), &config, true).expect("write config fixture");
+        let runtime_config = mvp::tools::runtime_config::ToolRuntimeConfig::from_loong_config(
+            &config,
+            Some(&self.config_path),
+        );
+        mvp::tools::skills_policy_reset_with_config(true, &runtime_config)
+            .expect("reset skills policy override");
         config
     }
 

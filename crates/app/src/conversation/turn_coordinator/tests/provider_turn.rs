@@ -80,6 +80,38 @@ fn provider_turn_reply_tail_phase_captures_reply_and_after_turn_context() {
 }
 
 #[test]
+fn provider_turn_reply_tail_phase_salvages_leaked_tool_wrapper_prefix() {
+    let session = ProviderTurnSessionState::from_assembled_context(
+        AssembledConversationContext {
+            messages: vec![serde_json::json!({
+                "role": "system",
+                "content": "sys"
+            })],
+            artifacts: vec![],
+            estimated_tokens: Some(42),
+            prompt_fragments: Vec::new(),
+            system_prompt_addition: None,
+        },
+        "hello world",
+        None,
+    );
+
+    let phase = ProviderTurnReplyTailPhase::from_session(
+        &session,
+        "[tool_request]\n{\"url\":\"https://example.com\"}Example Domain is reserved for documentation examples.",
+    );
+
+    assert_eq!(
+        phase.reply(),
+        "Example Domain is reserved for documentation examples."
+    );
+    assert_eq!(
+        phase.after_turn_messages()[2]["content"],
+        "Example Domain is reserved for documentation examples."
+    );
+}
+
+#[test]
 fn provider_turn_followup_preparation_preserves_stable_prefix_hash_and_updates_tail_hash() {
     let base_fragment = crate::conversation::PromptFragment::new(
         "base-system",
@@ -250,7 +282,6 @@ fn provider_turn_lane_plan_fast_lane_uses_internal_limits() {
     let plan = ProviderTurnLanePlan::from_user_input(&config, "read note.md");
 
     assert_eq!(plan.decision.lane, ExecutionLane::Fast);
-    assert_eq!(plan.max_tool_steps, 5);
     assert!(plan.decision.reasons.is_empty());
 }
 
@@ -276,7 +307,6 @@ fn provider_turn_preparation_derives_lane_plan_and_raw_mode() {
     );
     assert!(preparation.raw_tool_output_requested);
     assert_eq!(preparation.lane_plan.decision.lane, ExecutionLane::Safe);
-    assert_eq!(preparation.lane_plan.max_tool_steps, 2);
 }
 
 #[test]
@@ -421,6 +451,8 @@ fn provider_continuation_test_continue_phase_with_lane(
             assistant_preface,
             provider_usage: None,
             had_tool_intents,
+            provider_originated_tool_intents: true,
+            textual_tool_parse_followup_turn: false,
             tool_request_summary: None,
             discovery_search_turn: false,
             search_tool_intents: 0,
@@ -431,6 +463,7 @@ fn provider_continuation_test_continue_phase_with_lane(
             safe_lane_terminal_route: None,
             tool_events: Vec::new(),
         },
+        None,
         None,
         config.clone(),
         None,
@@ -525,6 +558,197 @@ async fn provider_continuation_recovers_malformed_parse_followup_without_real_to
     assert_eq!(request_turn_messages.len(), 2);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_continuation_uses_provider_turn_followup_for_nonterminal_tool_results() {
+    let config = LoongConfig::default();
+    let user_input = "Replace beta with gamma, then reply with the final file contents only.";
+    let preparation = provider_continuation_test_preparation(&config, user_input);
+    let tool_result_text = format!(
+        "[ok] {}",
+        serde_json::json!({
+            "status": "ok",
+            "tool": "edit",
+            "tool_call_id": "call-edit",
+            "payload_summary": serde_json::json!({
+                "path": "notes.txt",
+                "content": "alpha\\ngamma",
+                "continuation": {
+                    "state": "verify_edit",
+                    "is_terminal": false,
+                    "recommended_tool": "read",
+                    "recommended_payload": {
+                        "path": "notes.txt"
+                    }
+                }
+            })
+            .to_string(),
+            "payload_chars": 32,
+            "payload_truncated": false
+        })
+    );
+    let continue_phase = provider_continuation_test_continue_phase_with_lane(
+        &config,
+        "Updated the file.".to_owned(),
+        true,
+        true,
+        false,
+        TurnResult::FinalText(tool_result_text),
+    );
+    let runtime = MissingToolContinuationRuntime {
+        queued_turns: StdMutex::new(vec![
+            ProviderTurn {
+                assistant_text: "Verifying the updated contents.".to_owned(),
+                tool_intents: vec![provider_continuation_test_intent(
+                    "session-edit",
+                    "turn-read",
+                    "call-read",
+                    "read",
+                    json!({
+                        "path": "notes.txt"
+                    }),
+                )],
+                raw_meta: Value::Null,
+            },
+            ProviderTurn {
+                assistant_text: "alpha\ngamma".to_owned(),
+                tool_intents: Vec::new(),
+                raw_meta: Value::Null,
+            },
+        ]),
+        request_turn_messages: StdMutex::new(Vec::new()),
+    };
+    let turn_loop_policy = ProviderTurnLoopPolicy::from_config(&config);
+    let mut turn_loop_state = ProviderTurnLoopState::default();
+
+    let resolved = resolve_provider_turn_reply(
+        &runtime,
+        &config,
+        "session-edit",
+        &preparation,
+        &continue_phase,
+        user_input,
+        &turn_loop_policy,
+        &mut turn_loop_state,
+        4,
+        ConversationRuntimeBinding::advisory_only(),
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    assert_eq!(resolved.reply_text(), Some("alpha\ngamma"));
+    let request_turn_messages = runtime
+        .request_turn_messages
+        .lock()
+        .expect("request-turn messages lock should not be poisoned");
+    assert_eq!(request_turn_messages.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_continuation_reprompts_when_nonterminal_tool_result_is_followed_by_plaintext_only()
+ {
+    let config = LoongConfig::default();
+    let user_input = "Open the page and keep going until you can summarize the main content.";
+    let preparation = provider_continuation_test_preparation(&config, user_input);
+    let tool_result_text = format!(
+        "[ok] {}",
+        serde_json::json!({
+            "status": "ok",
+            "tool": "browser.open",
+            "tool_call_id": "call-browser-open",
+            "payload_summary": serde_json::json!({
+                "session_id": "browser-1",
+                "title": "Example Domain",
+                "truncated": true,
+                "continuation": {
+                    "state": "truncated_page",
+                    "is_terminal": false,
+                    "recommended_tool": "browse",
+                    "recommended_payload": {
+                        "session_id": "browser-1",
+                        "mode": "page_text"
+                    }
+                }
+            })
+            .to_string(),
+            "payload_chars": 64,
+            "payload_truncated": false
+        })
+    );
+    let continue_phase = provider_continuation_test_continue_phase_with_lane(
+        &config,
+        "Opened the page.".to_owned(),
+        true,
+        true,
+        false,
+        TurnResult::FinalText(tool_result_text),
+    );
+    let runtime = MissingToolContinuationRuntime {
+        queued_turns: StdMutex::new(vec![
+            ProviderTurn {
+                assistant_text: "I think that's enough.".to_owned(),
+                tool_intents: Vec::new(),
+                raw_meta: Value::Null,
+            },
+            ProviderTurn {
+                assistant_text: "Extracting the page text.".to_owned(),
+                tool_intents: vec![provider_continuation_test_intent(
+                    "session-browser",
+                    "turn-browse-extract",
+                    "call-browse-extract",
+                    "browse",
+                    json!({
+                        "session_id": "browser-1",
+                        "mode": "page_text"
+                    }),
+                )],
+                raw_meta: Value::Null,
+            },
+            ProviderTurn {
+                assistant_text: "Example Domain is a reserved documentation example page."
+                    .to_owned(),
+                tool_intents: Vec::new(),
+                raw_meta: Value::Null,
+            },
+        ]),
+        request_turn_messages: StdMutex::new(Vec::new()),
+    };
+    let turn_loop_policy = ProviderTurnLoopPolicy::from_config(&config);
+    let mut turn_loop_state = ProviderTurnLoopState::default();
+
+    let resolved = resolve_provider_turn_reply(
+        &runtime,
+        &config,
+        "session-browser",
+        &preparation,
+        &continue_phase,
+        user_input,
+        &turn_loop_policy,
+        &mut turn_loop_state,
+        4,
+        ConversationRuntimeBinding::advisory_only(),
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        resolved.reply_text(),
+        Some("Example Domain is a reserved documentation example page.")
+    );
+    let request_turn_messages = runtime
+        .request_turn_messages
+        .lock()
+        .expect("request-turn messages lock should not be poisoned");
+    assert_eq!(
+        request_turn_messages.len(),
+        3,
+        "runtime should force additional provider rounds instead of accepting plaintext-only completion"
+    );
+}
+
 #[test]
 fn provider_turn_continue_phase_checkpoint_captures_continue_branch_kernel_shape() {
     let config = LoongConfig::default();
@@ -544,6 +768,8 @@ fn provider_turn_continue_phase_checkpoint_captures_continue_branch_kernel_shape
             assistant_preface: "preface".to_owned(),
             provider_usage: None,
             had_tool_intents: true,
+            provider_originated_tool_intents: true,
+            textual_tool_parse_followup_turn: false,
             tool_request_summary: None,
             discovery_search_turn: false,
             search_tool_intents: 0,
@@ -561,6 +787,7 @@ fn provider_turn_continue_phase_checkpoint_captures_continue_branch_kernel_shape
             }),
             tool_events: Vec::new(),
         },
+        None,
         None,
         config,
         None,
@@ -767,6 +994,8 @@ fn provider_turn_continue_phase_checkpoint_keeps_direct_reply_without_followup()
             assistant_preface: "preface".to_owned(),
             provider_usage: None,
             had_tool_intents: false,
+            provider_originated_tool_intents: false,
+            textual_tool_parse_followup_turn: false,
             tool_request_summary: None,
             discovery_search_turn: false,
             search_tool_intents: 0,
@@ -777,6 +1006,7 @@ fn provider_turn_continue_phase_checkpoint_keeps_direct_reply_without_followup()
             safe_lane_terminal_route: None,
             tool_events: Vec::new(),
         },
+        None,
         None,
         LoongConfig::default(),
         None,

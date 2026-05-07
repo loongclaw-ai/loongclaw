@@ -1086,10 +1086,6 @@ mod tests {
             rendered.contains("loong channels --config '/tmp/config.toml'"),
             "{rendered}"
         );
-        assert!(rendered.contains("- enable browser preview:"), "{rendered}");
-        assert!(
-            rendered.contains("loong skills enable-browser-preview --config"),
-            "{rendered}"
-        );
+        assert!(!rendered.contains("browser preview"), "{rendered}");
     }
 }

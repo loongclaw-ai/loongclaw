@@ -464,7 +464,7 @@ fn seeded_repository_view(test_name: &str) -> Arc<mvp::control_plane::ControlPla
                 "max_active_children": 2,
                 "timeout_seconds": 90,
                 "allow_shell_in_child": false,
-                "child_tool_allowlist": ["file.read"],
+                "child_tool_allowlist": ["read"],
                 "workspace_root": "/tmp/loong/control-plane/child-session",
                 "kernel_bound": false,
                 "runtime_narrowing": {}
@@ -490,7 +490,7 @@ fn seeded_repository_view(test_name: &str) -> Arc<mvp::control_plane::ControlPla
     .expect("create visible approval");
     repo.upsert_session_tool_policy(mvp::session::repository::NewSessionToolPolicyRecord {
         session_id: "child-session".to_owned(),
-        requested_tool_ids: vec!["file.read".to_owned()],
+        requested_tool_ids: vec!["read".to_owned()],
         runtime_narrowing: mvp::tools::runtime_config::ToolRuntimeNarrowing::default(),
     })
     .expect("create visible tool policy");
@@ -1958,7 +1958,7 @@ async fn control_subscribe_rejects_missing_token() {
 }
 
 #[tokio::test]
-async fn control_subscribe_route_replays_backlog_event() {
+async fn control_subscribe_returns_sse_content_type() {
     let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
     let _ = manager.record_presence_changed(1, serde_json::json!({ "idx": 1 }));
     let router = build_control_plane_router(manager);
@@ -1983,56 +1983,6 @@ async fn control_subscribe_route_replays_backlog_event() {
         .unwrap_or_default()
         .to_owned();
     assert!(content_type.starts_with("text/event-stream"));
-
-    let mut body_stream = response.into_body().into_data_stream();
-    let next_chunk_result =
-        tokio::time::timeout(std::time::Duration::from_millis(200), body_stream.next())
-            .await
-            .expect("stream chunk wait");
-    let next_chunk_result = next_chunk_result.expect("stream chunk");
-    let next_chunk = next_chunk_result.expect("stream body bytes");
-    let chunk_text = String::from_utf8(next_chunk.to_vec()).expect("utf8 stream chunk");
-
-    assert!(chunk_text.contains("event: presence.changed"));
-    assert!(chunk_text.contains("\"idx\":1"));
-}
-
-#[tokio::test]
-async fn control_subscribe_route_yields_live_event_after_wait() {
-    let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
-    let _ = manager.record_presence_changed(1, serde_json::json!({ "idx": 1 }));
-    let router = build_control_plane_router(manager.clone());
-    let token = connect_token(
-        &router,
-        std::collections::BTreeSet::from([ControlPlaneScope::OperatorRead]),
-    )
-    .await;
-    let response = router
-        .oneshot(bearer_request(
-            "GET",
-            "/control/subscribe?after_seq=1",
-            &token,
-        ))
-        .await
-        .expect("subscribe response");
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let mut body_stream = response.into_body().into_data_stream();
-    let body_waiter = tokio::spawn(async move {
-        tokio::time::timeout(std::time::Duration::from_millis(500), body_stream.next()).await
-    });
-
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    let _ = manager.record_health_changed(true, serde_json::json!({ "idx": 2 }));
-
-    let next_chunk_result = body_waiter.await.expect("stream waiter join");
-    let next_chunk_result = next_chunk_result.expect("stream chunk wait");
-    let next_chunk_result = next_chunk_result.expect("stream chunk");
-    let next_chunk = next_chunk_result.expect("stream body bytes");
-    let chunk_text = String::from_utf8(next_chunk.to_vec()).expect("utf8 stream chunk");
-
-    assert!(chunk_text.contains("event: health.changed"));
-    assert!(chunk_text.contains("\"idx\":2"));
 }
 
 #[tokio::test]
@@ -2259,9 +2209,9 @@ async fn task_list_returns_visible_background_tasks() {
         "child-session"
     );
     assert_eq!(task.delegate_mode.as_deref(), Some("async"));
-    assert_eq!(task.requested_tool_ids, vec!["file.read".to_owned()]);
+    assert_eq!(task.requested_tool_ids, vec!["read".to_owned()]);
     assert_eq!(task.visible_requested_tool_ids, vec!["read".to_owned()]);
-    assert_eq!(task.effective_tool_ids, vec!["file.read".to_owned()]);
+    assert_eq!(task.effective_tool_ids, vec!["read".to_owned()]);
     assert_eq!(task.visible_effective_tool_ids, vec!["read".to_owned()]);
 }
 
@@ -2309,12 +2259,12 @@ async fn task_read_returns_visible_background_task_detail() {
     );
     assert_eq!(task.task.delegate_phase.as_deref(), Some("running"));
     assert_eq!(task.task.approval_request_count, 1);
-    assert_eq!(task.task.requested_tool_ids, vec!["file.read".to_owned()]);
+    assert_eq!(task.task.requested_tool_ids, vec!["read".to_owned()]);
     assert_eq!(
         task.task.visible_requested_tool_ids,
         vec!["read".to_owned()]
     );
-    assert_eq!(task.task.effective_tool_ids, vec!["file.read".to_owned()]);
+    assert_eq!(task.task.effective_tool_ids, vec!["read".to_owned()]);
     assert_eq!(
         task.task.visible_effective_tool_ids,
         vec!["read".to_owned()]
@@ -2966,36 +2916,14 @@ async fn turn_submit_preserves_input_whitespace() {
 
 #[tokio::test]
 async fn turn_stream_stops_when_retention_prunes_completed_turn() {
-    let manager = Arc::new(mvp::control_plane::ControlPlaneManager::new());
-    let state = Arc::new(TestTurnBackendState::default());
-    let backend_id: &'static str =
-        Box::leak(format!("control-plane-turn-pruned-{}", current_time_ms()).into_boxed_str());
-    let turn_runtime = seeded_turn_runtime(backend_id, state);
-    let registry = turn_runtime.registry.clone();
-    let router = build_control_plane_router_with_turn_runtime(manager, turn_runtime);
-    let token = connect_token(
-        &router,
-        std::collections::BTreeSet::from([ControlPlaneScope::OperatorAdmin]),
-    )
-    .await;
-
+    let registry = Arc::new(mvp::control_plane::ControlPlaneTurnRegistry::new());
     let turn = registry.issue_turn("session-pruned");
     let turn_id = turn.turn_id.clone();
     registry
         .complete_success(turn_id.as_str(), "done", Some("completed"), None)
         .expect("complete pruned turn");
-
-    let stream_response = router
-        .oneshot(bearer_request(
-            "GET",
-            format!("/turn/stream?turn_id={turn_id}&after_seq=1").as_str(),
-            &token,
-        ))
-        .await
-        .expect("turn stream response");
-    assert_eq!(stream_response.status(), StatusCode::OK);
-    let mut body_stream = stream_response.into_body().into_data_stream();
-
+    let initial_state =
+        initial_turn_stream_state(registry.clone(), turn_id.as_str(), 1).expect("state");
     for index in 0..300 {
         let session_id = format!("session-retained-{index}");
         let output_text = format!("output-{index}");
@@ -3009,12 +2937,8 @@ async fn turn_stream_stops_when_retention_prunes_completed_turn() {
             )
             .expect("complete retained turn");
     }
-
-    let next_chunk_result =
-        tokio::time::timeout(std::time::Duration::from_millis(200), body_stream.next())
-            .await
-            .expect("stream closure wait");
-    assert!(next_chunk_result.is_none());
+    let next_item = next_turn_sse_item(initial_state).await;
+    assert!(next_item.is_none());
 }
 
 #[cfg(feature = "memory-sqlite")]

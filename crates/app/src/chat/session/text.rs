@@ -75,8 +75,6 @@ pub(super) fn summarize_state_mix<'a>(states: impl Iterator<Item = &'a str>) -> 
 
 pub(super) fn fallback_startup_summary(session_id: &str) -> ops::CliChatStartupSummary {
     ops::CliChatStartupSummary {
-        workspace_root: None,
-        provider_label: "-".to_owned(),
         config_path: "-".to_owned(),
         memory_label: "-".to_owned(),
         session_id: session_id.to_owned(),
@@ -86,7 +84,6 @@ pub(super) fn fallback_startup_summary(session_id: &str) -> ops::CliChatStartupS
         compaction_min_messages: None,
         compaction_trigger_estimated_tokens: None,
         compaction_preserve_recent_turns: 0,
-        compaction_preserve_recent_estimated_tokens: None,
         compaction_fail_open: false,
         acp_enabled: false,
         dispatch_enabled: false,
