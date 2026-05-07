@@ -265,11 +265,11 @@ fn capability_snapshot_stays_compact_when_skills_are_installed() {
         .join(crate::config::HOME_DIR_NAME)
         .join("skills")
         .join("demo-skill")
-        .join("SKILL.md")
-        .display()
-        .to_string();
+        .join("SKILL.md");
+    let expected_skill_md_path = expected_skill_md_path.to_string_lossy().replace('\\', "/");
+    let normalized_snapshot = snapshot.replace('\\', "/");
     assert!(
-        snapshot.contains(&expected_skill_md_path),
+        normalized_snapshot.contains(&expected_skill_md_path),
         "snapshot should surface installed skill path: {snapshot}"
     );
 
