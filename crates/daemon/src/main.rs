@@ -231,7 +231,12 @@ async fn run_resolved_command(
 ) -> CliResult<()> {
     match command {
         ResolvedCommand::Cli(command) => {
-            run_command(*command, invoked_as_default_entry, default_entry_interactive).await
+            run_command(
+                *command,
+                invoked_as_default_entry,
+                default_entry_interactive,
+            )
+            .await
         }
         ResolvedCommand::Interactive(args) => {
             run_chat_cli(

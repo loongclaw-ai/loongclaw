@@ -2019,7 +2019,10 @@ fn root_interactive_flags_still_parse_on_the_main_entrypoint() {
     ])
     .expect("root interactive flags should parse on the main entrypoint");
 
-    assert!(cli.command.is_none(), "root interactive path should not synthesize a subcommand");
+    assert!(
+        cli.command.is_none(),
+        "root interactive path should not synthesize a subcommand"
+    );
     assert_eq!(cli.interactive.session.as_deref(), Some("telegram:42"));
     assert!(cli.interactive.acp);
     assert!(cli.interactive.acp_event_stream);
@@ -2027,7 +2030,10 @@ fn root_interactive_flags_still_parse_on_the_main_entrypoint() {
         cli.interactive.acp_bootstrap_mcp_server,
         vec!["filesystem".to_owned(), "search".to_owned()]
     );
-    assert_eq!(cli.interactive.acp_cwd.as_deref(), Some("/workspace/project"));
+    assert_eq!(
+        cli.interactive.acp_cwd.as_deref(),
+        Some("/workspace/project")
+    );
 }
 
 #[test]
