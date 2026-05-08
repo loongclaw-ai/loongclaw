@@ -939,7 +939,7 @@ impl MessageList {
         if reduced_motion_enabled() {
             return None;
         }
-        if !self.startup_mode_active() {
+        if !self.has_startup_header() {
             return None;
         }
 
@@ -1013,12 +1013,14 @@ impl MessageList {
     }
 
     fn startup_mode_active(&self) -> bool {
-        self.messages.iter().all(|message| message.role == "System")
-            && self
-                .messages
-                .iter()
-                .flat_map(|message| message.contents.iter())
-                .any(|content| matches!(content, MessageContent::StartupHeader { .. }))
+        self.messages.iter().all(|message| message.role == "System") && self.has_startup_header()
+    }
+
+    fn has_startup_header(&self) -> bool {
+        self.messages
+            .iter()
+            .flat_map(|message| message.contents.iter())
+            .any(|content| matches!(content, MessageContent::StartupHeader { .. }))
     }
 }
 
@@ -5397,16 +5399,17 @@ fn styled_background_line(spans: Vec<Span<'static>>, width: u16, bg: Color) -> L
 mod tests {
     use super::{
         MessageContent, MessageList, ReadToolRequest, STARTUP_COMPACT_WORDMARK, STARTUP_EYE_FRAMES,
-        STARTUP_TIP_FADE_MS, STARTUP_TIP_HOLD_MS, STARTUP_WORDMARK, ToolStatus,
-        adjust_scroll_start_for_message_boundary, build_assistant_contents, content_plain_text,
-        dominant_block_bg, extract_read_tool_request_from_json, format_read_request_display,
-        startup_logo_eye_frame_index, startup_logo_eye_style, startup_tip_render_state,
-        startup_wordmark_eye_frame,
+        STARTUP_LOGO_EYE_FRAME_MS, STARTUP_TIP_FADE_MS, STARTUP_TIP_HOLD_MS, STARTUP_WORDMARK,
+        ToolStatus, adjust_scroll_start_for_message_boundary, build_assistant_contents,
+        content_plain_text, dominant_block_bg, extract_read_tool_request_from_json,
+        format_read_request_display, startup_logo_eye_frame_index, startup_logo_eye_style,
+        startup_tip_render_state, startup_wordmark_eye_frame,
     };
     use crate::chat::chat_surface::utils::{
         SURFACE_ACCENT, SURFACE_DIM_GRAY, SURFACE_GRAY, SURFACE_GREEN, SURFACE_RED,
         SURFACE_TOOL_BG, SURFACE_USER_MSG_BG,
     };
+    use crate::test_support::ScopedEnv;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use ratatui::{Terminal, backend::TestBackend, style::Color, text::Line};
     use std::time::Duration;
@@ -7797,6 +7800,33 @@ cargo test -p loong-app --lib
 
         assert!(rendered.contains("╷  ╭─╮╭─╮╭╮╷╭─╴"));
         assert!(!rendered.contains("░████████░"));
+    }
+
+    #[test]
+    fn startup_header_animation_stays_active_after_first_message() {
+        let mut env = ScopedEnv::new();
+        env.remove("LOONG_TUI_REDUCED_MOTION");
+        env.set("TERM", "xterm-256color");
+
+        let mut list = MessageList::new();
+        list.add_startup_header_with_tips(
+            "0.1.0".to_owned(),
+            "help".to_owned(),
+            Vec::new(),
+            vec!["first tip".to_owned(), "second tip".to_owned()],
+        );
+        list.add_user_message("hi".to_owned());
+        list.add_assistant_message("hello".to_owned());
+
+        assert!(list.startup_animation_active());
+        list.last_startup_animation_signature = None;
+        std::thread::sleep(Duration::from_millis(
+            STARTUP_LOGO_EYE_FRAME_MS.saturating_add(10),
+        ));
+        assert!(
+            list.refresh_startup_animation(),
+            "startup header should keep animating while it remains visible"
+        );
     }
 
     #[test]

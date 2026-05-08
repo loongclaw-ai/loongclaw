@@ -11061,6 +11061,51 @@ description: "actual description"
     }
 
     #[test]
+    fn startup_logo_keeps_animating_with_composer_draft_after_first_message() {
+        let mut env = ScopedEnv::new();
+        env.remove("LOONG_TUI_REDUCED_MOTION");
+        env.set("TERM", "xterm-256color");
+
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.message_list
+            .add_startup_header("0.1.0".to_owned(), "tutorial".to_owned(), Vec::new());
+        app.message_list.add_user_message("hi".to_owned());
+        app.message_list.add_assistant_message("hello".to_owned());
+        app.composer.set_input("draft".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let before_lines = buffer_lines(&terminal);
+        let before_header = before_lines
+            .iter()
+            .take(8)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(app.message_list.refresh_startup_animation());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let after_lines = buffer_lines(&terminal);
+        let after_header = after_lines
+            .iter()
+            .take(8)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let after = after_lines.join("\n");
+
+        assert_ne!(
+            before_header, after_header,
+            "startup header should continue animating"
+        );
+        assert!(after.contains("draft"));
+        assert!(after.contains("hello"));
+    }
+
+    #[test]
     fn pending_band_keeps_blank_padding_rows() {
         let backend = TestBackend::new(50, 18);
         let mut terminal = Terminal::new(backend).expect("terminal");
