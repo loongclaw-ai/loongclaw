@@ -33,7 +33,7 @@ fn sample_surface_state() -> SurfaceState {
 fn sample_render_data() -> SurfaceRenderData {
     SurfaceRenderData {
         header_lines: vec![
-            "LOONG  v0.1.2-alpha.1".to_owned(),
+            "LOONG  v0.1.2-alpha.2".to_owned(),
             "interactive chat".to_owned(),
         ],
         header_status_line:

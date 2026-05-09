@@ -3006,7 +3006,7 @@ dependencies = [
 
 [[package]]
 name = "loong"
-version = "0.1.2-alpha.1"
+version = "0.1.2-alpha.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -3051,7 +3051,7 @@ dependencies = [
 
 [[package]]
 name = "loong-app"
-version = "0.1.2-alpha.1"
+version = "0.1.2-alpha.2"
 dependencies = [
  "aes",
  "async-trait",
@@ -3118,7 +3118,7 @@ dependencies = [
 
 [[package]]
 name = "loong-bench"
-version = "0.1.2-alpha.1"
+version = "0.1.2-alpha.2"
 dependencies = [
  "hex",
  "loong-kernel",
@@ -3132,7 +3132,7 @@ dependencies = [
 
 [[package]]
 name = "loong-bridge-runtime"
-version = "0.1.2-alpha.1"
+version = "0.1.2-alpha.2"
 dependencies = [
  "loong-contracts",
  "loong-kernel",
@@ -3145,7 +3145,7 @@ dependencies = [
 
 [[package]]
 name = "loong-contracts"
-version = "0.1.2-alpha.1"
+version = "0.1.2-alpha.2"
 dependencies = [
  "semver",
  "serde",
@@ -3157,7 +3157,7 @@ dependencies = [
 
 [[package]]
 name = "loong-kernel"
-version = "0.1.2-alpha.1"
+version = "0.1.2-alpha.2"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -3174,7 +3174,7 @@ dependencies = [
 
 [[package]]
 name = "loong-protocol"
-version = "0.1.2-alpha.1"
+version = "0.1.2-alpha.2"
 dependencies = [
  "async-trait",
  "serde",
@@ -3185,7 +3185,7 @@ dependencies = [
 
 [[package]]
 name = "loong-spec"
-version = "0.1.2-alpha.1"
+version = "0.1.2-alpha.2"
 dependencies = [
  "async-trait",
  "base64",

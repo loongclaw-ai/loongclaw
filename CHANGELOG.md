@@ -6,6 +6,22 @@ The format follows Keep a Changelog and semantic versioning intent.
 
 ## [Unreleased]
 
+## [0.1.2-alpha.2] - 2026-05-09
+
+### Added
+
+- Added OpenTelemetry-based runtime observability for interactive turns, provider chat requests, and tool execution surfaces, with opt-in content capture and OTLP/HTTP export support.
+
+### Changed
+
+- Kept the existing daemon JSON log shape while wiring the new observability path through current runtime seams on `dev`.
+- Accepted both generic OTLP endpoints and traces-specific OTLP endpoints when deciding whether trace export should initialize.
+
+### Fixed
+
+- Fixed the observability integration landing zone so tool execution tracing attaches at the current `tool_dispatch` seam instead of the older pre-refactor tool shell.
+- Fixed release preparation to exclude the still-open `#1440` merge itself while still shipping the clean `dev` snapshot as `0.1.2-alpha.2`.
+
 ## [0.1.2-alpha.1] - 2026-04-20
 
 ### Added
