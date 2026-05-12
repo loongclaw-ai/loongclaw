@@ -38,7 +38,6 @@ mod render;
 mod report;
 mod safe;
 mod safe_text;
-mod session;
 mod startup_state;
 mod startup_view;
 mod status_view;
@@ -48,6 +47,9 @@ use self::checkpoint::*;
 use self::checkpoint_labels::*;
 #[cfg(test)]
 use self::checkpoint_text::*;
+pub(crate) use self::chat_surface::diff_viewer::render_diff_to_strings;
+pub(crate) use self::chat_surface::message_list::tool_activity_semantic_preview_line;
+pub(crate) use self::chat_surface::utils::normalize_tool_activity_detail_text;
 use self::cli_input::ConcurrentCliInputReader;
 use self::cli_render::*;
 use self::commands::*;
@@ -168,6 +170,8 @@ pub struct CliChatOptions {
     pub acp_event_stream: bool,
     pub acp_bootstrap_mcp_servers: Vec<String>,
     pub acp_working_directory: Option<PathBuf>,
+    pub force_onboard: bool,
+    pub fresh_session: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -298,6 +302,7 @@ pub(crate) struct CliTurnRuntime {
     pub(crate) turn_coordinator: ConversationTurnCoordinator,
     pub(crate) runtime_kernel: crate::runtime_bridge::RuntimeKernelOwner,
     pub(crate) explicit_acp_request: bool,
+    pub(crate) force_onboard: bool,
     pub(crate) effective_bootstrap_mcp_servers: Vec<String>,
     pub(crate) effective_working_directory: Option<PathBuf>,
     pub(crate) memory_label: String,
@@ -308,6 +313,15 @@ pub(crate) struct CliTurnRuntime {
 impl CliTurnRuntime {
     pub(crate) fn conversation_binding(&self) -> ConversationRuntimeBinding<'_> {
         self.runtime_kernel.conversation_binding()
+    }
+
+    pub(crate) fn reset_for_fresh_session(
+        &mut self,
+        session_id: String,
+        session_address: ConversationSessionAddress,
+    ) {
+        self.session_id = session_id;
+        self.session_address = session_address;
     }
 }
 
@@ -483,8 +497,11 @@ async fn run_cli_chat_repl(
             CliChatLoopControl::Exit => break,
             CliChatLoopControl::AssistantText(assistant_text) => {
                 let render_width = detect_cli_chat_render_width();
-                let rendered_lines =
-                    render_cli_chat_assistant_lines_with_width(&assistant_text, render_width);
+                let rendered_lines = render_cli_chat_assistant_lines_for_stdout(
+                    &assistant_text,
+                    render_width,
+                    runtime.config.conversation.show_reasoning(),
+                );
                 print_rendered_cli_chat_lines(&rendered_lines);
             }
         }
@@ -520,16 +537,18 @@ pub async fn run_cli_ask(
         false,
     )
     .await?;
-    println!("{assistant_text}");
+    let render_width = detect_cli_chat_render_width();
+    let rendered_lines = render_cli_chat_assistant_lines_for_stdout(
+        &assistant_text,
+        render_width,
+        runtime.config.conversation.show_reasoning(),
+    );
+    print_rendered_cli_chat_lines(&rendered_lines);
     Ok(())
 }
 
 pub fn run_concurrent_cli_host(options: &ConcurrentCliHostOptions) -> CliResult<()> {
     reject_disabled_cli_channel(&options.config)?;
-    if session::interactive_terminal_surface_supported() {
-        return session::run_concurrent_cli_host_surface(options);
-    }
-
     run_concurrent_cli_host_repl(options)
 }
 
@@ -662,7 +681,10 @@ pub(crate) async fn run_cli_turn_with_address_and_ingress_and_error_mode_outcome
         Some(observer)
     } else if live_surface_enabled {
         let render_width = detect_cli_chat_render_width();
-        Some(build_cli_chat_live_surface_observer(render_width))
+        Some(build_cli_chat_live_surface_observer(
+            render_width,
+            turn_config.conversation.show_reasoning(),
+        ))
     } else {
         None
     };

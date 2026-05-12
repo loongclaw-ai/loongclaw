@@ -497,6 +497,7 @@ pub struct SessionSummaryRecord {
     pub archived_at: Option<i64>,
     pub turn_count: usize,
     pub last_turn_at: Option<i64>,
+    pub first_user_message: Option<String>,
     pub last_error: Option<String>,
 }
 
@@ -1354,6 +1355,19 @@ impl SessionRepository {
         Self::latest_resumable_root_session_summary_with_conn(&conn)
     }
 
+    pub fn list_recent_resumable_root_session_summaries(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SessionSummaryRecord>, String> {
+        let conn = self.open_connection()?;
+        let mut sessions = Self::list_resumable_root_session_summaries_with_conn(&conn)?;
+        sort_session_summaries(&mut sessions);
+        if sessions.len() > limit {
+            sessions.truncate(limit);
+        }
+        Ok(sessions)
+    }
+
     pub fn load_session_observation(
         &self,
         session_id: &str,
@@ -1404,6 +1418,32 @@ impl SessionRepository {
         }
         self.load_session(&session_id)?
             .ok_or_else(|| format!("session `{session_id}` missing after update"))
+    }
+
+    pub fn update_session_label(
+        &self,
+        session_id: &str,
+        label: Option<String>,
+    ) -> Result<SessionRecord, String> {
+        let session_id = normalize_required_text(session_id, "session_id")?;
+        let conn = self.open_connection()?;
+        let affected = conn
+            .execute(
+                "UPDATE sessions
+                 SET label = ?2, updated_at = ?3
+                 WHERE session_id = ?1",
+                params![
+                    session_id,
+                    normalize_optional_text(label),
+                    unix_ts_now(),
+                ],
+            )
+            .map_err(|error| format!("update session label failed: {error}"))?;
+        if affected == 0 {
+            return Err(format!("session `{session_id}` not found"));
+        }
+        self.load_session(&session_id)?
+            .ok_or_else(|| format!("session `{session_id}` missing after label update"))
     }
 
     pub fn update_session_state_if_current(
@@ -1648,7 +1688,8 @@ impl SessionRepository {
                     s.last_error,
                     archived.archived_at,
                     COUNT(t.id) AS turn_count,
-                    MAX(t.ts) AS last_turn_at
+                    MAX(t.ts) AS last_turn_at,
+                    first_user_turn.first_user_message
                  FROM sessions s
                  LEFT JOIN (
                     SELECT session_id, MAX(ts) AS archived_at
@@ -1656,6 +1697,17 @@ impl SessionRepository {
                     WHERE event_kind = 'session_archived'
                     GROUP BY session_id
                  ) archived ON archived.session_id = s.session_id
+                 LEFT JOIN (
+                    SELECT t1.session_id, t1.content AS first_user_message
+                    FROM turns t1
+                    JOIN (
+                        SELECT session_id, MIN(ts) AS first_user_ts
+                        FROM turns
+                        WHERE role = 'user'
+                        GROUP BY session_id
+                    ) first_user ON first_user.session_id = t1.session_id AND first_user.first_user_ts = t1.ts
+                    WHERE t1.role = 'user'
+                 ) first_user_turn ON first_user_turn.session_id = s.session_id
                  JOIN visible v ON v.session_id = s.session_id
                  LEFT JOIN turns t ON t.session_id = s.session_id
                  GROUP BY
@@ -1667,7 +1719,8 @@ impl SessionRepository {
                     s.created_at,
                     s.updated_at,
                     s.last_error,
-                    archived.archived_at
+                    archived.archived_at,
+                    first_user_turn.first_user_message
                  ORDER BY s.updated_at DESC, s.session_id ASC",
             )
             .map_err(|error| format!("prepare visible session query failed: {error}"))?;
@@ -1685,6 +1738,7 @@ impl SessionRepository {
                     archived_at: row.get(8)?,
                     turn_count: row.get(9)?,
                     last_turn_at: row.get(10)?,
+                    first_user_message: row.get(11)?,
                 })
             })
             .map_err(|error| format!("query visible sessions failed: {error}"))?;
@@ -3503,7 +3557,8 @@ impl SessionRepository {
                     s.last_error,
                     archived.archived_at,
                     COUNT(t.id) AS turn_count,
-                    MAX(t.ts) AS last_turn_at
+                    MAX(t.ts) AS last_turn_at,
+                    first_user_turn.first_user_message
                  FROM sessions s
                  LEFT JOIN (
                     SELECT session_id, MAX(ts) AS archived_at
@@ -3511,6 +3566,17 @@ impl SessionRepository {
                     WHERE event_kind = 'session_archived'
                     GROUP BY session_id
                  ) archived ON archived.session_id = s.session_id
+                 LEFT JOIN (
+                    SELECT t1.session_id, t1.content AS first_user_message
+                    FROM turns t1
+                    JOIN (
+                        SELECT session_id, MIN(ts) AS first_user_ts
+                        FROM turns
+                        WHERE role = 'user'
+                        GROUP BY session_id
+                    ) first_user ON first_user.session_id = t1.session_id AND first_user.first_user_ts = t1.ts
+                    WHERE t1.role = 'user'
+                 ) first_user_turn ON first_user_turn.session_id = s.session_id
                  LEFT JOIN turns t ON t.session_id = s.session_id
                  WHERE s.session_id = ?1
                  GROUP BY
@@ -3522,7 +3588,8 @@ impl SessionRepository {
                     s.created_at,
                     s.updated_at,
                     s.last_error,
-                    archived.archived_at",
+                    archived.archived_at,
+                    first_user_turn.first_user_message",
                 params![session_id],
                 |row| {
                     Ok(RawSessionSummaryRecord {
@@ -3537,6 +3604,7 @@ impl SessionRepository {
                         archived_at: row.get(8)?,
                         turn_count: row.get(9)?,
                         last_turn_at: row.get(10)?,
+                        first_user_message: row.get(11)?,
                     })
                 },
             )
@@ -3595,7 +3663,8 @@ impl SessionRepository {
                     s.last_error,
                     archived.archived_at,
                     COUNT(t.id) AS turn_count,
-                    MAX(t.ts) AS last_turn_at
+                    MAX(t.ts) AS last_turn_at,
+                    first_user_turn.first_user_message
                  FROM sessions s
                  LEFT JOIN (
                     SELECT session_id, MAX(ts) AS archived_at
@@ -3603,6 +3672,17 @@ impl SessionRepository {
                     WHERE event_kind = 'session_archived'
                     GROUP BY session_id
                  ) archived ON archived.session_id = s.session_id
+                 LEFT JOIN (
+                    SELECT t1.session_id, t1.content AS first_user_message
+                    FROM turns t1
+                    JOIN (
+                        SELECT session_id, MIN(ts) AS first_user_ts
+                        FROM turns
+                        WHERE role = 'user'
+                        GROUP BY session_id
+                    ) first_user ON first_user.session_id = t1.session_id AND first_user.first_user_ts = t1.ts
+                    WHERE t1.role = 'user'
+                 ) first_user_turn ON first_user_turn.session_id = s.session_id
                  LEFT JOIN turns t ON t.session_id = s.session_id
                  WHERE s.kind = 'root'
                  GROUP BY
@@ -3614,7 +3694,8 @@ impl SessionRepository {
                     s.created_at,
                     s.updated_at,
                     s.last_error,
-                    archived.archived_at",
+                    archived.archived_at,
+                    first_user_turn.first_user_message",
             )
             .map_err(|error| format!("prepare concrete session summary query failed: {error}"))?;
         let rows = stmt
@@ -3631,6 +3712,7 @@ impl SessionRepository {
                     archived_at: row.get(8)?,
                     turn_count: row.get(9)?,
                     last_turn_at: row.get(10)?,
+                    first_user_message: row.get(11)?,
                 })
             })
             .map_err(|error| format!("query concrete session summaries failed: {error}"))?;
@@ -3695,6 +3777,7 @@ impl SessionRepository {
                 archived_at: None,
                 turn_count,
                 last_turn_at: Some(updated_at),
+                first_user_message: None,
                 last_error: None,
             };
             sessions.push(summary);
@@ -4112,9 +4195,27 @@ impl SessionRepository {
             archived_at: None,
             turn_count: turn_count.max(0) as usize,
             last_turn_at: Some(updated_at),
+            first_user_message: first_user_message_for_legacy_session(conn, session_id)?,
             last_error: None,
         }))
     }
+}
+
+fn first_user_message_for_legacy_session(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT content
+         FROM turns
+         WHERE session_id = ?1 AND role = 'user'
+         ORDER BY ts ASC, id ASC
+         LIMIT 1",
+        params![session_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|error| format!("load legacy first user message failed: {error}"))
 }
 
 #[derive(Debug)]
@@ -4142,6 +4243,7 @@ struct RawSessionSummaryRecord {
     archived_at: Option<i64>,
     turn_count: i64,
     last_turn_at: Option<i64>,
+    first_user_message: Option<String>,
 }
 
 #[derive(Debug)]
@@ -4320,6 +4422,7 @@ impl SessionSummaryRecord {
             archived_at: raw.archived_at,
             turn_count: raw.turn_count.max(0) as usize,
             last_turn_at: raw.last_turn_at,
+            first_user_message: raw.first_user_message,
             last_error: raw.last_error,
         })
     }
@@ -4685,9 +4788,24 @@ fn is_resumable_root_session_summary(summary: &SessionSummaryRecord) -> bool {
 fn sort_session_summaries(sessions: &mut [SessionSummaryRecord]) {
     sessions.sort_by(|left, right| {
         right
-            .updated_at
-            .cmp(&left.updated_at)
-            .then_with(|| left.session_id.cmp(&right.session_id))
+            .last_turn_at
+            .unwrap_or(right.updated_at)
+            .cmp(&left.last_turn_at.unwrap_or(left.updated_at))
+            .then_with(|| {
+                right
+                    .updated_at
+                    .cmp(&left.updated_at)
+            })
+            .then_with(|| {
+                right
+                    .created_at
+                    .cmp(&left.created_at)
+            })
+            .then_with(|| {
+                left
+                    .session_id
+                    .cmp(&right.session_id)
+            })
     });
 }
 

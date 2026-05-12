@@ -1,9 +1,10 @@
 use crate::chat::chat_surface::i18n::{I18nService, Language, SurfaceCopy};
 use crate::chat::chat_surface::scroll_state::ScrollState;
 use crate::chat::chat_surface::utils::*;
+use crate::chat::control_plane::ChatControlPlaneSessionSummary;
 use crate::config::{ProviderKind, ReasoningEffort};
 use crate::provider::ProviderModelCatalogEntry;
-use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -15,6 +16,8 @@ use ratatui::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandAction {
     RunCommand(&'static str),
+    ResumeSession(String),
+    ArchiveSession(String),
     OpenSettings(SettingsSurfaceFocus),
     ApplySettings(SettingsCommandAction),
     OpenModelReasoning(ProviderModelCatalogEntry),
@@ -40,6 +43,24 @@ pub enum SettingsCommandAction {
     SetWebProvider(String),
     InstallSkillPack(String),
     RemoveSkillPack(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeSessionEntry {
+    pub session_id: String,
+    pub label: String,
+    pub secondary_label: Option<String>,
+    pub status_tag: Option<String>,
+    pub description: String,
+    pub named: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResumeSessionPickerState {
+    pub recent_entries: Vec<ChatControlPlaneSessionSummary>,
+    pub visible_entries: Vec<ChatControlPlaneSessionSummary>,
+    pub selected_session_id: Option<String>,
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,6 +261,12 @@ pub struct CommandPalette {
     reasoning_entries: Vec<SettingsEntry>,
     reasoning_status: Option<String>,
     reasoning_model_label: Option<String>,
+    resume_entries: Vec<ResumeSessionEntry>,
+    resume_status: Option<String>,
+    resume_named_only: bool,
+    resume_sort_mode: ResumeSortMode,
+    resume_scope_mode: ResumeScopeMode,
+    resume_picker_state: Option<ResumeSessionPickerState>,
     skills: Vec<SkillEntry>,
     mode: PaletteMode,
     scroll_state: ScrollState,
@@ -252,7 +279,20 @@ enum PaletteMode {
     Settings,
     Models,
     Reasoning,
+    Resume,
     Skills,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumeSortMode {
+    Recent,
+    Alpha,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumeScopeMode {
+    RecentRoots,
+    VisibleLineage,
 }
 
 impl CommandPalette {
@@ -281,6 +321,12 @@ impl CommandPalette {
             reasoning_entries: Vec::new(),
             reasoning_status: None,
             reasoning_model_label: None,
+            resume_entries: Vec::new(),
+            resume_status: None,
+            resume_named_only: false,
+            resume_sort_mode: ResumeSortMode::Recent,
+            resume_scope_mode: ResumeScopeMode::RecentRoots,
+            resume_picker_state: None,
             skills,
             mode: PaletteMode::Commands,
             scroll_state: ScrollState::new(),
@@ -361,6 +407,102 @@ impl CommandPalette {
         self.scroll_state.scroll_top = 0;
     }
 
+    pub fn show_resume_sessions(
+        &mut self,
+        state: ResumeSessionPickerState,
+    ) {
+        self.mode = PaletteMode::Resume;
+        self.query.clear();
+        if self.resume_picker_state.is_none() {
+            self.resume_named_only = false;
+            self.resume_sort_mode = ResumeSortMode::Recent;
+            self.resume_scope_mode = ResumeScopeMode::RecentRoots;
+        }
+        self.resume_status = state.status.clone();
+        self.resume_picker_state = Some(state);
+        self.refresh_resume_entries();
+        self.scroll_state.scroll_top = 0;
+    }
+
+    fn refresh_resume_entries(&mut self) {
+        let Some(state) = self.resume_picker_state.as_ref() else {
+            self.resume_entries.clear();
+            self.resume_status = None;
+            self.scroll_state.selected_idx = Some(0);
+            return;
+        };
+        let current_session_id = state.selected_session_id.as_deref();
+        let source_sessions = match self.resume_scope_mode {
+            ResumeScopeMode::RecentRoots => &state.recent_entries,
+            ResumeScopeMode::VisibleLineage => &state.visible_entries,
+        };
+        let mut sorted_sessions = source_sessions.iter().cloned().collect::<Vec<_>>();
+        sorted_sessions.sort_by(|left, right| compare_resume_recent_priority(left, right));
+        self.resume_entries = sorted_sessions
+            .iter()
+            .filter(|session| should_display_resume_session(session, current_session_id))
+            .map(|session| {
+                let base_label = resume_primary_label(&session);
+                let label = if current_session_id == Some(session.session_id.as_str()) {
+                    format!("{base_label} · current")
+                } else {
+                    base_label
+                };
+                let secondary_label = resume_secondary_label(&session, label.as_str());
+                let named = is_named_resume_session(&session);
+                ResumeSessionEntry {
+                    description: format_resume_session_description(&ResumeSessionEntrySource {
+                        session_id: session.session_id.clone(),
+                        turn_count: session.turn_count,
+                        last_turn_at: session.last_turn_at,
+                        first_user_message: session.first_user_message.clone(),
+                        terminal_status: session.terminal_status.clone(),
+                        last_turn_excerpt: session.last_turn_excerpt.clone(),
+                    }),
+                    session_id: session.session_id.clone(),
+                    label,
+                    secondary_label,
+                    status_tag: session
+                        .terminal_status
+                        .clone()
+                        .or_else(|| Some(session.state.clone())),
+                    named,
+                }
+            })
+            .collect();
+        self.resume_status = Some(format!(
+            "{}{}",
+            state.status
+                .as_deref()
+                .map(|status| format!("{status} · "))
+                .unwrap_or_default(),
+            format!(
+                "Enter resume · Esc close · Ctrl+N named {} · Ctrl+S sort {} · Ctrl+O scope {}",
+            if self.resume_named_only { "on" } else { "off" },
+            match self.resume_sort_mode {
+                ResumeSortMode::Recent => "recent",
+                ResumeSortMode::Alpha => "alpha",
+            },
+            match self.resume_scope_mode {
+                ResumeScopeMode::RecentRoots => "recent-roots",
+                ResumeScopeMode::VisibleLineage => "visible-lineage",
+            }
+            )
+        ));
+        self.scroll_state.selected_idx = Some(
+            state
+                .selected_session_id
+                .as_deref()
+                .and_then(|session_id| {
+                    self.resume_entries
+                        .iter()
+                        .position(|entry| entry.session_id == session_id)
+                })
+                .or_else(|| (!self.resume_entries.is_empty()).then_some(0))
+                .unwrap_or(0),
+        );
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn show_skills(&mut self, query: &str) {
         self.mode = PaletteMode::Skills;
@@ -386,7 +528,8 @@ impl CommandPalette {
             PaletteMode::Commands
             | PaletteMode::Settings
             | PaletteMode::Models
-            | PaletteMode::Reasoning => Self::FOOTER_ROWS,
+            | PaletteMode::Reasoning
+            | PaletteMode::Resume => Self::FOOTER_ROWS,
             PaletteMode::Skills => Self::SKILL_HINT_ROWS,
         };
         Self::visible_rows_for_total(self.filtered_item_count()) + footer_rows
@@ -405,7 +548,8 @@ impl CommandPalette {
             self.render_settings_mode(f, area, filtered, visible_rows);
             return;
         }
-        if matches!(self.mode, PaletteMode::Models | PaletteMode::Reasoning) {
+        if matches!(self.mode, PaletteMode::Models | PaletteMode::Reasoning | PaletteMode::Resume)
+        {
             self.render_model_mode(f, area, filtered, visible_rows);
             return;
         }
@@ -489,16 +633,34 @@ impl CommandPalette {
                             }),
                     ),
                 ];
-                if !status_tag.is_empty() {
+                if let Some(secondary_label) = entry
+                    .secondary_label
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
                     spans.push(Span::raw(" "));
                     spans.push(Span::styled(
-                        status_tag,
+                        format!("({secondary_label})"),
+                        Style::default().fg(if is_selected {
+                            SURFACE_ACCENT
+                        } else {
+                            SURFACE_DIM_GRAY
+                        }),
+                    ));
+                }
+                if !status_tag.is_empty() {
+                    let status_style = if self.mode == PaletteMode::Resume {
+                        resume_status_tag_style(status_tag.as_str(), is_selected)
+                    } else {
                         Style::default().fg(if is_selected {
                             SURFACE_ACCENT
                         } else {
                             SURFACE_COTTON_CANDY
-                        }),
-                    ));
+                        })
+                    };
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(status_tag, status_style));
                 }
                 spans.push(Span::raw(gap));
                 spans.push(Span::styled(
@@ -525,6 +687,11 @@ impl CommandPalette {
                 .map(|status| truncate(status, area.width.saturating_sub(2) as usize))
                 .unwrap_or_else(|| "Enter apply · Esc close · type to filter".to_owned()),
             PaletteMode::Models | PaletteMode::Reasoning => String::new(),
+            PaletteMode::Resume => self
+                .resume_status
+                .as_deref()
+                .map(|status| truncate(status, area.width.saturating_sub(2) as usize))
+                .unwrap_or_else(|| "Enter resume · Esc close · type to filter".to_owned()),
             PaletteMode::Skills => String::new(),
         };
         let count_line = ListItem::new(Line::from(vec![Span::styled(
@@ -827,16 +994,34 @@ impl CommandPalette {
                             }),
                     ),
                 ];
-                if !status_tag.is_empty() {
+                if let Some(secondary_label) = entry
+                    .secondary_label
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
                     spans.push(Span::raw(" "));
                     spans.push(Span::styled(
-                        status_tag,
+                        format!("({secondary_label})"),
+                        Style::default().fg(if is_selected {
+                            SURFACE_ACCENT
+                        } else {
+                            SURFACE_DIM_GRAY
+                        }),
+                    ));
+                }
+                if !status_tag.is_empty() {
+                    let status_style = if self.mode == PaletteMode::Resume {
+                        resume_status_tag_style(status_tag.as_str(), is_selected)
+                    } else {
                         Style::default().fg(if is_selected {
                             SURFACE_ACCENT
                         } else {
                             SURFACE_COTTON_CANDY
-                        }),
-                    ));
+                        })
+                    };
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(status_tag, status_style));
                 }
                 spans.push(Span::raw(gap));
                 spans.push(Span::styled(desc, Style::default().fg(SURFACE_GRAY)));
@@ -884,6 +1069,7 @@ impl CommandPalette {
                 .as_deref()
                 .map(|label| format!("model · reasoning · {label}"))
                 .unwrap_or_else(|| "model · reasoning".to_owned()),
+            PaletteMode::Resume => "session · resume".to_owned(),
             PaletteMode::Commands | PaletteMode::Settings | PaletteMode::Skills => String::new(),
         };
         f.render_widget(
@@ -900,6 +1086,7 @@ impl CommandPalette {
             let empty_text = match self.mode {
                 PaletteMode::Models => "  no models available",
                 PaletteMode::Reasoning => "  no reasoning options available",
+                PaletteMode::Resume => "  no resumable sessions available",
                 PaletteMode::Commands | PaletteMode::Settings | PaletteMode::Skills => {
                     "  no results"
                 }
@@ -975,6 +1162,22 @@ impl CommandPalette {
                             }),
                     ),
                 ];
+                if let Some(secondary_label) = entry
+                    .secondary_label
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
+                        format!("({secondary_label})"),
+                        Style::default().fg(if is_selected {
+                            SURFACE_ACCENT
+                        } else {
+                            SURFACE_DIM_GRAY
+                        }),
+                    ));
+                }
                 if !status_tag.is_empty() {
                     spans.push(Span::raw(" "));
                     spans.push(Span::styled(
@@ -1030,6 +1233,20 @@ impl CommandPalette {
                 .as_deref()
                 .map(str::to_owned)
                 .unwrap_or_else(|| "Enter apply · Esc back · type to filter".to_owned()),
+            PaletteMode::Resume => self
+                .resume_status
+                .as_deref()
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    format!(
+                        "Enter resume · Esc close · Ctrl+N named-only {} · Ctrl+S sort {}",
+                        if self.resume_named_only { "on" } else { "off" },
+                        match self.resume_sort_mode {
+                            ResumeSortMode::Recent => "recent",
+                            ResumeSortMode::Alpha => "alpha",
+                        }
+                    )
+                }),
             PaletteMode::Commands | PaletteMode::Settings | PaletteMode::Skills => String::new(),
         };
         Line::from(vec![Span::styled(
@@ -1040,6 +1257,55 @@ impl CommandPalette {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<CommandAction> {
         match key.code {
+            KeyCode::Char('n')
+                if self.mode == PaletteMode::Resume
+                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.resume_named_only = !self.resume_named_only;
+                self.scroll_state.reset();
+                None
+            }
+            KeyCode::Char('s')
+                if self.mode == PaletteMode::Resume
+                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.resume_sort_mode = match self.resume_sort_mode {
+                    ResumeSortMode::Recent => ResumeSortMode::Alpha,
+                    ResumeSortMode::Alpha => ResumeSortMode::Recent,
+                };
+                self.refresh_resume_entries();
+                self.scroll_state.reset();
+                None
+            }
+            KeyCode::Char('o')
+                if self.mode == PaletteMode::Resume
+                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.resume_scope_mode = match self.resume_scope_mode {
+                    ResumeScopeMode::RecentRoots => ResumeScopeMode::VisibleLineage,
+                    ResumeScopeMode::VisibleLineage => ResumeScopeMode::RecentRoots,
+                };
+                self.refresh_resume_entries();
+                self.scroll_state.reset();
+                None
+            }
+            KeyCode::Char('d')
+                if self.mode == PaletteMode::Resume
+                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                let filtered = self.filtered_items();
+                let index = self
+                    .scroll_state
+                    .selected_idx
+                    .unwrap_or(0)
+                    .min(filtered.len().saturating_sub(1));
+                filtered.get(index).and_then(|entry| match &entry.action {
+                    CommandAction::ResumeSession(session_id) => {
+                        Some(CommandAction::ArchiveSession(session_id.clone()))
+                    }
+                    _ => None,
+                })
+            }
             KeyCode::Esc => {
                 if self.mode == PaletteMode::Settings
                     && self.settings_focus != SettingsSurfaceFocus::Overview
@@ -1055,6 +1321,11 @@ impl CommandPalette {
                         selected_label.as_deref(),
                     ));
                     self.scroll_state.scroll_top = 0;
+                    None
+                } else if self.mode == PaletteMode::Resume {
+                    self.mode = PaletteMode::Commands;
+                    self.query.clear();
+                    self.scroll_state.reset();
                     None
                 } else {
                     Some(CommandAction::Close)
@@ -1171,7 +1442,10 @@ impl CommandPalette {
                     return None;
                 }
                 let visible_rows = match self.mode {
-                    PaletteMode::Settings | PaletteMode::Models | PaletteMode::Reasoning => {
+                    PaletteMode::Settings
+                    | PaletteMode::Models
+                    | PaletteMode::Reasoning
+                    | PaletteMode::Resume => {
                         Self::visible_rows_for_total(filtered.len())
                             .min(area.height.saturating_sub(2) as usize)
                     }
@@ -1181,7 +1455,10 @@ impl CommandPalette {
                 };
                 let base_y = if matches!(
                     self.mode,
-                    PaletteMode::Settings | PaletteMode::Models | PaletteMode::Reasoning
+                    PaletteMode::Settings
+                        | PaletteMode::Models
+                        | PaletteMode::Reasoning
+                        | PaletteMode::Resume
                 ) {
                     area.y.saturating_add(1)
                 } else {
@@ -1235,6 +1512,7 @@ impl CommandPalette {
             PaletteMode::Settings => self.filtered_settings(),
             PaletteMode::Models => self.filtered_models(),
             PaletteMode::Reasoning => self.filtered_reasoning(),
+            PaletteMode::Resume => self.filtered_resume(),
             PaletteMode::Skills => self.filtered_skills(),
         }
     }
@@ -1254,6 +1532,7 @@ impl CommandPalette {
             .cloned()
             .map(|entry| PaletteItem {
                 label: self.display_label(&entry),
+                secondary_label: None,
                 status_tag: None,
                 description: entry.description,
                 action: entry.action,
@@ -1276,6 +1555,55 @@ impl CommandPalette {
         self.filtered_selection_entries(self.reasoning_entries.as_slice())
     }
 
+    fn filtered_resume(&self) -> Vec<PaletteItem> {
+        let query = self.query.trim().to_ascii_lowercase();
+        let mut entries = self
+            .resume_entries
+            .iter()
+            .filter(|entry| {
+                if self.resume_named_only && !entry.named {
+                    return false;
+                }
+                if query.is_empty() {
+                    return true;
+                }
+                entry.label.to_ascii_lowercase().contains(query.as_str())
+                    || entry
+                        .secondary_label
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_ascii_lowercase()
+                        .contains(query.as_str())
+                    || entry
+                        .description
+                        .to_ascii_lowercase()
+                        .contains(query.as_str())
+                    || entry
+                        .session_id
+                        .to_ascii_lowercase()
+                        .contains(query.as_str())
+            })
+            .collect::<Vec<_>>();
+
+        if self.resume_sort_mode == ResumeSortMode::Alpha {
+            entries.sort_by(|left, right| left.label.cmp(&right.label));
+        }
+
+        entries
+            .into_iter()
+            .map(|entry| PaletteItem {
+                label: entry.label.clone(),
+                secondary_label: entry.secondary_label.clone(),
+                status_tag: entry.status_tag.clone(),
+                description: entry.description.clone(),
+                action: CommandAction::ResumeSession(entry.session_id.clone()),
+                selectable: true,
+                match_target: None,
+                source_skill: None,
+            })
+            .collect()
+    }
+
     fn filtered_selection_entries(&self, entries: &[SettingsEntry]) -> Vec<PaletteItem> {
         let query = self.query.trim().to_ascii_lowercase();
         entries
@@ -1293,6 +1621,7 @@ impl CommandPalette {
             .cloned()
             .map(|entry| PaletteItem {
                 label: entry.label,
+                secondary_label: None,
                 status_tag: entry.status_tag,
                 description: if entry.category_tag.is_empty() {
                     entry.description
@@ -1359,6 +1688,7 @@ impl CommandPalette {
             .into_iter()
             .map(|(skill, match_target)| PaletteItem {
                 label: format!("${}", skill.name),
+                secondary_label: None,
                 status_tag: None,
                 description: format_skill_popup_description(skill, &match_target),
                 action: CommandAction::InsertText(format!("${} ", skill.name)),
@@ -1825,6 +2155,7 @@ fn description_match_target(
 #[derive(Debug, Clone)]
 struct PaletteItem {
     label: String,
+    secondary_label: Option<String>,
     status_tag: Option<String>,
     description: String,
     action: CommandAction,
@@ -1925,6 +2256,144 @@ fn truncate(text: &str, max_len: usize) -> String {
     out
 }
 
+fn format_resume_session_description(session: &ResumeSessionEntrySource) -> String {
+    let mut parts = Vec::new();
+    if let Some(excerpt) = session.last_turn_excerpt.as_deref()
+        && !excerpt.trim().is_empty()
+    {
+        parts.push(truncate(excerpt.trim(), 28));
+    } else if let Some(first_user_message) = session.first_user_message.as_deref()
+        && !first_user_message.trim().is_empty()
+    {
+        parts.push(truncate(first_user_message.trim(), 28));
+    }
+    parts.push(session.session_id.clone());
+    parts.push(format!("turns={}", session.turn_count));
+    if session.terminal_status.is_none()
+        && let Some(last_turn_at) = session.last_turn_at
+    {
+        parts.push(format!("last {}", format_resume_timestamp(last_turn_at)));
+    }
+    parts.join(" · ")
+}
+
+fn format_resume_timestamp(timestamp: i64) -> String {
+    if timestamp <= 0 {
+        return "-".to_owned();
+    }
+
+    match time::OffsetDateTime::from_unix_timestamp(timestamp) {
+        Ok(value) => {
+            let month = value.month() as u8;
+            format!("{:02}-{:02} {:02}:{:02}", month, value.day(), value.hour(), value.minute())
+        }
+        Err(_) => timestamp.to_string(),
+    }
+}
+
+fn resume_status_tag_style(tag: &str, selected: bool) -> Style {
+    let color = if selected {
+        SURFACE_ACCENT
+    } else if tag.eq_ignore_ascii_case("failed") || tag.eq_ignore_ascii_case("denied") {
+        SURFACE_COTTON_CANDY
+    } else if tag.eq_ignore_ascii_case("completed") || tag.eq_ignore_ascii_case("ready") {
+        SURFACE_CYAN
+    } else {
+        SURFACE_GRAY
+    };
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
+
+struct ResumeSessionEntrySource {
+    session_id: String,
+    turn_count: usize,
+    last_turn_at: Option<i64>,
+    first_user_message: Option<String>,
+    terminal_status: Option<String>,
+    last_turn_excerpt: Option<String>,
+}
+
+fn is_named_resume_session(session: &ChatControlPlaneSessionSummary) -> bool {
+    session.explicit_label.is_some()
+}
+
+fn resume_primary_label(session: &ChatControlPlaneSessionSummary) -> String {
+    if let Some(explicit_label) = session.explicit_label.as_deref() {
+        return explicit_label.to_owned();
+    }
+    if let Some(first_user_message) = session.first_user_message.as_deref()
+        && !first_user_message.trim().is_empty()
+    {
+        return truncate(first_user_message.trim(), 40);
+    }
+    session.label.clone()
+}
+
+fn resume_secondary_label(session: &ChatControlPlaneSessionSummary, primary_label: &str) -> Option<String> {
+    (!session.label.is_empty() && session.label != primary_label).then_some(session.label.clone())
+}
+
+fn looks_like_generated_resume_probe_session_id(session_id: &str) -> bool {
+    let normalized = session_id.trim().to_ascii_lowercase();
+    normalized.starts_with("skill-")
+        || normalized.contains("-skill-")
+        || normalized.contains("-smoke-")
+}
+
+fn should_display_resume_session(
+    session: &ChatControlPlaneSessionSummary,
+    current_session_id: Option<&str>,
+) -> bool {
+    if current_session_id == Some(session.session_id.as_str()) {
+        return true;
+    }
+    if is_named_resume_session(session) {
+        return true;
+    }
+    if looks_like_generated_resume_probe_session_id(session.session_id.as_str()) {
+        return false;
+    }
+    session
+        .last_turn_excerpt
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|excerpt| !excerpt.is_empty())
+        || session
+            .first_user_message
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|excerpt| !excerpt.is_empty())
+}
+
+fn resume_recent_rank(session: &ChatControlPlaneSessionSummary) -> u8 {
+    if session.explicit_label.is_some() {
+        return 0;
+    }
+    if session
+        .first_user_message
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|message| !message.is_empty())
+    {
+        return 1;
+    }
+    if session.session_id == "default" || session.label == "legacy chat" {
+        return 3;
+    }
+    2
+}
+
+fn compare_resume_recent_priority(
+    left: &ChatControlPlaneSessionSummary,
+    right: &ChatControlPlaneSessionSummary,
+) -> std::cmp::Ordering {
+    resume_recent_rank(left)
+        .cmp(&resume_recent_rank(right))
+        .then_with(|| right.last_turn_at.cmp(&left.last_turn_at))
+        .then_with(|| right.updated_at.cmp(&left.updated_at))
+        .then_with(|| left.session_id.cmp(&right.session_id))
+}
+
 fn area_contains(area: Rect, column: u16, row: u16) -> bool {
     column >= area.x
         && column < area.x.saturating_add(area.width)
@@ -1934,7 +2403,11 @@ fn area_contains(area: Rect, column: u16, row: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandAction, CommandPalette, SettingsEntry, SettingsSurfaceFocus, SkillEntry};
+    use super::{
+        CommandAction, CommandPalette, ResumeSessionPickerState, SettingsEntry,
+        SettingsSurfaceFocus, SkillEntry,
+    };
+    use crate::chat::control_plane::ChatControlPlaneSessionSummary;
     use crate::chat::chat_surface::i18n::Language;
     use crate::config::ReasoningEffort;
     use crate::provider::ProviderModelCatalogEntry;
@@ -2160,6 +2633,669 @@ mod tests {
             Some(CommandAction::OpenModelReasoning(entry)) if entry.model == "gpt-5" => {}
             other => panic!("expected escape to restore model selector, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn resume_palette_selects_resume_session_action() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.show_resume_sessions(ResumeSessionPickerState {
+            recent_entries: vec![
+                crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                    session_id: "chat-older".to_owned(),
+                    label: "older thread".to_owned(),
+                    explicit_label: Some("older thread".to_owned()),
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 4,
+                    updated_at: 10,
+                    last_turn_at: Some(10),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: None,
+                    last_error: None,
+                },
+                crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                    session_id: "chat-current".to_owned(),
+                    label: "current thread".to_owned(),
+                    explicit_label: Some("current thread".to_owned()),
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 8,
+                    updated_at: 20,
+                    last_turn_at: Some(20),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: None,
+                    last_error: None,
+                },
+            ],
+            visible_entries: Vec::new(),
+            selected_session_id: Some("chat-current".to_owned()),
+            status: Some("Enter resume · Esc close · type to filter".to_owned()),
+        });
+
+        match palette.handle_key(key(KeyCode::Enter)) {
+            Some(CommandAction::ResumeSession(session_id)) => {
+                assert_eq!(session_id, "chat-current");
+            }
+            other => panic!("expected ResumeSession action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_palette_escape_returns_to_commands_mode() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.show_resume_sessions(ResumeSessionPickerState {
+            recent_entries: vec![crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                session_id: "chat-current".to_owned(),
+                label: "current thread".to_owned(),
+                explicit_label: Some("current thread".to_owned()),
+                state: "ready".to_owned(),
+                kind: "root".to_owned(),
+                parent_session_id: None,
+                turn_count: 8,
+                updated_at: 20,
+                last_turn_at: Some(20),
+                first_user_message: None,
+                terminal_status: None,
+                last_turn_excerpt: None,
+                last_error: None,
+            }],
+            visible_entries: Vec::new(),
+            selected_session_id: Some("chat-current".to_owned()),
+            status: None,
+        });
+
+        assert_eq!(palette.handle_key(key(KeyCode::Esc)), None);
+        match palette.handle_key(key(KeyCode::Enter)) {
+            Some(CommandAction::RunCommand("/model")) => {}
+            other => panic!("expected commands mode to be restored after escape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_palette_renders_current_marker_and_session_metadata() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.show_resume_sessions(ResumeSessionPickerState {
+            recent_entries: vec![
+                crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                    session_id: "chat-current".to_owned(),
+                    label: "current thread".to_owned(),
+                    explicit_label: Some("current thread".to_owned()),
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 8,
+                    updated_at: 20,
+                    last_turn_at: Some(20),
+                    first_user_message: Some("show me the current thread status".to_owned()),
+                    terminal_status: Some("completed".to_owned()),
+                    last_turn_excerpt: Some("latest answer excerpt".to_owned()),
+                    last_error: None,
+                },
+                crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                    session_id: "chat-older".to_owned(),
+                    label: "older thread".to_owned(),
+                    explicit_label: Some("older thread".to_owned()),
+                    state: "failed".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 4,
+                    updated_at: 10,
+                    last_turn_at: Some(10),
+                    first_user_message: None,
+                    terminal_status: Some("failed".to_owned()),
+                    last_turn_excerpt: Some("older answer excerpt".to_owned()),
+                    last_error: Some("timeout".to_owned()),
+                },
+            ],
+            visible_entries: Vec::new(),
+            selected_session_id: Some("chat-current".to_owned()),
+            status: Some("Enter resume · Esc close · type to filter".to_owned()),
+        });
+
+        let rendered = render_to_string(&mut palette, Rect::new(0, 0, 120, 10));
+        assert!(rendered.contains("current thread · current"));
+        assert!(rendered.contains("completed"));
+        assert!(rendered.contains("older thread"));
+        assert!(rendered.contains("failed"));
+        assert!(rendered.contains("older answer excerpt"));
+    }
+
+    #[test]
+    fn resume_palette_ctrl_n_filters_to_named_sessions() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.show_resume_sessions(ResumeSessionPickerState {
+            recent_entries: vec![
+                crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                    session_id: "chat-current".to_owned(),
+                    label: "current thread".to_owned(),
+                    explicit_label: Some("current thread".to_owned()),
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 8,
+                    updated_at: 20,
+                    last_turn_at: Some(20),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: None,
+                    last_error: None,
+                },
+                crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                    session_id: "chat-unnamed".to_owned(),
+                    label: "root".to_owned(),
+                    explicit_label: None,
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 1,
+                    updated_at: 10,
+                    last_turn_at: Some(10),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: None,
+                    last_error: None,
+                },
+            ],
+            visible_entries: Vec::new(),
+            selected_session_id: Some("chat-current".to_owned()),
+            status: None,
+        });
+
+        let _ = palette.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        let rendered = render_to_string(&mut palette, Rect::new(0, 0, 72, 10));
+        assert!(rendered.contains("current thread"));
+        assert!(!rendered.contains("chat-unnamed"));
+    }
+
+    #[test]
+    fn resume_palette_ctrl_s_toggles_alpha_sort() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.show_resume_sessions(ResumeSessionPickerState {
+            recent_entries: vec![
+                crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                    session_id: "chat-z".to_owned(),
+                    label: "zeta thread".to_owned(),
+                    explicit_label: Some("zeta thread".to_owned()),
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 8,
+                    updated_at: 20,
+                    last_turn_at: Some(20),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: None,
+                    last_error: None,
+                },
+                crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                    session_id: "chat-a".to_owned(),
+                    label: "alpha thread".to_owned(),
+                    explicit_label: Some("alpha thread".to_owned()),
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 4,
+                    updated_at: 10,
+                    last_turn_at: Some(10),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: None,
+                    last_error: None,
+                },
+            ],
+            visible_entries: Vec::new(),
+            selected_session_id: Some("chat-z".to_owned()),
+            status: None,
+        });
+
+        let _ = palette.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        let rendered = render_to_string(&mut palette, Rect::new(0, 0, 72, 10));
+        let alpha_idx = rendered.find("alpha thread").expect("alpha row");
+        let zeta_idx = rendered.find("zeta thread").expect("zeta row");
+        assert!(alpha_idx < zeta_idx);
+    }
+
+    #[test]
+    fn resume_palette_ctrl_o_toggles_scope_view() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.show_resume_sessions(ResumeSessionPickerState {
+            recent_entries: vec![crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                session_id: "chat-recent".to_owned(),
+                label: "recent thread".to_owned(),
+                explicit_label: Some("recent thread".to_owned()),
+                state: "ready".to_owned(),
+                kind: "root".to_owned(),
+                parent_session_id: None,
+                turn_count: 8,
+                updated_at: 20,
+                last_turn_at: Some(20),
+                first_user_message: None,
+                terminal_status: None,
+                last_turn_excerpt: None,
+                last_error: None,
+            }],
+            visible_entries: vec![crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                session_id: "chat-visible".to_owned(),
+                label: "visible lineage thread".to_owned(),
+                explicit_label: Some("visible lineage thread".to_owned()),
+                state: "ready".to_owned(),
+                kind: "root".to_owned(),
+                parent_session_id: None,
+                turn_count: 4,
+                updated_at: 10,
+                last_turn_at: Some(10),
+                first_user_message: None,
+                terminal_status: None,
+                last_turn_excerpt: None,
+                last_error: None,
+            }],
+            selected_session_id: Some("chat-recent".to_owned()),
+            status: None,
+        });
+
+        let recent_rendered = render_to_string(&mut palette, Rect::new(0, 0, 72, 10));
+        assert!(recent_rendered.contains("chat-recent"));
+        assert!(!recent_rendered.contains("chat-visible"));
+
+        let _ = palette.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        let visible_rendered = render_to_string(&mut palette, Rect::new(0, 0, 72, 10));
+        assert!(!visible_rendered.contains("chat-recent"));
+        assert!(visible_rendered.contains("chat-visible"));
+    }
+
+    #[test]
+    fn resume_palette_refresh_keeps_named_sort_and_scope_modes() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.show_resume_sessions(ResumeSessionPickerState {
+            recent_entries: vec![crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                session_id: "chat-z".to_owned(),
+                label: "zeta thread".to_owned(),
+                explicit_label: Some("zeta thread".to_owned()),
+                state: "ready".to_owned(),
+                kind: "root".to_owned(),
+                parent_session_id: None,
+                turn_count: 8,
+                updated_at: 20,
+                last_turn_at: Some(20),
+                first_user_message: None,
+                terminal_status: None,
+                last_turn_excerpt: None,
+                last_error: None,
+            }],
+            visible_entries: vec![
+                crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                    session_id: "chat-root".to_owned(),
+                    label: "root".to_owned(),
+                    explicit_label: None,
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 1,
+                    updated_at: 10,
+                    last_turn_at: Some(10),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: None,
+                    last_error: None,
+                },
+                crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                    session_id: "chat-a".to_owned(),
+                    label: "alpha thread".to_owned(),
+                    explicit_label: Some("alpha thread".to_owned()),
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 4,
+                    updated_at: 11,
+                    last_turn_at: Some(11),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: None,
+                    last_error: None,
+                },
+            ],
+            selected_session_id: Some("chat-z".to_owned()),
+            status: None,
+        });
+
+        let _ = palette.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        let _ = palette.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        let _ = palette.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+
+        palette.show_resume_sessions(ResumeSessionPickerState {
+            recent_entries: vec![crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                session_id: "chat-z".to_owned(),
+                label: "zeta thread".to_owned(),
+                explicit_label: Some("zeta thread".to_owned()),
+                state: "ready".to_owned(),
+                kind: "root".to_owned(),
+                parent_session_id: None,
+                turn_count: 8,
+                updated_at: 20,
+                last_turn_at: Some(20),
+                first_user_message: None,
+                terminal_status: None,
+                last_turn_excerpt: None,
+                last_error: None,
+            }],
+            visible_entries: vec![
+                crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                    session_id: "chat-root".to_owned(),
+                    label: "root".to_owned(),
+                    explicit_label: None,
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 1,
+                    updated_at: 10,
+                    last_turn_at: Some(10),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: None,
+                    last_error: None,
+                },
+                crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                    session_id: "chat-a".to_owned(),
+                    label: "alpha thread".to_owned(),
+                    explicit_label: Some("alpha thread".to_owned()),
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 4,
+                    updated_at: 11,
+                    last_turn_at: Some(11),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: None,
+                    last_error: None,
+                },
+            ],
+            selected_session_id: Some("chat-a".to_owned()),
+            status: None,
+        });
+
+        let rendered = render_to_string(&mut palette, Rect::new(0, 0, 72, 10));
+        assert!(rendered.contains("named on"));
+        assert!(rendered.contains("sort alpha"));
+        assert!(rendered.contains("alpha thread"));
+        assert!(!rendered.contains("chat-root"));
+    }
+
+    #[test]
+    fn resume_palette_ctrl_d_returns_archive_action() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.show_resume_sessions(ResumeSessionPickerState {
+            recent_entries: vec![crate::chat::control_plane::ChatControlPlaneSessionSummary {
+                session_id: "chat-archive".to_owned(),
+                label: "archive me".to_owned(),
+                explicit_label: Some("archive me".to_owned()),
+                state: "ready".to_owned(),
+                kind: "root".to_owned(),
+                parent_session_id: None,
+                turn_count: 3,
+                updated_at: 10,
+                last_turn_at: Some(10),
+                first_user_message: None,
+                terminal_status: None,
+                last_turn_excerpt: None,
+                last_error: None,
+            }],
+            visible_entries: Vec::new(),
+            selected_session_id: Some("chat-archive".to_owned()),
+            status: None,
+        });
+
+        match palette.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)) {
+            Some(CommandAction::ArchiveSession(session_id)) => {
+                assert_eq!(session_id, "chat-archive");
+            }
+            other => panic!("expected ArchiveSession action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_status_tag_style_distinguishes_terminal_states() {
+        let completed = super::resume_status_tag_style("completed", false);
+        let failed = super::resume_status_tag_style("failed", false);
+        let selected = super::resume_status_tag_style("ready", true);
+
+        assert_eq!(completed.fg, Some(super::SURFACE_CYAN));
+        assert_eq!(failed.fg, Some(super::SURFACE_COTTON_CANDY));
+        assert_eq!(selected.fg, Some(super::SURFACE_ACCENT));
+        assert!(completed.add_modifier.contains(Modifier::BOLD));
+        assert!(failed.add_modifier.contains(Modifier::BOLD));
+        assert!(selected.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn format_resume_timestamp_renders_compact_month_day_and_time() {
+        assert_eq!(super::format_resume_timestamp(1_700_000_000), "11-14 22:13");
+    }
+
+    #[test]
+    fn resume_palette_hides_generated_probe_sessions_unless_current() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.show_resume_sessions(ResumeSessionPickerState {
+            recent_entries: vec![
+                ChatControlPlaneSessionSummary {
+                    session_id: "bash-smoke-1777984209".to_owned(),
+                    label: "root".to_owned(),
+                    explicit_label: None,
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 9,
+                    updated_at: 2,
+                    last_turn_at: Some(2),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: Some("smoke answer".to_owned()),
+                    last_error: None,
+                },
+                ChatControlPlaneSessionSummary {
+                    session_id: "human-session".to_owned(),
+                    label: "root".to_owned(),
+                    explicit_label: None,
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 3,
+                    updated_at: 1,
+                    last_turn_at: Some(1),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: Some("normal answer".to_owned()),
+                    last_error: None,
+                },
+            ],
+            visible_entries: Vec::new(),
+            selected_session_id: Some("bash-smoke-1777984209".to_owned()),
+            status: Some("Local sessions".to_owned()),
+        });
+
+        match palette.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
+            Some(CommandAction::ResumeSession(session_id)) => {
+                assert_eq!(session_id, "bash-smoke-1777984209");
+            }
+            other => panic!("expected current probe session to stay visible, got {other:?}"),
+        }
+
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.show_resume_sessions(ResumeSessionPickerState {
+            recent_entries: vec![
+                ChatControlPlaneSessionSummary {
+                    session_id: "bash-smoke-1777984209".to_owned(),
+                    label: "root".to_owned(),
+                    explicit_label: None,
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 9,
+                    updated_at: 2,
+                    last_turn_at: Some(2),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: Some("smoke answer".to_owned()),
+                    last_error: None,
+                },
+                ChatControlPlaneSessionSummary {
+                    session_id: "human-session".to_owned(),
+                    label: "root".to_owned(),
+                    explicit_label: None,
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 3,
+                    updated_at: 1,
+                    last_turn_at: Some(1),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: Some("normal answer".to_owned()),
+                    last_error: None,
+                },
+            ],
+            visible_entries: Vec::new(),
+            selected_session_id: Some("human-session".to_owned()),
+            status: Some("Local sessions".to_owned()),
+        });
+
+        match palette.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
+            Some(CommandAction::ResumeSession(session_id)) => {
+                assert_eq!(session_id, "human-session");
+            }
+            other => panic!("expected probe session to be hidden for non-current selection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_palette_prefers_first_user_message_as_primary_label_and_keeps_fallback_identity_secondary() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.show_resume_sessions(ResumeSessionPickerState {
+            recent_entries: vec![ChatControlPlaneSessionSummary {
+                session_id: "chat-123".to_owned(),
+                label: "chat".to_owned(),
+                explicit_label: None,
+                state: "ready".to_owned(),
+                kind: "root".to_owned(),
+                parent_session_id: None,
+                turn_count: 3,
+                updated_at: 1,
+                last_turn_at: Some(1),
+                first_user_message: Some("User asks for a concise repo summary".to_owned()),
+                terminal_status: None,
+                last_turn_excerpt: Some("assistant answer".to_owned()),
+                last_error: None,
+            }],
+            visible_entries: Vec::new(),
+            selected_session_id: Some("chat-123".to_owned()),
+            status: Some("Local sessions".to_owned()),
+        });
+
+        let rendered = render_to_string(&mut palette, Rect::new(0, 0, 88, 10));
+        assert!(rendered.contains("User asks for a concise repo summary"));
+        assert!(rendered.contains("(chat)"));
+        assert!(!rendered.contains("chat · current ready"));
+    }
+
+    #[test]
+    fn resume_palette_recent_mode_prioritizes_named_and_first_user_sessions_over_legacy_generic_entries() {
+        let mut palette = CommandPalette::new(Language::En, Vec::new());
+        palette.show_resume_sessions(ResumeSessionPickerState {
+            recent_entries: vec![
+                ChatControlPlaneSessionSummary {
+                    session_id: "default".to_owned(),
+                    label: "legacy chat".to_owned(),
+                    explicit_label: None,
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 100,
+                    updated_at: 300,
+                    last_turn_at: Some(300),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: Some("legacy tail".to_owned()),
+                    last_error: None,
+                },
+                ChatControlPlaneSessionSummary {
+                    session_id: "chat-generic".to_owned(),
+                    label: "session".to_owned(),
+                    explicit_label: None,
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 10,
+                    updated_at: 250,
+                    last_turn_at: Some(250),
+                    first_user_message: None,
+                    terminal_status: None,
+                    last_turn_excerpt: Some("generic tail".to_owned()),
+                    last_error: None,
+                },
+                ChatControlPlaneSessionSummary {
+                    session_id: "chat-user".to_owned(),
+                    label: "chat".to_owned(),
+                    explicit_label: None,
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 5,
+                    updated_at: 200,
+                    last_turn_at: Some(200),
+                    first_user_message: Some("Summarize the project and key files".to_owned()),
+                    terminal_status: None,
+                    last_turn_excerpt: Some("assistant summary".to_owned()),
+                    last_error: None,
+                },
+                ChatControlPlaneSessionSummary {
+                    session_id: "chat-named".to_owned(),
+                    label: "release cleanup".to_owned(),
+                    explicit_label: Some("release cleanup".to_owned()),
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 8,
+                    updated_at: 100,
+                    last_turn_at: Some(100),
+                    first_user_message: Some("Investigate the release branch".to_owned()),
+                    terminal_status: None,
+                    last_turn_excerpt: Some("assistant reply".to_owned()),
+                    last_error: None,
+                },
+            ],
+            visible_entries: Vec::new(),
+            selected_session_id: Some("chat-named".to_owned()),
+            status: Some("Local sessions".to_owned()),
+        });
+
+        let rendered = render_to_string(&mut palette, Rect::new(0, 0, 120, 12));
+        let named_idx = rendered.find("release cleanup").expect("named");
+        let first_user_idx = rendered
+            .find("Summarize the project and key files")
+            .expect("first user");
+        let legacy_idx = rendered.find("legacy chat").expect("legacy");
+        assert!(named_idx < first_user_idx);
+        assert!(first_user_idx < legacy_idx);
+        assert!(rendered.contains("assistant summary"));
+    }
+
+    #[test]
+    fn resume_description_prefers_assistant_excerpt_over_first_user_message_when_both_exist() {
+        let description = super::format_resume_session_description(&super::ResumeSessionEntrySource {
+            session_id: "chat-1".to_owned(),
+            turn_count: 3,
+            last_turn_at: Some(10),
+            first_user_message: Some("first user asks for a summary".to_owned()),
+            terminal_status: None,
+            last_turn_excerpt: Some("assistant follow-up summary".to_owned()),
+        });
+
+        assert!(description.contains("assistant follow-up summary"));
+        assert!(!description.contains("first user asks for a summary"));
     }
 
     #[test]

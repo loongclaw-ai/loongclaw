@@ -141,11 +141,24 @@ pub(crate) fn initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx(
     let memory_label = "disabled".to_owned();
 
     #[cfg(feature = "memory-sqlite")]
-    let session_id =
-        resolve_cli_runtime_session_id(session_hint, session_requirement, &memory_config)?;
+    let session_id = if options.fresh_session
+        && session_requirement == CliSessionRequirement::AllowImplicitDefault
+        && session_hint.is_none()
+    {
+        fresh_cli_runtime_session_id(&memory_config)?
+    } else {
+        resolve_cli_runtime_session_id(session_hint, session_requirement, &memory_config)?
+    };
 
     #[cfg(not(feature = "memory-sqlite"))]
-    let session_id = resolve_cli_session_id(session_hint, session_requirement)?;
+    let session_id = if options.fresh_session
+        && session_requirement == CliSessionRequirement::AllowImplicitDefault
+        && session_hint.is_none()
+    {
+        fresh_cli_runtime_session_id()?
+    } else {
+        resolve_cli_session_id(session_hint, session_requirement)?
+    };
 
     let session_address = ConversationSessionAddress::from_session_id(session_id.clone());
     let runtime_kernel = crate::runtime_bridge::RuntimeKernelOwner::new(kernel_ctx);
@@ -159,12 +172,40 @@ pub(crate) fn initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx(
         turn_coordinator: ConversationTurnCoordinator::new(),
         runtime_kernel,
         explicit_acp_request,
+        force_onboard: options.force_onboard,
         effective_bootstrap_mcp_servers,
         effective_working_directory,
         memory_label,
         #[cfg(feature = "memory-sqlite")]
         memory_config,
     })
+}
+
+#[cfg(feature = "memory-sqlite")]
+pub(crate) fn fresh_cli_runtime_session_id(memory_config: &SessionStoreConfig) -> CliResult<String> {
+    let session_id = fresh_cli_session_id();
+    let repo = crate::session::repository::SessionRepository::new(memory_config)?;
+    repo.create_session(crate::session::repository::NewSessionRecord {
+        session_id: session_id.clone(),
+        kind: crate::session::repository::SessionKind::Root,
+        parent_session_id: None,
+        label: Some("chat".to_owned()),
+        state: crate::session::repository::SessionState::Ready,
+    })?;
+    Ok(session_id)
+}
+
+#[cfg(not(feature = "memory-sqlite"))]
+pub(crate) fn fresh_cli_runtime_session_id() -> CliResult<String> {
+    Ok(fresh_cli_session_id())
+}
+
+fn fresh_cli_session_id() -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    format!("chat-{}", millis)
 }
 
 fn resolve_cli_session_id(

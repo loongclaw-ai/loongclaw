@@ -24,11 +24,16 @@ pub(crate) struct ChatControlPlaneApprovalSummary {
 pub(crate) struct ChatControlPlaneSessionSummary {
     pub(crate) session_id: String,
     pub(crate) label: String,
+    pub(crate) explicit_label: Option<String>,
     pub(crate) state: String,
     pub(crate) kind: String,
     pub(crate) parent_session_id: Option<String>,
     pub(crate) turn_count: usize,
     pub(crate) updated_at: i64,
+    pub(crate) last_turn_at: Option<i64>,
+    pub(crate) first_user_message: Option<String>,
+    pub(crate) terminal_status: Option<String>,
+    pub(crate) last_turn_excerpt: Option<String>,
     pub(crate) last_error: Option<String>,
 }
 
@@ -99,24 +104,55 @@ impl ChatControlPlaneApprovalSummary {
 impl ChatControlPlaneSessionSummary {
     #[cfg(feature = "memory-sqlite")]
     fn from_session_summary(summary: &crate::session::repository::SessionSummaryRecord) -> Self {
-        let label = match summary.label.as_deref() {
-            Some(label) => label.to_owned(),
-            None => summary.kind.as_str().to_owned(),
-        };
+        let label = derive_resume_session_label(summary);
+        let explicit_label = summary
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .map(ToOwned::to_owned);
         let state = summary.state.as_str().to_owned();
         let kind = summary.kind.as_str().to_owned();
 
         Self {
             session_id: summary.session_id.clone(),
             label,
+            explicit_label,
             state,
             kind,
             parent_session_id: summary.parent_session_id.clone(),
             turn_count: summary.turn_count,
             updated_at: summary.updated_at,
+            last_turn_at: summary.last_turn_at,
+            first_user_message: summary.first_user_message.clone(),
+            terminal_status: None,
+            last_turn_excerpt: None,
             last_error: summary.last_error.clone(),
         }
     }
+}
+
+fn derive_resume_session_label(
+    summary: &crate::session::repository::SessionSummaryRecord,
+) -> String {
+    if let Some(label) = summary
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+    {
+        return label.to_owned();
+    }
+    if summary.kind == crate::session::repository::SessionKind::Root {
+        if summary.session_id == "default" {
+            return "legacy chat".to_owned();
+        }
+        if summary.session_id.starts_with("chat-") {
+            return "chat".to_owned();
+        }
+        return "session".to_owned();
+    }
+    summary.kind.as_str().to_owned()
 }
 
 impl ChatControlPlaneStore {
@@ -138,7 +174,10 @@ impl ChatControlPlaneStore {
         limit: usize,
     ) -> CliResult<Vec<ChatControlPlaneSessionSummary>> {
         let visible_sessions = self.repo.list_visible_sessions(scope_session_id)?;
-        let limited_sessions = visible_sessions.into_iter().take(limit);
+        let limited_sessions = visible_sessions
+            .into_iter()
+            .filter(|session| session.archived_at.is_none())
+            .take(limit);
         let mut summaries = Vec::new();
 
         for session in limited_sessions {
@@ -149,10 +188,38 @@ impl ChatControlPlaneStore {
         Ok(summaries)
     }
 
+    #[cfg(feature = "memory-sqlite")]
+    pub(crate) fn recent_resumable_root_sessions(
+        &self,
+        limit: usize,
+    ) -> CliResult<Vec<ChatControlPlaneSessionSummary>> {
+        let sessions = self.repo.list_recent_resumable_root_session_summaries(limit)?;
+        let mut summaries = Vec::new();
+
+        for session in sessions {
+            let mut summary = ChatControlPlaneSessionSummary::from_session_summary(&session);
+            if let Some(details) = self.session_details(session.session_id.as_str(), false)? {
+                summary.terminal_status = details.terminal_status;
+                summary.last_turn_excerpt = details.last_turn_excerpt;
+            }
+            summaries.push(summary);
+        }
+
+        Ok(summaries)
+    }
+
     #[cfg(not(feature = "memory-sqlite"))]
     pub(crate) fn visible_sessions(
         &self,
         _scope_session_id: &str,
+        _limit: usize,
+    ) -> CliResult<Vec<ChatControlPlaneSessionSummary>> {
+        Err("control plane requires memory-sqlite support".to_owned())
+    }
+
+    #[cfg(not(feature = "memory-sqlite"))]
+    pub(crate) fn recent_resumable_root_sessions(
+        &self,
         _limit: usize,
     ) -> CliResult<Vec<ChatControlPlaneSessionSummary>> {
         Err("control plane requires memory-sqlite support".to_owned())
@@ -247,8 +314,9 @@ impl ChatControlPlaneStore {
         let last_turn_ts = snapshot.turns.last().map(|turn| turn.ts);
         let last_turn_excerpt = snapshot
             .turns
-            .last()
-            .map(|turn| truncate_excerpt(turn.content.as_str(), 96));
+            .iter()
+            .rev()
+            .find_map(|turn| visible_resume_excerpt(turn.role.as_str(), turn.content.as_str()));
         let recent_event_lines = snapshot
             .events
             .iter()
@@ -331,6 +399,27 @@ fn truncate_excerpt(text: &str, max_chars: usize) -> String {
     excerpt
 }
 
+fn visible_resume_excerpt(role: &str, content: &str) -> Option<String> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if role == "assistant" && looks_like_internal_persisted_payload(trimmed) {
+        return None;
+    }
+    Some(truncate_excerpt(trimmed, 96))
+}
+
+fn looks_like_internal_persisted_payload(text: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<Value>(text) else {
+        return false;
+    };
+    parsed
+        .get(crate::memory::INTERNAL_PERSISTED_RECORD_MARKER)
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +440,162 @@ mod tests {
         assert_eq!(recent[3], "event#5=e");
     }
 
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn recent_resumable_root_sessions_returns_recent_roots_only() {
+        let (_config, memory_config, sqlite_path) =
+            crate::chat::tests::init_chat_test_memory("recent-resume-roots");
+        let repo = crate::session::repository::SessionRepository::new(&memory_config)
+            .expect("repository");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "root-a".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root A".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("root a");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "root-b".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root B".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("root b");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "child-c".to_owned(),
+            kind: crate::session::repository::SessionKind::DelegateChild,
+            parent_session_id: Some("root-b".to_owned()),
+            label: Some("Child C".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("child c");
+        crate::session::store::append_session_turn_direct("root-a", "user", "older", &memory_config)
+            .expect("turn a");
+        crate::session::store::append_session_turn_direct("root-b", "user", "newer", &memory_config)
+            .expect("turn b");
+        crate::session::store::append_session_turn_direct("child-c", "assistant", "child", &memory_config)
+            .expect("turn c");
+        let conn = rusqlite::Connection::open(sqlite_path.as_path()).expect("open sqlite");
+        conn.execute(
+            "UPDATE sessions SET updated_at = 100 WHERE session_id = 'root-a'",
+            [],
+        )
+        .expect("update root-a");
+        conn.execute(
+            "UPDATE sessions SET updated_at = 200 WHERE session_id = 'root-b'",
+            [],
+        )
+        .expect("update root-b");
+        conn.execute(
+            "UPDATE turns SET ts = 100 WHERE session_id = 'root-a'",
+            [],
+        )
+        .expect("update turns root-a");
+        conn.execute(
+            "UPDATE turns SET ts = 200 WHERE session_id = 'root-b'",
+            [],
+        )
+        .expect("update turns root-b");
+        conn.execute(
+            "UPDATE turns SET ts = 150 WHERE session_id = 'child-c'",
+            [],
+        )
+        .expect("update turns child-c");
+
+        let store = ChatControlPlaneStore::new(&memory_config).expect("store");
+        let sessions = store
+            .recent_resumable_root_sessions(8)
+            .expect("recent sessions");
+
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["root-b", "root-a"]
+        );
+
+        crate::chat::tests::cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn visible_sessions_omits_archived_lineage_entries() {
+        let (_config, memory_config, sqlite_path) =
+            crate::chat::tests::init_chat_test_memory("visible-sessions-omit-archived");
+        let repo = crate::session::repository::SessionRepository::new(&memory_config)
+            .expect("repository");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "root-session".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("root");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "child-live".to_owned(),
+            kind: crate::session::repository::SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Live Child".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("child live");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "child-archived".to_owned(),
+            kind: crate::session::repository::SessionKind::DelegateChild,
+            parent_session_id: Some("root-session".to_owned()),
+            label: Some("Archived Child".to_owned()),
+            state: crate::session::repository::SessionState::Completed,
+        })
+        .expect("child archived");
+        crate::session::store::append_session_turn_direct(
+            "root-session",
+            "user",
+            "root",
+            &memory_config,
+        )
+        .expect("root turn");
+        crate::session::store::append_session_turn_direct(
+            "child-live",
+            "assistant",
+            "live",
+            &memory_config,
+        )
+        .expect("live turn");
+        crate::session::store::append_session_turn_direct(
+            "child-archived",
+            "assistant",
+            "archived",
+            &memory_config,
+        )
+        .expect("archived turn");
+        repo.append_event(crate::session::repository::NewSessionEvent {
+            session_id: "child-archived".to_owned(),
+            event_kind: "session_archived".to_owned(),
+            actor_session_id: Some("root-session".to_owned()),
+            payload_json: serde_json::json!({}),
+        })
+        .expect("archive event");
+
+        let store = ChatControlPlaneStore::new(&memory_config).expect("store");
+        let sessions = store
+            .visible_sessions("root-session", 8)
+            .expect("visible sessions");
+        let ids = sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(ids.contains(&"root-session"));
+        assert!(ids.contains(&"child-live"));
+        assert!(!ids.contains(&"child-archived"));
+
+        crate::chat::tests::cleanup_chat_test_memory(&sqlite_path);
+    }
+
     #[test]
     fn truncate_excerpt_adds_ellipsis_when_needed() {
         let excerpt = truncate_excerpt("abcdef", 4);
@@ -358,6 +603,189 @@ mod tests {
 
         assert_eq!(excerpt, "abc…");
         assert_eq!(short, "abc");
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn derive_resume_session_label_softens_unnamed_root_sessions() {
+        let root_default = crate::session::repository::SessionSummaryRecord {
+            session_id: "default".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: None,
+            state: crate::session::repository::SessionState::Ready,
+            created_at: 0,
+            updated_at: 0,
+            archived_at: None,
+            turn_count: 1,
+            last_turn_at: Some(1),
+            first_user_message: None,
+            last_error: None,
+        };
+        let root_chat = crate::session::repository::SessionSummaryRecord {
+            session_id: "chat-123".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: None,
+            state: crate::session::repository::SessionState::Ready,
+            created_at: 0,
+            updated_at: 0,
+            archived_at: None,
+            turn_count: 1,
+            last_turn_at: Some(1),
+            first_user_message: None,
+            last_error: None,
+        };
+        let root_generic = crate::session::repository::SessionSummaryRecord {
+            session_id: "refactor-audit-gh-1777983772".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: None,
+            state: crate::session::repository::SessionState::Ready,
+            created_at: 0,
+            updated_at: 0,
+            archived_at: None,
+            turn_count: 1,
+            last_turn_at: Some(1),
+            first_user_message: None,
+            last_error: None,
+        };
+
+        assert_eq!(derive_resume_session_label(&root_default), "legacy chat");
+        assert_eq!(derive_resume_session_label(&root_chat), "chat");
+        assert_eq!(derive_resume_session_label(&root_generic), "session");
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn recent_resumable_root_sessions_include_first_user_message() {
+        let (_config, memory_config, sqlite_path) =
+            crate::chat::tests::init_chat_test_memory("recent-resume-first-user");
+        let repo = crate::session::repository::SessionRepository::new(&memory_config)
+            .expect("repository");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "root-a".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: None,
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("root a");
+        crate::session::store::append_session_turn_direct(
+            "root-a",
+            "user",
+            "Look at github.com/chumyin and summarize it",
+            &memory_config,
+        )
+        .expect("user turn");
+        crate::session::store::append_session_turn_direct(
+            "root-a",
+            "assistant",
+            "summary answer",
+            &memory_config,
+        )
+        .expect("assistant turn");
+
+        let store = ChatControlPlaneStore::new(&memory_config).expect("store");
+        let sessions = store
+            .recent_resumable_root_sessions(8)
+            .expect("recent sessions");
+        let root = sessions
+            .iter()
+            .find(|session| session.session_id == "root-a")
+            .expect("root session");
+
+        assert_eq!(
+            root.first_user_message.as_deref(),
+            Some("Look at github.com/chumyin and summarize it")
+        );
+
+        crate::chat::tests::cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn control_plane_summary_preserves_explicit_label_separately_from_fallback_title() {
+        let root_named = crate::session::repository::SessionSummaryRecord {
+            session_id: "chat-1".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Named Session".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+            created_at: 0,
+            updated_at: 0,
+            archived_at: None,
+            turn_count: 1,
+            last_turn_at: Some(1),
+            first_user_message: Some("hello".to_owned()),
+            last_error: None,
+        };
+        let root_fallback = crate::session::repository::SessionSummaryRecord {
+            session_id: "chat-2".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: None,
+            state: crate::session::repository::SessionState::Ready,
+            created_at: 0,
+            updated_at: 0,
+            archived_at: None,
+            turn_count: 1,
+            last_turn_at: Some(1),
+            first_user_message: Some("hello".to_owned()),
+            last_error: None,
+        };
+
+        let named = ChatControlPlaneSessionSummary::from_session_summary(&root_named);
+        let fallback = ChatControlPlaneSessionSummary::from_session_summary(&root_fallback);
+
+        assert_eq!(named.label, "Named Session");
+        assert_eq!(named.explicit_label.as_deref(), Some("Named Session"));
+        assert_eq!(fallback.label, "chat");
+        assert_eq!(fallback.explicit_label, None);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn recent_resumable_root_sessions_skip_internal_tail_when_deriving_excerpt() {
+        let (_config, memory_config, sqlite_path) =
+            crate::chat::tests::init_chat_test_memory("recent-resume-visible-excerpt");
+        let repo = crate::session::repository::SessionRepository::new(&memory_config)
+            .expect("repository");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "root-a".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root A".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("root a");
+        crate::session::store::append_session_turn_direct(
+            "root-a",
+            "assistant",
+            "Visible answer body",
+            &memory_config,
+        )
+        .expect("visible turn");
+        crate::session::store::append_session_turn_direct(
+            "root-a",
+            "assistant",
+            r#"{"_loong_internal":true,"event":"turn_checkpoint","payload":{"kind":"persist_reply"}}"#,
+            &memory_config,
+        )
+        .expect("internal tail turn");
+
+        let store = ChatControlPlaneStore::new(&memory_config).expect("store");
+        let sessions = store
+            .recent_resumable_root_sessions(8)
+            .expect("recent sessions");
+        let root = sessions
+            .iter()
+            .find(|session| session.session_id == "root-a")
+            .expect("root session");
+
+        assert_eq!(root.last_turn_excerpt.as_deref(), Some("Visible answer body"));
+
+        crate::chat::tests::cleanup_chat_test_memory(&sqlite_path);
     }
 
     #[cfg(feature = "memory-sqlite")]

@@ -114,7 +114,7 @@ mod latest_cli_session_selector_tests {
             parent_session_id: None,
             label: Some(session_id.to_owned()),
             state: SessionState::Ready,
-        })
+            })
         .expect("create root session");
     }
 

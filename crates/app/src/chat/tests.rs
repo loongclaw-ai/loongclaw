@@ -104,6 +104,26 @@ fn cli_chat_options_detect_explicit_acp_requests() {
 #[test]
 fn cli_chat_options_keep_automatic_routing_without_explicit_acp_inputs() {
     assert!(!CliChatOptions::default().requests_explicit_acp());
+    assert!(!CliChatOptions::default().fresh_session);
+
+    assert!(
+        !CliChatOptions {
+            force_onboard: true,
+            ..CliChatOptions::default()
+        }
+        .requests_explicit_acp()
+    );
+}
+
+#[test]
+fn cli_chat_options_can_request_fresh_sessions_without_marking_explicit_acp() {
+    assert!(
+        !CliChatOptions {
+            fresh_session: true,
+            ..CliChatOptions::default()
+        }
+        .requests_explicit_acp()
+    );
 }
 
 #[test]
@@ -542,6 +562,31 @@ async fn concurrent_cli_host_exits_when_shutdown_is_requested() {
     run_concurrent_cli_host_loop(&runtime, &options, &shutdown)
         .await
         .expect("concurrent host should stop cleanly when shutdown is requested");
+
+    cleanup_chat_test_memory(&sqlite_path);
+}
+
+#[cfg(feature = "memory-sqlite")]
+#[test]
+fn initialize_cli_turn_runtime_fresh_chat_session_does_not_reuse_default_session_id() {
+    let (config, _memory_config, sqlite_path) = init_chat_test_memory("fresh-chat-session");
+    let options = CliChatOptions {
+        fresh_session: true,
+        ..CliChatOptions::default()
+    };
+    let runtime = initialize_cli_turn_runtime_with_loaded_config(
+        PathBuf::from("/tmp/loong.toml"),
+        config,
+        None,
+        &options,
+        "cli-chat-fresh-session-test",
+        CliSessionRequirement::AllowImplicitDefault,
+        false,
+    )
+    .expect("fresh chat runtime");
+
+    assert_ne!(runtime.session_id, "default");
+    assert!(runtime.session_id.starts_with("chat-"));
 
     cleanup_chat_test_memory(&sqlite_path);
 }
@@ -1738,6 +1783,264 @@ println!(\"{value}\");
 }
 
 #[test]
+fn render_cli_chat_assistant_lines_normalize_star_and_plus_bullets() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "* compare runtime state\n+ keep current provider settings",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("- compare runtime state"));
+    assert!(joined.contains("- keep current provider settings"));
+    assert!(!joined.contains("* compare runtime state"));
+    assert!(!joined.contains("+ keep current provider settings"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_render_blockquotes_with_quote_bar() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "> reuse current provider settings when safe",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("note: quoted context"));
+    assert!(joined.contains("┃ reuse current provider settings when safe"));
+    assert!(!joined.contains("- reuse current provider settings when safe"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_keep_quote_bar_inside_lists() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "- first item\n  > quoted detail\n- second item",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("• first item") || joined.contains("- first item"));
+    assert!(joined.contains("┃ quoted detail"));
+    assert!(joined.contains("• second item") || joined.contains("- second item"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_render_diff_fences_with_diff_gutter() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "### Patch\n```diff\n- old value\n+ new value\n```",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("[diff]"));
+    assert!(joined.contains("- old value"));
+    assert!(joined.contains("+ new value"));
+    assert!(!joined.contains("code [diff]"));
+    assert!(!joined.contains("```diff"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_render_markdown_tables_as_structured_grid() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "| Name | Value |\n| --- | --- |\n| A | 1 |\n| B | 2 |",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("┌"));
+    assert!(joined.contains("│ Name │ Value │"));
+    assert!(joined.contains("│ A"));
+    assert!(joined.contains("│ B"));
+    assert!(!joined.contains("| Name | Value |"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_render_local_file_links_using_target_text() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "[app](file:///Users/chum/project/src/app.rs#L12)",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("src/app.rs"));
+    assert!(joined.contains("#L12"));
+    assert!(!joined.contains("[app]"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_render_inline_local_file_links_using_target_text() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "Open [app](file:///Users/chum/project/src/app.rs#L12) before editing.",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("src/app.rs"));
+    assert!(joined.contains("#L12"));
+    assert!(!joined.contains("[app]"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_render_inline_home_local_links_shortened() {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/chum".to_owned());
+    let lines = render_cli_chat_assistant_lines_with_width(
+        format!("Open [cfg](file://{home}/.loong/config.toml) before editing.").as_str(),
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("~/.loong/config.toml"));
+    assert!(!joined.contains("[cfg]"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_render_local_file_links_with_colon_location_suffix() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "[cfg](file:///Users/chum/project/src/app.rs:12:3)",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("src/app.rs:12:3"));
+    assert!(!joined.contains("[cfg]"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_render_relative_local_links_using_target_text() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "Open [notes](./docs/notes.md:12) before editing.",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("./docs/notes.md:12"));
+    assert!(!joined.contains("[notes]"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_render_inline_web_links_with_label_and_destination() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "Search [docs](https://example.com/docs) before editing.",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("docs · https://example.com/docs"));
+    assert!(!joined.contains("[docs]"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_split_inline_bullet_runs() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "• first item • second item • third item",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("• first item"));
+    assert!(joined.contains("• second item"));
+    assert!(joined.contains("• third item"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_promote_markdown_images_to_image_block() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "![diagram](https://example.com/assets/diagram.png)",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("[image]"));
+    assert!(joined.contains("diagram"));
+    assert!(joined.contains("https://example.com/assets/diagram.png"));
+    assert!(!joined.contains("![diagram]"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_shorten_local_markdown_image_urls() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "![diagram](file:///Users/chum/project/assets/diagram.png)",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("[image]"));
+    assert!(joined.contains("diagram"));
+    assert!(
+        joined.contains("~/project/assets/diagram.png")
+            || joined.contains("/Users/chum/project/assets/diagram.png")
+    );
+    assert!(!joined.contains("file:///Users/chum/project/assets/diagram.png"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_promote_inline_markdown_images_to_image_text() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "See ![diagram](https://example.com/assets/diagram.png) before merging.",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("[image]"));
+    assert!(joined.contains("diagram"));
+    assert!(joined.contains("https://example.com/assets/diagram.png"));
+    assert!(!joined.contains("![diagram]"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_use_activity_bullets_for_tool_activity_callouts() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "### Tool activity\n> Called demo_mcp.exec\n> stdout: done\n> metrics: 42ms · exit=0",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("• Called demo_mcp.exec"));
+    assert!(joined.contains("• Called demo_mcp.exec"));
+    assert!(joined.contains("↳ metrics 42ms · exit=0"));
+    assert!(!joined.contains("- Called demo_mcp.exec"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_normalize_request_and_args_children_in_tool_activity() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "### Tool activity\n> Called demo_mcp.search\n> request: {\"query\":\"rust\"}\n> args: {\"limit\":5}",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("• search"));
+    assert!(!joined.contains("↳ request {\"query\":\"rust\"}"));
+    assert!(!joined.contains("↳ args {\"limit\":5}"));
+    assert!(!joined.contains("> args:"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_normalize_stderr_and_file_children_in_tool_activity() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "### Tool activity\n> Called demo_mcp.exec\n> stderr: warning: slow\n> file: edit src/lib.rs (+2 / -1)",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("• Called demo_mcp.exec"));
+    assert!(joined.contains("↳ stderr warning: slow"));
+    assert!(joined.contains("↳ file edit src/lib.rs (+2 / -1)"));
+    assert!(!joined.contains("> stderr:"));
+    assert!(!joined.contains("> file:"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_promote_tool_activity_to_semantic_preview_when_possible() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "### Tool activity\n> Called filesystem.open_file\n> request: {\"arguments\":{\"path\":\"src/main.rs\",\"offset\":5,\"limit\":2}}\n> stdout: fn main() {}",
+        72,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("• read src/main.rs:5-6"));
+    assert!(!joined.contains("↳ request {\"arguments\":{\"path\":\"src/main.rs\",\"offset\":5,\"limit\":2}}"));
+}
+
+#[test]
 fn render_cli_chat_assistant_lines_preserve_heading_before_quotes_and_at_eof() {
     let assistant_text = "\
 ## Risks
@@ -1760,6 +2063,94 @@ fn render_cli_chat_assistant_lines_preserve_heading_before_quotes_and_at_eof() {
         lines.iter().any(|line| line.contains("Next")),
         "a trailing heading should still render even when it has no body lines yet: {lines:#?}"
     );
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_hide_reasoning_when_disabled() {
+    let lines = render_cli_chat_assistant_lines_with_width_and_reasoning_mode(
+        "<think>quiet reasoning\nsecond line</think>Hello there",
+        72,
+        false,
+    );
+    let joined = lines.join("\n");
+
+    assert!(!joined.contains("quiet reasoning"));
+    assert!(!joined.contains("second line"));
+    assert!(joined.contains("Hello there"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_keep_reasoning_when_enabled() {
+    let lines = render_cli_chat_assistant_lines_with_width_and_reasoning_mode(
+        "<think>quiet reasoning\nsecond line</think>Hello there",
+        72,
+        true,
+    );
+    let joined = lines.join("\n");
+
+    assert!(joined.contains("note: reasoning"));
+    assert!(joined.contains("quiet reasoning"));
+    assert!(joined.contains("────────"));
+    assert!(joined.contains("Hello there"));
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_scales_reasoning_divider_to_render_width() {
+    let lines = render_cli_chat_assistant_lines_with_width_and_reasoning_mode(
+        "<think>quiet reasoning</think>Hello there",
+        24,
+        true,
+    );
+    let divider = lines
+        .iter()
+        .find(|line| line.contains("────"))
+        .expect("reasoning divider");
+
+    assert!(divider.len() < 40, "divider should follow render width: {divider}");
+}
+
+#[test]
+fn render_cli_chat_assistant_lines_hide_reasoning_callout_when_disabled() {
+    let lines = render_cli_chat_assistant_lines_with_width_and_reasoning_mode(
+        "## Reasoning\nThe provider compared two options.\n\nVisible answer.",
+        72,
+        false,
+    );
+    let joined = lines.join("\n");
+
+    assert!(!joined.contains("note: reasoning"));
+    assert!(!joined.contains("The provider compared two options."));
+    assert!(joined.contains("Visible answer."));
+}
+
+#[test]
+fn style_reasoning_block_lines_for_stdout_styles_final_reply_reasoning_block() {
+    let lines = render_cli_chat_assistant_lines_with_width_and_reasoning_mode(
+        "<think>quiet reasoning\nsecond line</think>Hello there",
+        72,
+        true,
+    );
+    let styled = style_reasoning_block_lines_for_stdout(&lines, true);
+    let joined = styled.join("\n");
+
+    assert!(joined.contains("\u{1b}[2m"));
+    assert!(joined.contains("\u{1b}[3m"));
+    assert!(joined.contains("note: reasoning"));
+    assert!(joined.contains("Hello there"));
+}
+
+#[test]
+fn style_code_block_lines_for_stdout_styles_final_reply_code_block() {
+    let lines = render_cli_chat_assistant_lines_with_width(
+        "```rust\nlet value = input.trim();\nprintln!(\"{value}\");\n```",
+        72,
+    );
+    let styled = style_code_block_lines_for_stdout(&lines, true);
+    let joined = styled.join("\n");
+
+    assert!(joined.contains("\u{1b}[32m"));
+    assert!(joined.contains("let value = input.trim();"));
+    assert!(joined.contains("println!(\"{value}\");"));
 }
 
 #[test]
@@ -1826,6 +2217,7 @@ fn render_cli_chat_live_surface_lines_show_pipeline_status_and_preview() {
         message_count: Some(4),
         estimated_tokens: Some(128),
         first_token_latency_ms: Some(123),
+        show_reasoning: true,
         draft_preview: Some("Inspecting the repo layout...".to_owned()),
         tools: Vec::new(),
     };
@@ -1901,6 +2293,7 @@ fn cli_chat_live_surface_observer_emits_phase_and_stream_preview_batches() {
         event_type: "text_delta".to_owned(),
         delta: crate::acp::TokenDelta {
             text: Some("Draft response".to_owned()),
+            reasoning: None,
             tool_call: None,
         },
         index: None,
@@ -1965,6 +2358,7 @@ fn cli_chat_live_surface_observer_renders_tool_lifecycle_updates() {
         event_type: "tool_call_start".to_owned(),
         delta: crate::acp::TokenDelta {
             text: None,
+            reasoning: None,
             tool_call: Some(crate::acp::ToolCallDelta {
                 name: Some("read".to_owned()),
                 args: None,
@@ -1978,6 +2372,7 @@ fn cli_chat_live_surface_observer_renders_tool_lifecycle_updates() {
         event_type: "tool_call_input_delta".to_owned(),
         delta: crate::acp::TokenDelta {
             text: None,
+            reasoning: None,
             tool_call: Some(crate::acp::ToolCallDelta {
                 name: None,
                 args: Some("{\"path\":\"README.md\"}".to_owned()),
@@ -2249,6 +2644,7 @@ fn cli_chat_live_surface_observer_resets_request_scoped_buffers_between_rounds()
         event_type: "text_delta".to_owned(),
         delta: crate::acp::TokenDelta {
             text: Some("Draft response".to_owned()),
+            reasoning: None,
             tool_call: None,
         },
         index: None,
@@ -2258,6 +2654,7 @@ fn cli_chat_live_surface_observer_resets_request_scoped_buffers_between_rounds()
         event_type: "tool_call_input_delta".to_owned(),
         delta: crate::acp::TokenDelta {
             text: None,
+            reasoning: None,
             tool_call: Some(crate::acp::ToolCallDelta {
                 name: None,
                 args: Some("{\"query\":\"rust\"}".to_owned()),
@@ -2341,6 +2738,7 @@ fn cli_chat_live_surface_observer_waits_for_tools_phase_before_rendering_tool_ac
         event_type: "tool_call_start".to_owned(),
         delta: crate::acp::TokenDelta {
             text: None,
+            reasoning: None,
             tool_call: Some(crate::acp::ToolCallDelta {
                 name: Some("search".to_owned()),
                 args: None,

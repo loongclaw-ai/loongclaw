@@ -43,8 +43,15 @@ pub async fn run_chat_cli(
     acp_event_stream: bool,
     acp_bootstrap_mcp_server: &[String],
     acp_cwd: Option<&str>,
+    force_onboard: bool,
 ) -> CliResult<()> {
-    let options = build_cli_chat_options(acp, acp_event_stream, acp_bootstrap_mcp_server, acp_cwd);
+    let options = build_cli_chat_options(
+        acp,
+        acp_event_stream,
+        acp_bootstrap_mcp_server,
+        acp_cwd,
+        force_onboard,
+    );
     mvp::chat::run_cli_chat(config_path, session, &options).await
 }
 
@@ -74,6 +81,7 @@ pub fn build_cli_chat_options(
     acp_event_stream: bool,
     acp_bootstrap_mcp_server: &[String],
     acp_cwd: Option<&str>,
+    force_onboard: bool,
 ) -> mvp::chat::CliChatOptions {
     mvp::chat::CliChatOptions {
         acp_requested: acp,
@@ -83,5 +91,7 @@ pub fn build_cli_chat_options(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(PathBuf::from),
+        force_onboard,
+        fresh_session: true,
     }
 }

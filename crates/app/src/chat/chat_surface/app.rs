@@ -7,7 +7,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashSet, VecDeque};
@@ -43,6 +43,7 @@ use super::command_palette::{
 use super::composer::Composer;
 use super::i18n::{I18nService, Language, SurfaceCopy, resolve_default_language};
 use super::message_list::{MessageList, StartupEyeAnimation, StartupEyeFocus};
+use super::pending_band;
 use super::utils::*;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -54,23 +55,7 @@ pub enum Focus {
 
 const FOOTER_BOTTOM_BREATHING_HEIGHT: u16 = 1;
 const FOOTER_HORIZONTAL_INDENT: u16 = 2;
-const PENDING_TOOL_ANIMATION_FRAME_MS: u64 = 90;
-const PENDING_TOOL_LABEL_COLORS: [Color; 6] = [
-    SURFACE_DIM_GRAY,
-    SURFACE_GRAY,
-    SURFACE_ACCENT,
-    SURFACE_CYAN,
-    Color::White,
-    SURFACE_CYAN,
-];
-const PENDING_TOOL_BODY_COLORS: [Color; 6] = [
-    SURFACE_GRAY,
-    SURFACE_ACCENT,
-    SURFACE_CYAN,
-    Color::White,
-    SURFACE_CYAN,
-    SURFACE_ACCENT,
-];
+const MIN_TRANSCRIPT_HEIGHT_WHEN_MESSAGES_EXIST: u16 = 3;
 
 #[derive(Clone)]
 struct PendingRenderCache {
@@ -935,6 +920,7 @@ pub struct App {
     pub cwd: String,
     pub model: String,
     pub title: Option<String>,
+    show_reasoning: bool,
     pub i18n: I18nService,
 }
 
@@ -981,6 +967,7 @@ impl App {
             cwd: format_cwd(runtime),
             model: runtime.config.provider.model.clone(),
             title: None,
+            show_reasoning: runtime.config.conversation.show_reasoning(),
             i18n: I18nService::new(language),
         };
 
@@ -1014,15 +1001,16 @@ impl App {
         };
         let interstitial_lines =
             self.interstitial_lines_for(size.width, size.height, composer_height, palette_height);
-        let interstitial_height = interstitial_lines.len() as u16;
+        let mut interstitial_height = interstitial_lines.len() as u16;
         let provisional_assistant_text = provisional_assistant_text(&self.live_transcript);
         let transcript_line_count = self
             .message_list
             .rendered_line_count_with_provisional_assistant(
                 size.width,
                 provisional_assistant_text.as_deref(),
+                self.show_reasoning,
             ) as u16;
-        let bottom_band_height = interstitial_height
+        let fixed_bottom_height = 1
             + 1
             + composer_height
             + if palette_height > 0 {
@@ -1033,11 +1021,23 @@ impl App {
             + 1
             + 1
             + FOOTER_BOTTOM_BREATHING_HEIGHT;
+        if transcript_line_count > 0 {
+            let minimum_transcript =
+                MIN_TRANSCRIPT_HEIGHT_WHEN_MESSAGES_EXIST.min(size.height.saturating_sub(1));
+            let available_for_interstitial = size
+                .height
+                .saturating_sub(fixed_bottom_height)
+                .saturating_sub(minimum_transcript);
+            interstitial_height = interstitial_height.min(available_for_interstitial);
+        }
+        let bottom_band_height = fixed_bottom_height + interstitial_height;
         let available_transcript_height = size.height.saturating_sub(bottom_band_height).max(1);
         let transcript_height = if self.message_list.messages.is_empty() {
             0
         } else {
-            transcript_line_count.min(available_transcript_height)
+            transcript_line_count
+                .min(available_transcript_height)
+                .max(MIN_TRANSCRIPT_HEIGHT_WHEN_MESSAGES_EXIST.min(available_transcript_height))
         };
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
@@ -1079,10 +1079,13 @@ impl App {
             Rect::default()
         };
 
+        f.render_widget(Clear, size);
+
         self.message_list.render_with_provisional_assistant(
             f,
             *transcript_area,
             provisional_assistant_text.as_deref(),
+            self.show_reasoning,
         );
 
         if interstitial_height > 0 {
@@ -1265,6 +1268,16 @@ impl App {
                 self.focus = Focus::Composer;
                 Some(command.to_owned())
             }
+            CommandAction::ResumeSession(session_id) => {
+                self.inline_skill_popup_active = false;
+                self.focus = Focus::Composer;
+                Some(format!("/resume {session_id}"))
+            }
+            CommandAction::ArchiveSession(_) => {
+                self.inline_skill_popup_active = false;
+                self.focus = Focus::Composer;
+                None
+            }
             CommandAction::OpenSettings(_)
             | CommandAction::ApplySettings(_)
             | CommandAction::OpenModelReasoning(_)
@@ -1403,13 +1416,26 @@ impl App {
             return Vec::new();
         }
 
-        let max_pending_height = pending_band_max_height(height, composer_height, palette_height);
-        let Some(signature) = pending_render_signature_for_geometry(
-            self,
+        let geometry = pending_band::PendingBandGeometry {
             width,
             height,
             composer_height,
             palette_height,
+        };
+        let max_pending_height = pending_band::max_pending_height(geometry);
+        let live_lines = pending_live_tool_activity_lines(
+            &self.live_transcript,
+            usize::MAX,
+            self.show_reasoning,
+        );
+        let Some(signature) = pending_band::pending_render_signature_for_geometry(
+            self.pending_turn,
+            self.turn_start,
+            self.spinner_seed,
+            &live_lines,
+            &self.pending_steers,
+            &self.pending_queue,
+            geometry,
         ) else {
             self.pending_render_cache = None;
             return Vec::new();
@@ -1423,9 +1449,12 @@ impl App {
         }
 
         let max_pending_preview_lines = max_pending_height.saturating_sub(2).max(1) as usize;
-        let live_lines =
-            pending_live_tool_activity_lines(&self.live_transcript, max_pending_preview_lines);
-        let raw_pending_lines = build_pending_lines(
+        let live_lines = pending_live_tool_activity_lines(
+            &self.live_transcript,
+            max_pending_preview_lines,
+            self.show_reasoning,
+        );
+        let raw_pending_lines = pending_band::build_pending_lines(
             self.turn_start,
             &live_lines,
             self.spinner_seed,
@@ -1433,7 +1462,7 @@ impl App {
             &self.pending_queue,
             width,
         );
-        let lines = compact_pending_lines_for_height(raw_pending_lines, max_pending_height);
+        let lines = pending_band::compact_pending_lines(raw_pending_lines, max_pending_height);
         self.pending_render_cache = Some(PendingRenderCache {
             signature,
             max_pending_height,
@@ -1837,18 +1866,9 @@ pub async fn run_app<B: Backend>(
 }
 
 fn startup_onboarding_enabled(runtime: &CliTurnRuntime) -> bool {
-    startup_env_truthy("LOONG_TUI_ONBOARD")
+    runtime.force_onboard
         || (runtime.config.provider.api_key().is_none()
             && runtime.config.provider.oauth_access_token().is_none())
-}
-
-fn startup_env_truthy(name: &str) -> bool {
-    std::env::var(name).ok().is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
 }
 
 fn build_startup_provider_options(
@@ -2931,7 +2951,7 @@ fn startup_setup_path_detail_lines(state: &StartupOnboardingState) -> Vec<String
             Language::En | Language::Ja | Language::Ru => vec![
                 "The current splash/chat shell stays intact; deeper setup remains available on demand."
                     .to_owned(),
-                "Use `loong onboard` later when you want the full provider, web, channel, and daemon wizard."
+                "Use `loong onboard` later when you want to reopen this guided setup surface."
                     .to_owned(),
                 "Use /mcp or /skills from the empty composer whenever you want the live runtime snapshot."
                     .to_owned(),
@@ -2957,7 +2977,7 @@ fn startup_setup_path_detail_lines(state: &StartupOnboardingState) -> Vec<String
                     "如果你要继续补 provider 的 base_url、model 或鉴权，下一步优先看 `loong doctor`。"
                         .to_owned()
                 }),
-                "完整的 provider / auth continuation 仍然在 `loong onboard`；这里会保持 shell 轻一点，只把真正的下一条命令露出来。"
+                "`loong onboard` 会重新打开这套 guided setup；这里先保持 shell 轻一点，只把真正的下一条命令露出来。"
                     .to_owned(),
             ],
             Language::ZhTw => vec![
@@ -2979,7 +2999,7 @@ fn startup_setup_path_detail_lines(state: &StartupOnboardingState) -> Vec<String
                     "如果你要繼續補 provider 的 base_url、model 或驗證，下一步優先看 `loong doctor`。"
                         .to_owned()
                 }),
-                "完整的 provider / auth continuation 仍然在 `loong onboard`；這裡會保持 shell 輕一點，只把真正的下一條命令露出來。"
+                "`loong onboard` 會重新打開這套 guided setup；這裡先保持 shell 輕一點，只把真正的下一條命令露出來。"
                     .to_owned(),
             ],
             Language::En | Language::Ja | Language::Ru => vec![
@@ -3001,7 +3021,7 @@ fn startup_setup_path_detail_lines(state: &StartupOnboardingState) -> Vec<String
                     "If you need to keep tuning provider base_url, model, or auth, `loong doctor` is the next check to run."
                         .to_owned()
                 }),
-                "Full provider/auth continuation lives in `loong onboard`; the TUI keeps the shell minimal and surfaces the real next command instead of opening a second startup UI."
+                "`loong onboard` reopens this guided setup; the TUI keeps the shell minimal here and surfaces the real next command instead of branching into a separate onboarding shell."
                     .to_owned(),
             ],
         },
@@ -3084,13 +3104,13 @@ fn startup_setup_path_detail_lines(state: &StartupOnboardingState) -> Vec<String
             if state.channel_follow_up_commands.is_empty() {
                 lines.push(match language {
                     Language::ZhCn => {
-                        "当前还没有可直接运行的 channel runtime command；如果你要继续接 delivery surface，可以走 `loong onboard`。".to_owned()
+                        "当前还没有可直接运行的 channel runtime command；如果你要继续这套 guided setup，可以重新运行 `loong onboard`。".to_owned()
                     }
                     Language::ZhTw => {
-                        "目前還沒有可直接執行的 channel runtime command；如果你要繼續接 delivery surface，可以走 `loong onboard`。".to_owned()
+                        "目前還沒有可直接執行的 channel runtime command；如果你要繼續這套 guided setup，可以重新執行 `loong onboard`。".to_owned()
                     }
                     Language::En | Language::Ja | Language::Ru => {
-                        "No channel runtime command is ready yet; continue setup through `loong onboard` when you want to wire delivery surfaces.".to_owned()
+                        "No channel runtime command is ready yet; rerun `loong onboard` when you want to continue this guided setup for delivery surfaces.".to_owned()
                     }
                 });
             } else if let Some(next_command) = state.channel_follow_up_commands.first() {
@@ -3174,7 +3194,7 @@ fn startup_setup_path_detail_lines(state: &StartupOnboardingState) -> Vec<String
                     state.detected_skill_count,
                     state.selected_skill_ids.len()
                 ),
-                "如果你想看 live server list 用 /mcp；想看 pack inventory 用 /skills；想走更完整的 workspace/setup wizard 还是用 `loong onboard`。".to_owned(),
+                "如果你想看 live server list 用 /mcp；想看 pack inventory 用 /skills；想重新打开这套 guided setup 还是用 `loong onboard`。".to_owned(),
             ],
             Language::ZhTw => vec![
                 format!("目前可用的 bootstrap MCP server：{}。", state.startup_mcp_count),
@@ -3183,7 +3203,7 @@ fn startup_setup_path_detail_lines(state: &StartupOnboardingState) -> Vec<String
                     state.detected_skill_count,
                     state.selected_skill_ids.len()
                 ),
-                "如果你想看 live server list 用 /mcp；想看 pack inventory 用 /skills；想走更完整的 workspace/setup wizard 還是用 `loong onboard`。".to_owned(),
+                "如果你想看 live server list 用 /mcp；想看 pack inventory 用 /skills；想重新打開這套 guided setup 還是用 `loong onboard`。".to_owned(),
             ],
             Language::En | Language::Ja | Language::Ru => vec![
                 format!("Bootstrap MCP servers available now: {}.", state.startup_mcp_count),
@@ -3192,7 +3212,7 @@ fn startup_setup_path_detail_lines(state: &StartupOnboardingState) -> Vec<String
                     state.detected_skill_count,
                     state.selected_skill_ids.len()
                 ),
-                "Use /mcp for the live server list, /skills for the pack inventory, or `loong onboard` if you want the broader workspace/setup wizard."
+                "Use /mcp for the live server list, /skills for the pack inventory, or rerun `loong onboard` to reopen this guided setup."
                     .to_owned(),
             ],
         },
@@ -4065,6 +4085,29 @@ fn open_slash_command_palette(app: &mut App, prefix: char, query: &str) {
     app.focus = Focus::CommandPalette;
 }
 
+#[cfg(feature = "memory-sqlite")]
+fn open_resume_palette(app: &mut App, runtime: &CliTurnRuntime) -> CliResult<()> {
+    let store = ChatControlPlaneStore::new(&runtime.memory_config)?;
+    let recent_entries = store.recent_resumable_root_sessions(32)?;
+    let visible_entries = store.visible_sessions(&runtime.session_id, 32)?;
+    let status = if recent_entries.is_empty() && visible_entries.is_empty() {
+        Some("No resumable local sessions are currently visible.".to_owned())
+    } else {
+        Some("Local sessions".to_owned())
+    };
+    app.command_palette.show_resume_sessions(
+        super::command_palette::ResumeSessionPickerState {
+            recent_entries,
+            visible_entries,
+            selected_session_id: Some(runtime.session_id.clone()),
+            status,
+        },
+    );
+    app.inline_skill_popup_active = false;
+    app.focus = Focus::CommandPalette;
+    Ok(())
+}
+
 fn sync_slash_palette_composer(app: &mut App) {
     if !app.command_palette.is_commands_mode() {
         return;
@@ -4533,11 +4576,32 @@ async fn run_surface_command<B: Backend>(
             Ok(())
         }
         "/new" => {
-            app.message_list.clear_transcript();
+            reset_runtime_for_fresh_local_session(app, runtime)?;
             app.message_list
                 .add_rendered_lines(render_new_conversation_lines_with_width(width));
             app.focus = Focus::Composer;
             Ok(())
+        }
+        "/resume" => {
+            #[cfg(feature = "memory-sqlite")]
+            {
+                if args.trim().is_empty() {
+                    open_resume_palette(app, runtime)?;
+                } else {
+                    resume_local_session(app, runtime, args.trim(), width)?;
+                }
+                return Ok(());
+            }
+            #[cfg(not(feature = "memory-sqlite"))]
+            {
+                app.message_list.add_rendered_lines(render_surface_message_lines_with_width(
+                    "resume",
+                    "Session resume requires memory-sqlite support on this build.",
+                    width,
+                ));
+                app.focus = Focus::Composer;
+                return Ok(());
+            }
         }
         "/copy" => {
             let copy_result = copy_command_text(app, args)
@@ -4604,6 +4668,14 @@ async fn run_surface_command<B: Backend>(
         "/title" | "/rename" => {
             if !args.trim().is_empty() {
                 app.title = Some(args.trim().to_owned());
+                #[cfg(feature = "memory-sqlite")]
+                {
+                    let repo = crate::session::repository::SessionRepository::new(&runtime.memory_config)?;
+                    let _ = repo.update_session_label(
+                        runtime.session_id.as_str(),
+                        Some(args.trim().to_owned()),
+                    )?;
+                }
             }
             let lines = render_title_command_lines_with_width(command, args, width);
             app.message_list.add_rendered_lines(lines);
@@ -4878,6 +4950,20 @@ fn dispatch_palette_action(
             app.inline_skill_popup_active = false;
             app.focus = Focus::Composer;
             Ok(Some(command.to_owned()))
+        }
+        CommandAction::ResumeSession(session_id) => {
+            if should_clear_slash_buffer {
+                clear_slash_palette_composer(app);
+            }
+            resume_local_session(app, runtime, session_id.as_str(), width)?;
+            Ok(None)
+        }
+        CommandAction::ArchiveSession(session_id) => {
+            if should_clear_slash_buffer {
+                clear_slash_palette_composer(app);
+            }
+            archive_local_session(app, runtime, session_id.as_str(), width)?;
+            Ok(None)
         }
         CommandAction::OpenSettings(focus) => {
             if should_clear_slash_buffer {
@@ -5833,6 +5919,7 @@ async fn start_turn<B: Backend>(
     let (observer, rerender) = super::super::build_cli_chat_live_compact_observer_controller(
         Arc::clone(&app.live_render_width),
         sink,
+        runtime.config.conversation.show_reasoning(),
     );
     app.live_rerender = Some(rerender);
     let mut turn_runtime = runtime.clone();
@@ -7294,7 +7381,8 @@ async fn maybe_finalize_pending_turn<B: Backend>(
             super::super::render_cli_chat_assistant_lines_with_width(&assistant_text, width),
         );
     } else {
-        app.message_list.add_assistant_message(assistant_text);
+        app.message_list
+            .add_assistant_message_with_reasoning_mode(assistant_text, app.show_reasoning);
     }
     if let Some(next_input) = app.pending_steers.pop_front() {
         start_turn(terminal, app, runtime, next_input, true).await?;
@@ -7352,9 +7440,180 @@ fn clear_live_transcript(live_transcript: &Arc<StdMutex<LiveTranscriptState>>) {
     }
 }
 
+fn reset_runtime_for_fresh_local_session(
+    app: &mut App,
+    runtime: &mut CliTurnRuntime,
+) -> CliResult<()> {
+    #[cfg(feature = "memory-sqlite")]
+    let session_id = super::super::fresh_cli_runtime_session_id(&runtime.memory_config)?;
+    #[cfg(not(feature = "memory-sqlite"))]
+    let session_id = super::super::fresh_cli_runtime_session_id()?;
+
+    let session_address = crate::conversation::ConversationSessionAddress::from_session_id(
+        session_id.clone(),
+    );
+
+    runtime.reset_for_fresh_session(session_id, session_address);
+    app.message_list.clear_transcript();
+    app.pending_turn = false;
+    app.turn_start = None;
+    app.pending_task = None;
+    app.pending_steers.clear();
+    app.pending_queue.clear();
+    app.composer_follow_up_intent = false;
+    app.pending_first_turn_bootstrap_addendum = None;
+    app.awaiting_first_turn_bootstrap_reply = false;
+    app.last_pending_signature = None;
+    app.last_live_transcript_signature = None;
+    app.pending_render_cache = None;
+    app.live_rerender = None;
+    clear_live_transcript(&app.live_transcript);
+    app.refresh_startup_header();
+    Ok(())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn resume_local_session(
+    app: &mut App,
+    runtime: &mut CliTurnRuntime,
+    target_session_id: &str,
+    width: usize,
+) -> CliResult<()> {
+    let target_session_id = target_session_id.trim();
+    if target_session_id.is_empty() {
+        return Ok(());
+    }
+    if target_session_id == runtime.session_id {
+        app.message_list.add_rendered_lines(render_resume_status_lines_with_width(
+            "Already in the selected local session.",
+            width,
+        ));
+        app.focus = Focus::Composer;
+        return Ok(());
+    }
+
+    let store = ChatControlPlaneStore::new(&runtime.memory_config)?;
+    let sessions = store.recent_resumable_root_sessions(64)?;
+    let Some(target_session) = sessions
+        .into_iter()
+        .find(|session| session.session_id == target_session_id)
+    else {
+        app.message_list.add_rendered_lines(render_resume_status_lines_with_width(
+            &format!("No visible session matched `{target_session_id}`."),
+            width,
+        ));
+        app.focus = Focus::Composer;
+        return Ok(());
+    };
+
+    runtime.reset_for_fresh_session(
+        target_session.session_id.clone(),
+        crate::conversation::ConversationSessionAddress::from_session_id(
+            target_session.session_id.clone(),
+        ),
+    );
+    app.message_list.clear_transcript();
+    app.pending_turn = false;
+    app.turn_start = None;
+    app.pending_task = None;
+    app.pending_steers.clear();
+    app.pending_queue.clear();
+    app.composer_follow_up_intent = false;
+    app.pending_first_turn_bootstrap_addendum = None;
+    app.awaiting_first_turn_bootstrap_reply = false;
+    app.last_pending_signature = None;
+    app.last_live_transcript_signature = None;
+    app.pending_render_cache = None;
+    app.live_rerender = None;
+    clear_live_transcript(&app.live_transcript);
+    restore_message_list_for_session(app, runtime);
+    app.title = Some(target_session.label.clone());
+    app.message_list.add_rendered_lines(render_resume_status_lines_with_width(
+        &format!(
+            "Resumed {} · {} · turns={}",
+            target_session.label, target_session.session_id, target_session.turn_count
+        ),
+        width,
+    ));
+    app.focus = Focus::Composer;
+    Ok(())
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn restore_message_list_for_session(app: &mut App, runtime: &CliTurnRuntime) {
+    let turns = crate::session::store::transcript_session_turns_paged(
+        runtime.session_id.as_str(),
+        runtime.config.memory.sliding_window.max(16),
+        &runtime.memory_config,
+    );
+    let Ok(turns) = turns else {
+        return;
+    };
+
+    for turn in turns {
+        match turn.role.as_str() {
+            "user" => app.message_list.add_user_message(turn.content),
+            "assistant" => app
+                .message_list
+                .add_assistant_message_with_reasoning_mode(turn.content, app.show_reasoning),
+            _ => app.message_list.add_rendered_lines(vec![turn.content]),
+        }
+    }
+}
+
+fn render_resume_status_lines_with_width(status: &str, width: usize) -> Vec<String> {
+    let message_spec = TuiMessageSpec {
+        role: "resume".to_owned(),
+        caption: Some("session".to_owned()),
+        sections: vec![TuiSectionSpec::Callout {
+            tone: TuiCalloutTone::Info,
+            title: Some("resume".to_owned()),
+            lines: vec![status.to_owned()],
+        }],
+        footer_lines: vec!["Use /resume to reopen another local session.".to_owned()],
+    };
+    super::super::render_cli_chat_message_spec_with_width(&message_spec, width)
+}
+
+#[cfg(feature = "memory-sqlite")]
+fn archive_local_session(
+    app: &mut App,
+    runtime: &mut CliTurnRuntime,
+    target_session_id: &str,
+    width: usize,
+) -> CliResult<()> {
+    let target_session_id = target_session_id.trim();
+    if target_session_id.is_empty() {
+        return Ok(());
+    }
+    if target_session_id == runtime.session_id {
+        app.message_list.add_rendered_lines(render_resume_status_lines_with_width(
+            "Archive the current session from a different session or start a new one first.",
+            width,
+        ));
+        return Ok(());
+    }
+
+    let repo = crate::session::repository::SessionRepository::new(&runtime.memory_config)?;
+    let event = crate::session::repository::NewSessionEvent {
+        session_id: target_session_id.to_owned(),
+        event_kind: "session_archived".to_owned(),
+        actor_session_id: Some(runtime.session_id.clone()),
+        payload_json: serde_json::json!({}),
+    };
+    repo.append_event(event)?;
+    open_resume_palette(app, runtime)?;
+    app.message_list.add_rendered_lines(render_resume_status_lines_with_width(
+        &format!("Archived local session `{target_session_id}` and refreshed the picker."),
+        width,
+    ));
+    Ok(())
+}
+
 fn pending_live_lines(
     live_transcript: &Arc<StdMutex<LiveTranscriptState>>,
     max_lines: usize,
+    show_reasoning: bool,
 ) -> Vec<String> {
     let max_lines = max_lines.max(1);
     live_transcript
@@ -7381,6 +7640,22 @@ fn pending_live_lines(
                 }
                 normalized
             };
+
+            if !show_reasoning {
+                let visible = if let Some(blank_idx) = state.iter().position(|line| line.trim().is_empty()) {
+                    state.get(blank_idx + 1..).unwrap_or(&[])
+                } else {
+                    state.as_slice()
+                };
+                return normalize(
+                    visible
+                        .iter()
+                        .filter(|line| !line.trim().is_empty())
+                        .take(max_lines)
+                        .cloned()
+                        .collect(),
+                );
+            }
 
             if state.len() <= max_lines {
                 return normalize(state.clone());
@@ -7417,10 +7692,11 @@ fn pending_live_lines(
 fn pending_live_tool_activity_lines(
     live_transcript: &Arc<StdMutex<LiveTranscriptState>>,
     max_lines: usize,
+    show_reasoning: bool,
 ) -> Vec<String> {
-    pending_live_lines(live_transcript, max_lines)
+    pending_live_lines(live_transcript, max_lines, show_reasoning)
         .into_iter()
-        .filter(|line| pending_line_is_tool_activity(line))
+        .filter(|line| pending_band::pending_line_is_tool_activity(line))
         .collect()
 }
 
@@ -7434,25 +7710,6 @@ fn provisional_assistant_text(
         .filter(|text| !text.trim().is_empty())
 }
 
-fn pending_line_is_tool_activity(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed.starts_with('•')
-        || trimmed.starts_with("[running]")
-        || trimmed.starts_with("[pending]")
-        || trimmed.starts_with("[completed]")
-        || trimmed.starts_with("[failed]")
-        || trimmed.starts_with("[interrupted]")
-        || trimmed.starts_with("[needs_approval]")
-        || trimmed.starts_with("[denied]")
-        || trimmed.starts_with("request:")
-        || trimmed.starts_with("args:")
-        || trimmed.starts_with("stdout:")
-        || trimmed.starts_with("stderr:")
-        || trimmed.starts_with("file:")
-        || trimmed.starts_with("metrics:")
-        || trimmed.starts_with("↳ ")
-}
-
 fn pending_render_signature(app: &App) -> Option<u64> {
     if app.last_render_width == 0 || app.last_render_height == 0 {
         if !app.pending_turn {
@@ -7460,15 +7717,16 @@ fn pending_render_signature(app: &App) -> Option<u64> {
         }
         let start = app.turn_start?;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        focus_ring_frame(start).hash(&mut hasher);
-        get_spinner_verb_with_seed(start, app.spinner_seed).hash(&mut hasher);
+        crate::chat::chat_surface::utils::focus_ring_frame(start).hash(&mut hasher);
+        crate::chat::chat_surface::utils::get_spinner_verb_with_seed(start, app.spinner_seed)
+            .hash(&mut hasher);
         app.pending_steers
             .iter()
             .for_each(|message| message.hash(&mut hasher));
         app.pending_queue
             .iter()
             .for_each(|message| message.hash(&mut hasher));
-        for line in pending_live_tool_activity_lines(&app.live_transcript, 6) {
+        for line in pending_live_tool_activity_lines(&app.live_transcript, 6, true) {
             line.hash(&mut hasher);
         }
         return Some(hasher.finish());
@@ -7521,22 +7779,12 @@ fn pending_signature_preview_budget_for_geometry(
     composer_height: u16,
     palette_height: u16,
 ) -> usize {
-    let max_pending_height = pending_band_max_height(height, composer_height, palette_height);
-    max_pending_height.saturating_sub(2).max(1) as usize
-}
-
-fn pending_band_max_height(height: u16, composer_height: u16, palette_height: u16) -> u16 {
-    let reserved_without_pending = 1
-        + composer_height
-        + if palette_height > 0 {
-            1 + palette_height
-        } else {
-            0
-        }
-        + 1
-        + 1
-        + 1;
-    height.saturating_sub(reserved_without_pending).max(3)
+    pending_band::pending_signature_preview_budget_for_geometry(pending_band::PendingBandGeometry {
+        width: 0,
+        height,
+        composer_height,
+        palette_height,
+    })
 }
 
 fn pending_render_signature_for_geometry(
@@ -7546,579 +7794,26 @@ fn pending_render_signature_for_geometry(
     composer_height: u16,
     palette_height: u16,
 ) -> Option<u64> {
-    if !app.pending_turn {
-        return None;
-    }
-    let start = app.turn_start?;
-    let max_pending_preview_lines =
-        pending_signature_preview_budget_for_geometry(height, composer_height, palette_height);
-    let visible_lines =
-        pending_live_tool_activity_lines(&app.live_transcript, max_pending_preview_lines);
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    focus_ring_frame(start).hash(&mut hasher);
-    get_spinner_verb_with_seed(start, app.spinner_seed).hash(&mut hasher);
-    width.hash(&mut hasher);
-    height.hash(&mut hasher);
-    visible_lines.hash(&mut hasher);
-    app.pending_steers
-        .iter()
-        .for_each(|message| message.hash(&mut hasher));
-    app.pending_queue
-        .iter()
-        .for_each(|message| message.hash(&mut hasher));
-    Some(hasher.finish())
-}
-
-fn build_pending_lines(
-    turn_start: Option<std::time::Instant>,
-    live_lines: &[String],
-    spinner_seed: u64,
-    pending_steers: &VecDeque<String>,
-    pending_queue: &VecDeque<String>,
-    width: u16,
-) -> Vec<Line<'static>> {
-    let start = turn_start.unwrap_or_else(std::time::Instant::now);
-    let spinner_spans = vec![
-        Span::raw(" "),
-        Span::styled(
-            format!("{} ", focus_ring_frame(start)),
-            Style::default()
-                .fg(SURFACE_CYAN)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("{}...", get_spinner_verb_with_seed(start, spinner_seed)),
-            Style::default()
-                .fg(SURFACE_CYAN)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
-
-    let content_width = width.saturating_sub(2).max(1) as usize;
-    let mut lines = Vec::new();
-    let has_visible_reply_after_blank = live_lines
-        .iter()
-        .position(|line| line.trim().is_empty())
-        .is_some_and(|blank_idx| {
-            live_lines
-                .iter()
-                .skip(blank_idx + 1)
-                .any(|line| !line.trim().is_empty())
-        });
-    let mut in_reasoning_block = has_visible_reply_after_blank;
-
-    for line in live_lines {
-        if line.trim().is_empty() {
-            lines.push(Line::from(""));
-            if has_visible_reply_after_blank {
-                in_reasoning_block = false;
-            }
-            continue;
-        }
-
-        let style = if in_reasoning_block {
-            Style::default()
-                .fg(SURFACE_GRAY)
-                .add_modifier(Modifier::DIM)
-        } else {
-            Style::default().fg(ratatui::style::Color::White)
-        };
-        lines.extend(render_pending_live_line(
-            line.as_str(),
-            content_width,
-            style,
-            start,
-        ));
-    }
-    append_pending_input_preview_lines(
-        &mut lines,
-        pending_steers,
-        pending_queue,
+    let geometry = pending_band::PendingBandGeometry {
         width,
-        !live_lines.is_empty(),
+        height,
+        composer_height,
+        palette_height,
+    };
+    let visible_lines = pending_live_tool_activity_lines(
+        &app.live_transcript,
+        geometry.preview_budget(),
+        true,
     );
-    lines.push(Line::from(""));
-    lines.push(Line::from(spinner_spans));
-    lines
-}
-
-fn render_pending_live_line(
-    line: &str,
-    content_width: usize,
-    default_style: Style,
-    start: std::time::Instant,
-) -> Vec<Line<'static>> {
-    if let Some(lines) = render_pending_tool_headline_line(line, content_width, start) {
-        return lines;
-    }
-
-    if let Some(lines) = render_pending_tool_child_line(line, content_width) {
-        return lines;
-    }
-
-    if let Some(lines) = render_pending_tool_sample_line(line, content_width) {
-        return lines;
-    }
-
-    crate::presentation::render_wrapped_plain_display_line(line, content_width)
-        .into_iter()
-        .map(|wrapped| Line::from(vec![Span::raw("  "), Span::styled(wrapped, default_style)]))
-        .collect()
-}
-
-fn render_pending_tool_headline_line(
-    line: &str,
-    content_width: usize,
-    start: std::time::Instant,
-) -> Option<Vec<Line<'static>>> {
-    let trimmed = line.trim_start();
-    let trimmed = trimmed.strip_prefix("• ").unwrap_or(trimmed);
-    let (label, rest, label_style, body_style) = pending_tool_headline_parts(trimmed, start)?;
-    let label_text = format!("{label} ");
-    let prefix_width = 2 + crate::presentation::display_width(label_text.as_str());
-    let body_width = content_width.saturating_sub(prefix_width).max(1);
-    let mut wrapped =
-        crate::presentation::render_wrapped_literal_display_line(rest.trim(), body_width);
-    if wrapped.is_empty() {
-        wrapped.push(String::new());
-    }
-
-    Some(
-        wrapped
-            .into_iter()
-            .enumerate()
-            .map(|(index, wrapped_line)| {
-                if index == 0 {
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled("• ", Style::default().fg(SURFACE_GRAY)),
-                        Span::styled(label_text.clone(), label_style),
-                        Span::styled(wrapped_line, body_style),
-                    ])
-                } else {
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::raw(" ".repeat(prefix_width)),
-                        Span::styled(wrapped_line, body_style),
-                    ])
-                }
-            })
-            .collect(),
+    pending_band::pending_render_signature_for_geometry(
+        app.pending_turn,
+        app.turn_start,
+        app.spinner_seed,
+        &visible_lines,
+        &app.pending_steers,
+        &app.pending_queue,
+        geometry,
     )
-}
-
-fn pending_tool_headline_parts(
-    trimmed: &str,
-    start: std::time::Instant,
-) -> Option<(&'static str, &str, Style, Style)> {
-    if let Some(rest) = trimmed.strip_prefix("Called ") {
-        return Some((
-            "Called",
-            rest,
-            Style::default()
-                .fg(pending_tool_label_color(start))
-                .add_modifier(Modifier::BOLD),
-            Style::default()
-                .fg(pending_tool_body_color(start))
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-
-    if let Some(rest) = trimmed.strip_prefix("Closed ") {
-        return Some((
-            "Closed",
-            rest,
-            Style::default()
-                .fg(SURFACE_GRAY)
-                .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_GRAY),
-        ));
-    }
-
-    if let Some(rest) = trimmed.strip_prefix("Approval ") {
-        return Some((
-            "Approval",
-            rest,
-            Style::default()
-                .fg(SURFACE_ACCENT)
-                .add_modifier(Modifier::BOLD),
-            Style::default().fg(Color::White),
-        ));
-    }
-
-    if let Some(rest) = trimmed.strip_prefix("Denied ") {
-        return Some((
-            "Denied",
-            rest,
-            Style::default()
-                .fg(SURFACE_RED)
-                .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_RED),
-        ));
-    }
-
-    None
-}
-
-fn pending_tool_animation_frame(start: std::time::Instant) -> usize {
-    if reduced_motion_enabled() {
-        return PENDING_TOOL_LABEL_COLORS.len().saturating_sub(2);
-    }
-    pending_tool_animation_frame_for_elapsed(start.elapsed())
-}
-
-fn pending_tool_animation_frame_for_elapsed(elapsed: Duration) -> usize {
-    let frame_count = PENDING_TOOL_LABEL_COLORS.len().max(1) as u64;
-    ((elapsed.as_millis() as u64 / PENDING_TOOL_ANIMATION_FRAME_MS.max(1)) % frame_count) as usize
-}
-
-fn pending_tool_label_color(start: std::time::Instant) -> Color {
-    let frame = pending_tool_animation_frame(start);
-    *PENDING_TOOL_LABEL_COLORS
-        .get(frame)
-        .unwrap_or(&SURFACE_CYAN)
-}
-
-fn pending_tool_body_color(start: std::time::Instant) -> Color {
-    let frame = pending_tool_animation_frame(start);
-    *PENDING_TOOL_BODY_COLORS.get(frame).unwrap_or(&Color::White)
-}
-
-fn render_pending_tool_child_line(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
-    let trimmed = line.trim_start();
-    let body = trimmed.strip_prefix("↳ ")?;
-    let (label, rest) = body.split_once(' ').unwrap_or((body, ""));
-    let label_text = if rest.is_empty() {
-        String::new()
-    } else {
-        format!("{label} ")
-    };
-    let (label_style, body_style) = pending_tool_child_styles(label);
-    let prefix_width = 2 + crate::presentation::display_width(label_text.as_str());
-    let body_width = content_width.saturating_sub(prefix_width).max(1);
-    let mut wrapped =
-        crate::presentation::render_wrapped_literal_display_line(rest.trim(), body_width);
-    if wrapped.is_empty() {
-        wrapped.push(String::new());
-    }
-
-    Some(
-        wrapped
-            .into_iter()
-            .enumerate()
-            .map(|(index, wrapped_line)| {
-                if index == 0 {
-                    let mut spans = vec![
-                        Span::raw("  "),
-                        Span::styled("↳ ", Style::default().fg(SURFACE_ACCENT)),
-                    ];
-                    if !label_text.is_empty() {
-                        spans.push(Span::styled(label_text.clone(), label_style));
-                    }
-                    spans.push(Span::styled(wrapped_line, body_style));
-                    Line::from(spans)
-                } else {
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::raw(" ".repeat(prefix_width)),
-                        Span::styled(wrapped_line, body_style),
-                    ])
-                }
-            })
-            .collect(),
-    )
-}
-
-fn pending_tool_child_styles(label: &str) -> (Style, Style) {
-    match label {
-        "stdout" => (
-            Style::default()
-                .fg(SURFACE_GREEN)
-                .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_DARK_GRAY),
-        ),
-        "stderr" => (
-            Style::default()
-                .fg(SURFACE_RED)
-                .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_RED).add_modifier(Modifier::DIM),
-        ),
-        "file" => (
-            Style::default()
-                .fg(SURFACE_CYAN)
-                .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_DARK_GRAY),
-        ),
-        "metrics" => (
-            Style::default()
-                .fg(SURFACE_GRAY)
-                .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_DARK_GRAY),
-        ),
-        "request" | "args" => (
-            Style::default()
-                .fg(SURFACE_ACCENT)
-                .add_modifier(Modifier::BOLD),
-            Style::default().fg(SURFACE_DARK_GRAY),
-        ),
-        _ => (
-            Style::default().fg(SURFACE_ACCENT),
-            Style::default().fg(SURFACE_DARK_GRAY),
-        ),
-    }
-}
-
-fn render_pending_tool_sample_line(line: &str, content_width: usize) -> Option<Vec<Line<'static>>> {
-    if !line.starts_with("    ") {
-        return None;
-    }
-
-    let sample = line.trim_start();
-    if sample.is_empty() {
-        return None;
-    }
-
-    let sample_style = if sample.starts_with('+') {
-        Style::default().fg(SURFACE_GREEN)
-    } else if sample.starts_with('-') {
-        Style::default().fg(SURFACE_RED)
-    } else {
-        Style::default().fg(SURFACE_DARK_GRAY)
-    };
-    let sample_width = content_width.saturating_sub(4).max(1);
-
-    Some(
-        crate::presentation::render_wrapped_literal_display_line(sample, sample_width)
-            .into_iter()
-            .enumerate()
-            .map(|(index, wrapped_line)| {
-                let guide = if index == 0 { "    " } else { "      " };
-                Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(guide, Style::default().fg(SURFACE_DARK_GRAY)),
-                    Span::styled(wrapped_line, sample_style),
-                ])
-            })
-            .collect(),
-    )
-}
-
-fn append_pending_input_preview_lines(
-    lines: &mut Vec<Line<'static>>,
-    pending_steers: &VecDeque<String>,
-    pending_queue: &VecDeque<String>,
-    width: u16,
-    has_live_preview: bool,
-) {
-    const MAX_PENDING_PREVIEW_MESSAGES: usize = 3;
-
-    if pending_steers.is_empty() && pending_queue.is_empty() {
-        return;
-    }
-
-    if has_live_preview || lines.last().is_some_and(|line| !line.spans.is_empty()) {
-        lines.push(Line::from(""));
-    }
-
-    let content_width = width.saturating_sub(6).max(1) as usize;
-    let mut remaining_preview_budget = MAX_PENDING_PREVIEW_MESSAGES;
-    if !pending_steers.is_empty() {
-        push_pending_input_header(
-            lines,
-            content_width,
-            "Messages to be submitted after next tool call",
-            Some("Esc"),
-            "to interrupt and send immediately",
-        );
-        let preview_items = pending_steers
-            .iter()
-            .map(|message| {
-                (
-                    message.as_str(),
-                    Style::default()
-                        .fg(SURFACE_CYAN)
-                        .add_modifier(Modifier::DIM),
-                )
-            })
-            .collect::<Vec<_>>();
-        let displayed = push_pending_input_lines(
-            lines,
-            &preview_items,
-            content_width,
-            "    ↳ ",
-            remaining_preview_budget,
-        );
-        remaining_preview_budget = remaining_preview_budget.saturating_sub(displayed);
-    }
-
-    if !pending_queue.is_empty() {
-        if !pending_steers.is_empty() {
-            lines.push(Line::from(""));
-        }
-        push_pending_input_header(lines, content_width, "Queued follow-up messages", None, "");
-        let preview_items = pending_queue
-            .iter()
-            .map(|message| {
-                (
-                    message.as_str(),
-                    Style::default()
-                        .fg(SURFACE_GRAY)
-                        .add_modifier(Modifier::DIM | Modifier::ITALIC),
-                )
-            })
-            .collect::<Vec<_>>();
-        push_pending_input_lines(
-            lines,
-            &preview_items,
-            content_width,
-            "    ↳ ",
-            remaining_preview_budget,
-        );
-    }
-}
-
-fn push_pending_input_header(
-    lines: &mut Vec<Line<'static>>,
-    content_width: usize,
-    title: &str,
-    key_hint: Option<&str>,
-    suffix: &str,
-) {
-    let mut spans = vec![
-        Span::styled(
-            "• ",
-            Style::default()
-                .fg(SURFACE_GRAY)
-                .add_modifier(Modifier::DIM),
-        ),
-        Span::styled(title.to_owned(), Style::default().fg(SURFACE_GRAY)),
-    ];
-    if let Some(key_hint) = key_hint {
-        spans.push(Span::styled(
-            " (press ".to_owned(),
-            Style::default()
-                .fg(SURFACE_GRAY)
-                .add_modifier(Modifier::DIM),
-        ));
-        spans.push(Span::styled(
-            key_hint.to_owned(),
-            Style::default()
-                .fg(SURFACE_ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            format!(" {suffix})"),
-            Style::default()
-                .fg(SURFACE_GRAY)
-                .add_modifier(Modifier::DIM),
-        ));
-    }
-    for (line_index, wrapped) in crate::presentation::render_wrapped_text_line(
-        "",
-        &spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect::<String>(),
-        content_width + 2,
-    )
-    .into_iter()
-    .enumerate()
-    {
-        let prefix = if line_index == 0 { "" } else { "  " };
-        lines.push(Line::from(vec![Span::styled(
-            format!("{prefix}{wrapped}"),
-            Style::default()
-                .fg(SURFACE_GRAY)
-                .add_modifier(Modifier::DIM),
-        )]));
-    }
-}
-
-fn push_pending_input_lines(
-    lines: &mut Vec<Line<'static>>,
-    messages: &[(&str, Style)],
-    content_width: usize,
-    first_prefix: &str,
-    max_preview_messages: usize,
-) -> usize {
-    let displayed_messages = messages.len().min(max_preview_messages);
-    for (message, message_style) in messages.iter().take(max_preview_messages) {
-        let wrapped_lines =
-            crate::presentation::render_wrapped_literal_display_line(message, content_width);
-        let wrapped_count = wrapped_lines.len();
-        for (line_index, wrapped) in wrapped_lines.into_iter().take(3).enumerate() {
-            let prefix = if line_index == 0 {
-                first_prefix.to_owned()
-            } else {
-                "      ".to_owned()
-            };
-            lines.push(Line::from(vec![
-                Span::raw(prefix),
-                Span::styled(wrapped, *message_style),
-            ]));
-        }
-
-        if wrapped_count > 3 {
-            lines.push(Line::from(vec![
-                Span::raw("      "),
-                Span::styled("…".to_owned(), *message_style),
-            ]));
-        }
-    }
-
-    let remaining_messages = messages.len().saturating_sub(displayed_messages);
-    if remaining_messages > 0 {
-        lines.push(Line::from(vec![
-            Span::raw("      "),
-            Span::styled(
-                format!("… +{remaining_messages} more"),
-                Style::default()
-                    .fg(SURFACE_GRAY)
-                    .add_modifier(Modifier::DIM),
-            ),
-        ]));
-    }
-
-    displayed_messages
-}
-
-fn compact_pending_lines_for_height(
-    mut lines: Vec<Line<'static>>,
-    max_height: u16,
-) -> Vec<Line<'static>> {
-    let max_height = max_height.max(1) as usize;
-    if lines.len() <= max_height {
-        return lines;
-    }
-
-    let removable_blank_indices = [0usize, lines.len().saturating_sub(1), 2usize];
-    for index in removable_blank_indices {
-        if lines.len() <= max_height {
-            break;
-        }
-        if lines
-            .get(index)
-            .is_some_and(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
-        {
-            lines.remove(index);
-        }
-    }
-
-    while lines.len() > max_height {
-        if let Some(index) = lines.iter().enumerate().skip(2).find_map(|(idx, line)| {
-            line.spans
-                .iter()
-                .all(|span| span.content.trim().is_empty())
-                .then_some(idx)
-        }) {
-            lines.remove(index);
-        } else {
-            break;
-        }
-    }
-
-    lines.truncate(max_height);
-    lines
 }
 
 fn format_cwd(runtime: &CliTurnRuntime) -> String {
@@ -8573,6 +8268,7 @@ mod tests {
     use crate::chat::chat_surface::message_list::{
         MessageList, StartupEyeAnimation, StartupEyeFocus,
     };
+    use crate::chat::chat_surface::pending_motion;
     use crate::chat::chat_surface::utils::SURFACE_USER_MSG_BG;
     use crate::chat::{
         CliChatOptions, CliSessionRequirement, initialize_cli_turn_runtime_with_loaded_config,
@@ -8582,7 +8278,7 @@ mod tests {
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
-    use ratatui::{Terminal, backend::TestBackend, layout::Rect, style::Style};
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
     use std::collections::BTreeSet;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicUsize;
@@ -8623,6 +8319,7 @@ mod tests {
             cwd: "/tmp/example".to_owned(),
             model: "gpt-test".to_owned(),
             title: None,
+            show_reasoning: true,
             i18n: I18nService::new(Language::En),
         }
     }
@@ -8799,16 +8496,18 @@ mod tests {
 
     #[test]
     fn pending_tool_animation_frames_cycle_between_dim_and_bright_states() {
-        let early = super::pending_tool_animation_frame_for_elapsed(Duration::from_millis(0));
-        let bright = super::pending_tool_animation_frame_for_elapsed(Duration::from_millis(360));
+        let early =
+            pending_motion::pending_tool_animation_frame_for_elapsed(Duration::from_millis(0));
+        let bright =
+            pending_motion::pending_tool_animation_frame_for_elapsed(Duration::from_millis(360));
 
         assert_ne!(early, bright);
         assert_eq!(
-            super::PENDING_TOOL_LABEL_COLORS[early],
+            pending_motion::PENDING_TOOL_LABEL_COLORS[early],
             super::SURFACE_DIM_GRAY
         );
         assert_eq!(
-            super::PENDING_TOOL_LABEL_COLORS[bright],
+            pending_motion::PENDING_TOOL_LABEL_COLORS[bright],
             super::Color::White
         );
     }
@@ -9037,6 +8736,33 @@ mod tests {
     }
 
     #[test]
+    fn transcript_keeps_minimum_visible_height_when_messages_exist() {
+        let backend = TestBackend::new(28, 10);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.pending_queue
+            .push_back("after that, summarize the diff and keep the footer visible".to_owned());
+        app.message_list.add_user_message("hello".to_owned());
+        app.message_list
+            .add_assistant_message("reply with enough words to wrap".to_owned());
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal);
+        let transcript_row = lines
+            .iter()
+            .position(|line| line.contains("reply with"))
+            .expect("visible transcript row");
+        let pending_row = lines
+            .iter()
+            .position(|line| line.contains("Queued follow-up"))
+            .expect("pending row");
+
+        assert!(transcript_row < pending_row, "expected transcript rows to remain above pending band: {lines:?}");
+    }
+
+    #[test]
     fn wrapped_composer_expands_before_footer() {
         let backend = TestBackend::new(16, 12);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -9076,12 +8802,8 @@ mod tests {
             .position(|line| line.contains("/tmp/example"))
             .expect("footer row");
 
-        assert_eq!(
-            footer_row,
-            lines
-                .len()
-                .saturating_sub(super::FOOTER_BOTTOM_BREATHING_HEIGHT as usize + 1)
-        );
+        assert_eq!(footer_row, lines.len().saturating_sub(3));
+        assert!(lines[footer_row + 1].trim().is_empty());
         assert!(lines.last().is_some_and(|line| line.trim().is_empty()));
     }
 
@@ -10540,7 +10262,7 @@ description: "actual description"
 
     #[test]
     fn compact_pending_lines_drops_padding_before_content_on_tiny_height() {
-        let lines = super::build_pending_lines(
+        let lines = super::pending_band::build_pending_lines(
             Some(std::time::Instant::now()),
             &["visible reply".to_owned()],
             1,
@@ -10549,7 +10271,7 @@ description: "actual description"
             40,
         );
 
-        let compacted = super::compact_pending_lines_for_height(lines, 3);
+        let compacted = super::pending_band::compact_pending_lines(lines, 3);
         let rendered = compacted
             .into_iter()
             .map(|line| {
@@ -10599,7 +10321,7 @@ description: "actual description"
 
     #[test]
     fn pending_preview_styles_tool_activity_without_flattening_it_into_plain_text() {
-        let lines = super::build_pending_lines(
+        let lines = super::pending_band::build_pending_lines(
             Some(std::time::Instant::now()),
             &[
                 "• Called read_file · working".to_owned(),
@@ -10626,7 +10348,7 @@ description: "actual description"
             .find(|span| span.content.as_ref() == "Called ")
             .expect("called label");
         assert!(
-            super::PENDING_TOOL_LABEL_COLORS.contains(
+            pending_motion::PENDING_TOOL_LABEL_COLORS.contains(
                 &called_label
                     .style
                     .fg
@@ -10673,11 +10395,13 @@ description: "actual description"
 
     #[test]
     fn pending_live_generic_line_preserves_plain_label_like_text() {
-        let rendered = super::render_pending_live_line(
-            "source: imported config at ~/.loong/config.toml",
-            24,
-            Style::default(),
-            std::time::Instant::now(),
+        let rendered = super::pending_band::build_pending_lines(
+            Some(std::time::Instant::now()),
+            &["source: imported config at ~/.loong/config.toml".to_owned()],
+            1,
+            &std::collections::VecDeque::new(),
+            &std::collections::VecDeque::new(),
+            26,
         )
         .into_iter()
         .map(|line| {
@@ -10707,7 +10431,7 @@ description: "actual description"
 
     #[test]
     fn pending_tool_activity_preserves_literal_plus_prefix() {
-        let rendered = super::build_pending_lines(
+        let rendered = super::pending_band::build_pending_lines(
             Some(std::time::Instant::now()),
             &[
                 "• Called + added ~/.loong/config.toml".to_owned(),
@@ -10760,7 +10484,7 @@ description: "actual description"
         let mut pending_queue = std::collections::VecDeque::new();
         pending_queue.push_back("+ added ~/.loong/config.toml".to_owned());
 
-        let rendered = super::build_pending_lines(
+        let rendered = super::pending_band::build_pending_lines(
             Some(std::time::Instant::now()),
             &[],
             1,
@@ -10829,6 +10553,69 @@ description: "actual description"
         let lines = buffer_lines(&terminal).join("\n");
         assert!(lines.contains("quiet reasoning"));
         assert!(lines.contains("visible reply"));
+    }
+
+    #[test]
+    fn pending_preview_hides_reasoning_when_show_reasoning_is_disabled() {
+        let backend = TestBackend::new(70, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.show_reasoning = false;
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut live) = app.live_transcript.lock() {
+            live.draft_preview = Some("quiet reasoning\n\nvisible reply".to_owned());
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal).join("\n");
+        assert!(!lines.contains("quiet reasoning"));
+        assert!(lines.contains("visible reply"));
+    }
+
+    #[test]
+    fn pending_preview_keeps_reasoning_when_show_reasoning_is_enabled() {
+        let backend = TestBackend::new(70, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.show_reasoning = true;
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut live) = app.live_transcript.lock() {
+            live.draft_preview = Some("quiet reasoning\n\nvisible reply".to_owned());
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal).join("\n");
+        assert!(lines.contains("quiet reasoning"));
+        assert!(lines.contains("────────"));
+        assert!(lines.contains("visible reply"));
+    }
+
+    #[test]
+    fn pending_preview_inserts_divider_above_tool_activity_band() {
+        let backend = TestBackend::new(70, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.show_reasoning = true;
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut live) = app.live_transcript.lock() {
+            live.tool_activity_lines = vec![
+                "quiet reasoning".to_owned(),
+                String::new(),
+                "• Called read_file · working".to_owned(),
+                "  ↳ Read src/main.rs".to_owned(),
+            ];
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal).join("\n");
+        assert!(lines.contains("────────"));
+        assert!(lines.contains("Called read_file"));
     }
 
     #[test]
@@ -10991,10 +10778,11 @@ description: "actual description"
     }
 
     #[test]
-    fn pending_preview_truncation_ignores_hidden_plain_reply_segments() {
+    fn pending_preview_truncation_keeps_reasoning_and_reply_when_enabled() {
         let backend = TestBackend::new(70, 12);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = blank_app();
+        app.show_reasoning = true;
         app.message_list.add_user_message("hi".to_owned());
         app.pending_turn = true;
         app.turn_start = Some(std::time::Instant::now());
@@ -11007,8 +10795,30 @@ description: "actual description"
         terminal.draw(|f| app.render(f)).expect("draw");
         let rendered = buffer_lines(&terminal).join("\n");
 
-        assert!(rendered.contains("reason-1"));
-        assert!(rendered.contains("reason-2"));
+        assert!(rendered.contains("reply-1"));
+        assert!(rendered.contains("reply-2"));
+    }
+
+    #[test]
+    fn pending_preview_truncation_hides_reasoning_when_disabled() {
+        let backend = TestBackend::new(70, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = blank_app();
+        app.show_reasoning = false;
+        app.message_list.add_user_message("hi".to_owned());
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        if let Ok(mut live) = app.live_transcript.lock() {
+            live.draft_preview = Some(
+                "reason-1\nreason-2\nreason-3\nreason-4\n\nreply-1\nreply-2\nreply-3".to_owned(),
+            );
+        }
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let rendered = buffer_lines(&terminal).join("\n");
+
+        assert!(!rendered.contains("reason-1"));
+        assert!(!rendered.contains("reason-2"));
         assert!(rendered.contains("reply-1"));
         assert!(rendered.contains("reply-2"));
     }
@@ -11029,7 +10839,7 @@ description: "actual description"
             draft_preview: None,
         }));
 
-        let normalized = super::pending_live_lines(&lines, 6);
+        let normalized = super::pending_live_lines(&lines, 6, true);
         assert_eq!(
             normalized,
             vec!["reasoning".to_owned(), String::new(), "reply".to_owned(),]
@@ -11052,11 +10862,47 @@ description: "actual description"
             draft_preview: None,
         }));
 
-        let compact = super::pending_live_lines(&lines, 4);
-        let expanded = super::pending_live_lines(&lines, 7);
+        let compact = super::pending_live_lines(&lines, 4, true);
+        let expanded = super::pending_live_lines(&lines, 7, true);
 
         assert!(compact.len() < expanded.len());
         assert!(expanded.iter().any(|line| line.contains("reply-3")));
+    }
+
+    #[test]
+    fn pending_live_lines_can_hide_reasoning_when_disabled() {
+        let lines = Arc::new(StdMutex::new(LiveTranscriptState {
+            tool_activity_lines: vec![
+                "reason-1".to_owned(),
+                "reason-2".to_owned(),
+                String::new(),
+                "reply-1".to_owned(),
+                "reply-2".to_owned(),
+            ],
+            draft_preview: None,
+        }));
+
+        let without_reasoning = super::pending_live_lines(&lines, 6, false);
+        assert!(!without_reasoning.iter().any(|line| line.contains("reason-1")));
+        assert!(without_reasoning.iter().any(|line| line.contains("reply-1")));
+        assert!(without_reasoning.iter().any(|line| line.contains("reply-2")));
+    }
+
+    #[test]
+    fn pending_live_lines_keep_reasoning_when_enabled() {
+        let lines = Arc::new(StdMutex::new(LiveTranscriptState {
+            tool_activity_lines: vec![
+                "reason-1".to_owned(),
+                "reason-2".to_owned(),
+                String::new(),
+                "reply-1".to_owned(),
+            ],
+            draft_preview: None,
+        }));
+
+        let with_reasoning = super::pending_live_lines(&lines, 6, true);
+        assert!(with_reasoning.iter().any(|line| line.contains("reason-1")));
+        assert!(with_reasoning.iter().any(|line| line.contains("reply-1")));
     }
 
     #[test]
@@ -11272,6 +11118,157 @@ description: "actual description"
         assert!(lines.iter().any(|line| line.contains("401")));
     }
 
+    #[tokio::test]
+    async fn finalized_pending_turn_hides_reasoning_when_disabled() {
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let config_path = PathBuf::from("/tmp/loong-finalized-reasoning-hidden.toml");
+        let mut runtime = test_runtime_with_path(config_path);
+        let mut app = blank_app();
+        app.show_reasoning = false;
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.pending_task = Some(tokio::spawn(async {
+            Ok("<think>quiet reasoning\nsecond line</think>Hello there".to_owned())
+        }));
+        tokio::task::yield_now().await;
+
+        let finalized = super::maybe_finalize_pending_turn(&mut terminal, &mut app, &mut runtime)
+            .await
+            .expect("finalize pending turn");
+        assert!(finalized);
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal).join("\n");
+        assert!(!lines.contains("quiet reasoning"));
+        assert!(!lines.contains("second line"));
+        assert!(lines.contains("Hello there"));
+    }
+
+    #[tokio::test]
+    async fn finalized_pending_turn_keeps_reasoning_when_enabled() {
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let config_path = PathBuf::from("/tmp/loong-finalized-reasoning-visible.toml");
+        let mut runtime = test_runtime_with_path(config_path);
+        let mut app = blank_app();
+        app.show_reasoning = true;
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.pending_task = Some(tokio::spawn(async {
+            Ok("<think>quiet reasoning\nsecond line</think>Hello there".to_owned())
+        }));
+        tokio::task::yield_now().await;
+
+        let finalized = super::maybe_finalize_pending_turn(&mut terminal, &mut app, &mut runtime)
+            .await
+            .expect("finalize pending turn");
+        assert!(finalized);
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal).join("\n");
+        assert!(lines.contains("quiet reasoning"));
+        assert!(lines.contains("second line"));
+        assert!(lines.contains("Hello there"));
+    }
+
+    #[tokio::test]
+    async fn finalized_pending_turn_hides_explicit_reasoning_heading_when_disabled() {
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let config_path = PathBuf::from("/tmp/loong-finalized-heading-hidden.toml");
+        let mut runtime = test_runtime_with_path(config_path);
+        let mut app = blank_app();
+        app.show_reasoning = false;
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.pending_task = Some(tokio::spawn(async {
+            Ok("## Reasoning\nThe provider compared two options.\n\nVisible answer.".to_owned())
+        }));
+        tokio::task::yield_now().await;
+
+        let finalized = super::maybe_finalize_pending_turn(&mut terminal, &mut app, &mut runtime)
+            .await
+            .expect("finalize pending turn");
+        assert!(finalized);
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal).join("\n");
+        assert!(!lines.contains("Reasoning"));
+        assert!(!lines.contains("The provider compared two options."));
+        assert!(lines.contains("Visible answer."));
+    }
+
+    #[tokio::test]
+    async fn finalized_pending_turn_keeps_explicit_reasoning_heading_when_enabled() {
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let config_path = PathBuf::from("/tmp/loong-finalized-heading-visible.toml");
+        let mut runtime = test_runtime_with_path(config_path);
+        let mut app = blank_app();
+        app.show_reasoning = true;
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.pending_task = Some(tokio::spawn(async {
+            Ok("## Reasoning\nThe provider compared two options.\n\nVisible answer.".to_owned())
+        }));
+        tokio::task::yield_now().await;
+
+        let finalized = super::maybe_finalize_pending_turn(&mut terminal, &mut app, &mut runtime)
+            .await
+            .expect("finalize pending turn");
+        assert!(finalized);
+
+        terminal.draw(|f| app.render(f)).expect("draw");
+        let lines = buffer_lines(&terminal).join("\n");
+        assert!(lines.contains("The provider compared two options."));
+        assert!(lines.contains("Visible answer."));
+    }
+
+    #[tokio::test]
+    async fn finalized_pending_turn_drops_reasoning_only_reply_when_disabled() {
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let config_path = PathBuf::from("/tmp/loong-finalized-reasoning-only-hidden.toml");
+        let mut runtime = test_runtime_with_path(config_path);
+        let mut app = blank_app();
+        app.show_reasoning = false;
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.pending_task = Some(tokio::spawn(async {
+            Ok("<think>quiet reasoning only</think>".to_owned())
+        }));
+        tokio::task::yield_now().await;
+
+        let finalized = super::maybe_finalize_pending_turn(&mut terminal, &mut app, &mut runtime)
+            .await
+            .expect("finalize pending turn");
+        assert!(finalized);
+        assert!(app.message_list.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn finalized_pending_turn_drops_explicit_reasoning_only_reply_when_disabled() {
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let config_path = PathBuf::from("/tmp/loong-finalized-heading-only-hidden.toml");
+        let mut runtime = test_runtime_with_path(config_path);
+        let mut app = blank_app();
+        app.show_reasoning = false;
+        app.pending_turn = true;
+        app.turn_start = Some(std::time::Instant::now());
+        app.pending_task = Some(tokio::spawn(async {
+            Ok("## Reasoning\nThe provider compared two options.".to_owned())
+        }));
+        tokio::task::yield_now().await;
+
+        let finalized = super::maybe_finalize_pending_turn(&mut terminal, &mut app, &mut runtime)
+            .await
+            .expect("finalize pending turn");
+        assert!(finalized);
+        assert!(app.message_list.messages.is_empty());
+    }
+
     #[test]
     fn width_resize_does_not_surface_internal_tool_result_or_transport_tail_in_plain_reply() {
         let backend = TestBackend::new(72, 18);
@@ -11442,6 +11439,31 @@ description: "actual description"
     }
 
     #[test]
+    fn compact_pending_lines_prefers_message_rows_over_headers_on_tight_height() {
+        let lines = super::pending_band::build_pending_lines(
+            Some(std::time::Instant::now()),
+            &[],
+            1,
+            &std::collections::VecDeque::from(["first steer".to_owned()]),
+            &std::collections::VecDeque::from(["queued follow-up".to_owned()]),
+            40,
+        );
+
+        let compacted = super::pending_band::compact_pending_lines(lines, 5)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(compacted.iter().any(|line| line.contains("first steer")));
+        assert!(compacted.iter().any(|line| line.contains("queued follow-up")));
+    }
+
+    #[test]
     fn pending_preview_collapses_extra_messages_into_overflow_count() {
         let backend = TestBackend::new(72, 20);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -11499,6 +11521,424 @@ description: "actual description"
         );
         assert!(app.composer.is_empty());
         assert!(!app.composer_follow_up_intent);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn fresh_local_session_reset_replaces_runtime_session_id() {
+        let (config, _memory_config, sqlite_path) =
+            crate::chat::tests::init_chat_test_memory("fresh-local-session-reset");
+        let mut runtime = crate::chat::initialize_cli_turn_runtime_with_loaded_config(
+            sqlite_path.clone(),
+            config,
+            Some("default"),
+            &crate::chat::CliChatOptions::default(),
+            "fresh-local-session-reset",
+            crate::chat::CliSessionRequirement::AllowImplicitDefault,
+            false,
+        )
+        .expect("runtime");
+        let old_session_id = runtime.session_id.clone();
+
+        let mut app = blank_app();
+        app.pending_turn = true;
+        app.pending_steers.push_back("queued".to_owned());
+        app.message_list.add_assistant_message("existing transcript".to_owned());
+
+        super::reset_runtime_for_fresh_local_session(&mut app, &mut runtime)
+            .expect("fresh local session");
+
+        assert_ne!(runtime.session_id, old_session_id);
+        assert!(runtime.session_id.starts_with("chat-"));
+        assert!(app.message_list.export_markdown().trim().is_empty());
+        assert!(app.pending_steers.is_empty());
+        assert!(!app.pending_turn);
+
+        crate::chat::tests::cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn resume_local_session_restores_recent_root_transcript() {
+        let (config, memory_config, sqlite_path) =
+            crate::chat::tests::init_chat_test_memory("resume-local-session");
+        let repo = crate::session::repository::SessionRepository::new(&memory_config)
+            .expect("repository");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "root-a".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root A".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("root a");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "root-b".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root B".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("root b");
+        crate::session::store::append_session_turn_direct("root-a", "user", "older", &memory_config)
+            .expect("turn a");
+        crate::session::store::append_session_turn_direct("root-b", "user", "newer user", &memory_config)
+            .expect("turn b1");
+        crate::session::store::append_session_turn_direct("root-b", "assistant", "newer answer", &memory_config)
+            .expect("turn b2");
+
+        let mut runtime = crate::chat::initialize_cli_turn_runtime_with_loaded_config(
+            sqlite_path.clone(),
+            config,
+            Some("default"),
+            &crate::chat::CliChatOptions::default(),
+            "resume-local-session",
+            crate::chat::CliSessionRequirement::AllowImplicitDefault,
+            false,
+        )
+        .expect("runtime");
+        let mut app = blank_app();
+
+        super::resume_local_session(&mut app, &mut runtime, "root-b", 80)
+            .expect("resume local session");
+
+        let exported = app.message_list.export_markdown();
+        assert!(exported.contains("newer user"));
+        assert!(exported.contains("newer answer"));
+        assert_eq!(runtime.session_id, "root-b");
+
+        crate::chat::tests::cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn resume_local_session_restores_full_paged_transcript() {
+        let (config, memory_config, sqlite_path) =
+            crate::chat::tests::init_chat_test_memory("resume-full-transcript");
+        let repo = crate::session::repository::SessionRepository::new(&memory_config)
+            .expect("repository");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "root-long".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Root Long".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("root long");
+        for idx in 0..20 {
+            let role = if idx % 2 == 0 { "user" } else { "assistant" };
+            crate::session::store::append_session_turn_direct(
+                "root-long",
+                role,
+                &format!("turn-{idx}"),
+                &memory_config,
+            )
+            .expect("seed turn");
+        }
+
+        let mut config = config;
+        config.memory.sliding_window = 4;
+        let mut runtime = crate::chat::initialize_cli_turn_runtime_with_loaded_config(
+            sqlite_path.clone(),
+            config,
+            Some("default"),
+            &crate::chat::CliChatOptions::default(),
+            "resume-full-transcript",
+            crate::chat::CliSessionRequirement::AllowImplicitDefault,
+            false,
+        )
+        .expect("runtime");
+        let mut app = blank_app();
+
+        super::resume_local_session(&mut app, &mut runtime, "root-long", 80)
+            .expect("resume local session");
+
+        let exported = app.message_list.export_markdown();
+        assert!(exported.contains("turn-0"));
+        assert!(exported.contains("turn-19"));
+
+        crate::chat::tests::cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn resume_local_session_updates_local_title_from_session_label() {
+        let (config, memory_config, sqlite_path) =
+            crate::chat::tests::init_chat_test_memory("resume-title");
+        let repo = crate::session::repository::SessionRepository::new(&memory_config)
+            .expect("repository");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "root-labeled".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Named Session".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("root labeled");
+        crate::session::store::append_session_turn_direct("root-labeled", "user", "hello", &memory_config)
+            .expect("seed turn");
+
+        let mut runtime = crate::chat::initialize_cli_turn_runtime_with_loaded_config(
+            sqlite_path.clone(),
+            config,
+            None,
+            &crate::chat::CliChatOptions::default(),
+            "resume-title",
+            crate::chat::CliSessionRequirement::AllowImplicitDefault,
+            false,
+        )
+        .expect("runtime");
+        let mut app = blank_app();
+
+        super::resume_local_session(&mut app, &mut runtime, "root-labeled", 80)
+            .expect("resume local session");
+
+        assert_eq!(app.title.as_deref(), Some("Named Session"));
+
+        crate::chat::tests::cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn title_command_persists_session_label_for_resume_picker() {
+        let (config, _memory_config, sqlite_path) =
+            crate::chat::tests::init_chat_test_memory("title-persist");
+        let mut runtime = crate::chat::initialize_cli_turn_runtime_with_loaded_config(
+            sqlite_path.clone(),
+            config,
+            None,
+            &crate::chat::CliChatOptions {
+                fresh_session: true,
+                ..crate::chat::CliChatOptions::default()
+            },
+            "title-persist",
+            crate::chat::CliSessionRequirement::AllowImplicitDefault,
+            false,
+        )
+        .expect("runtime");
+        let mut app = blank_app();
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        crate::session::store::append_session_turn_direct(
+            runtime.session_id.as_str(),
+            "user",
+            "seed resumable turn",
+            &runtime.memory_config,
+        )
+        .expect("seed current session turn");
+
+        tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(super::run_surface_command(
+                &mut terminal,
+                &mut app,
+                &mut runtime,
+                &CliChatOptions::default(),
+                "/title Renamed Session",
+            ))
+            .expect("run title command");
+
+        super::open_resume_palette(&mut app, &runtime).expect("open resume palette");
+        let action = app
+            .command_palette
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match action {
+            Some(CommandAction::ResumeSession(session_id)) => {
+                assert_eq!(session_id, runtime.session_id);
+            }
+            other => panic!("expected current renamed session to be selected, got {other:?}"),
+        }
+
+        crate::chat::tests::cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn archive_local_session_rejects_current_session() {
+        let (config, _memory_config, sqlite_path) =
+            crate::chat::tests::init_chat_test_memory("archive-current");
+        let mut runtime = crate::chat::initialize_cli_turn_runtime_with_loaded_config(
+            sqlite_path.clone(),
+            config,
+            None,
+            &crate::chat::CliChatOptions {
+                fresh_session: true,
+                ..crate::chat::CliChatOptions::default()
+            },
+            "archive-current",
+            crate::chat::CliSessionRequirement::AllowImplicitDefault,
+            false,
+        )
+        .expect("runtime");
+        let current_session_id = runtime.session_id.clone();
+        let mut app = blank_app();
+
+        super::archive_local_session(&mut app, &mut runtime, current_session_id.as_str(), 80)
+            .expect("archive current session");
+
+        let exported = app.message_list.export_markdown();
+        assert!(exported.contains("Archive the current session"));
+        assert_eq!(runtime.session_id, current_session_id);
+        assert_eq!(app.focus, Focus::Composer);
+
+        crate::chat::tests::cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn archive_local_session_reports_refresh_after_archiving() {
+        let (config, memory_config, sqlite_path) =
+            crate::chat::tests::init_chat_test_memory("archive-refresh");
+        let repo = crate::session::repository::SessionRepository::new(&memory_config)
+            .expect("repository");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "root-archive".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Archive Target".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("root archive");
+        crate::session::store::append_session_turn_direct("root-archive", "user", "hello", &memory_config)
+            .expect("seed turn");
+
+        let mut runtime = crate::chat::initialize_cli_turn_runtime_with_loaded_config(
+            sqlite_path.clone(),
+            config,
+            None,
+            &crate::chat::CliChatOptions {
+                fresh_session: true,
+                ..crate::chat::CliChatOptions::default()
+            },
+            "archive-refresh",
+            crate::chat::CliSessionRequirement::AllowImplicitDefault,
+            false,
+        )
+        .expect("runtime");
+        let mut app = blank_app();
+
+        super::archive_local_session(&mut app, &mut runtime, "root-archive", 80)
+            .expect("archive local session");
+
+        let exported = app.message_list.export_markdown();
+        assert!(exported.contains("Archived local session `root-archive` and refreshed the picker."));
+
+        crate::chat::tests::cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn archive_local_session_refresh_keeps_resume_picker_modes_and_hides_archived_root() {
+        let (config, memory_config, sqlite_path) =
+            crate::chat::tests::init_chat_test_memory("archive-refresh-modes");
+        let repo = crate::session::repository::SessionRepository::new(&memory_config)
+            .expect("repository");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "root-archive".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Archive Target".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("root archive");
+        repo.create_session(crate::session::repository::NewSessionRecord {
+            session_id: "root-other".to_owned(),
+            kind: crate::session::repository::SessionKind::Root,
+            parent_session_id: None,
+            label: Some("Other Named".to_owned()),
+            state: crate::session::repository::SessionState::Ready,
+        })
+        .expect("root other");
+        crate::session::store::append_session_turn_direct(
+            "root-archive",
+            "user",
+            "hello",
+            &memory_config,
+        )
+        .expect("seed archive turn");
+        crate::session::store::append_session_turn_direct(
+            "root-other",
+            "user",
+            "there",
+            &memory_config,
+        )
+        .expect("seed other turn");
+
+        let mut runtime = crate::chat::initialize_cli_turn_runtime_with_loaded_config(
+            sqlite_path.clone(),
+            config,
+            None,
+            &crate::chat::CliChatOptions {
+                fresh_session: true,
+                ..crate::chat::CliChatOptions::default()
+            },
+            "archive-refresh-modes",
+            crate::chat::CliSessionRequirement::AllowImplicitDefault,
+            false,
+        )
+        .expect("runtime");
+        let mut app = blank_app();
+
+        super::open_resume_palette(&mut app, &runtime).expect("open resume palette");
+        let _ = app
+            .command_palette
+            .handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        let _ = app
+            .command_palette
+            .handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+
+        super::archive_local_session(&mut app, &mut runtime, "root-archive", 80)
+            .expect("archive local session");
+
+        assert_eq!(app.focus, Focus::CommandPalette);
+        let action = app
+            .command_palette
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match action {
+            Some(CommandAction::ResumeSession(session_id)) => {
+                assert_eq!(session_id, "root-other");
+            }
+            other => panic!("expected other visible named session after archive, got {other:?}"),
+        }
+
+        let exported = app.message_list.export_markdown();
+        assert!(exported.contains("Archived local session `root-archive` and refreshed the picker."));
+
+        crate::chat::tests::cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    #[test]
+    fn resume_local_session_is_noop_for_current_session() {
+        let (config, _memory_config, sqlite_path) =
+            crate::chat::tests::init_chat_test_memory("resume-current-session");
+        let mut runtime = crate::chat::initialize_cli_turn_runtime_with_loaded_config(
+            sqlite_path.clone(),
+            config,
+            None,
+            &crate::chat::CliChatOptions {
+                fresh_session: true,
+                ..crate::chat::CliChatOptions::default()
+            },
+            "resume-current-session",
+            crate::chat::CliSessionRequirement::AllowImplicitDefault,
+            false,
+        )
+        .expect("runtime");
+        let current_session_id = runtime.session_id.clone();
+        let mut app = blank_app();
+        app.message_list.add_user_message("keep me".to_owned());
+
+        super::resume_local_session(&mut app, &mut runtime, current_session_id.as_str(), 80)
+            .expect("resume current session");
+
+        let exported = app.message_list.export_markdown();
+        assert!(exported.contains("keep me"));
+        assert!(exported.contains("Already in the selected local session."));
+        assert_eq!(runtime.session_id, current_session_id);
+
+        crate::chat::tests::cleanup_chat_test_memory(&sqlite_path);
     }
 
     #[test]
