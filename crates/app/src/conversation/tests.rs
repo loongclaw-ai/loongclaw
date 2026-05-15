@@ -4091,10 +4091,7 @@ async fn handle_turn_with_runtime_records_task_progress_event() {
         .as_object()
         .expect("raw task progress payload");
 
-    assert_eq!(
-        raw_task_progress.get("session_id"),
-        Some(&Value::String(session_id.clone()))
-    );
+    assert_eq!(event.session_id, session_id);
     assert_eq!(
         raw_task_progress.get("task_id"),
         Some(&Value::String(task_progress.task_id.clone()))
@@ -4185,25 +4182,29 @@ async fn handle_turn_with_runtime_records_verifying_task_progress_before_complet
         .iter()
         .filter(|event| event.event_kind == crate::task_progress::TASK_PROGRESS_EVENT_KIND)
         .map(|event| {
-            event.payload_json["task_progress"]
-                .as_object()
-                .expect("raw task progress payload")
+            (
+                event.session_id.as_str(),
+                event.payload_json["task_progress"]
+                    .as_object()
+                    .expect("raw task progress payload"),
+            )
         })
         .collect::<Vec<_>>();
     let canonical_task_id = raw_task_progress_events[0]
+        .1
         .get("task_id")
         .and_then(Value::as_str)
         .expect("canonical task id")
         .to_owned();
 
     assert!(
-        raw_task_progress_events.iter().all(|task_progress| {
-            task_progress.get("session_id") == Some(&Value::String(session_id.clone()))
-        }),
+        raw_task_progress_events
+            .iter()
+            .all(|(event_session_id, _)| *event_session_id == session_id),
         "every task-progress event should retain the backing session mapping"
     );
     assert!(
-        raw_task_progress_events.iter().all(|task_progress| {
+        raw_task_progress_events.iter().all(|(_, task_progress)| {
             task_progress.get("task_id") == Some(&Value::String(canonical_task_id.clone()))
         }),
         "status transitions should stay attached to one canonical task id"

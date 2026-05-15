@@ -923,6 +923,9 @@ async fn execute_tasks_command_create_queues_background_task_and_surfaces_follow
     let task_id = execution.payload["task"]["task_id"]
         .as_str()
         .expect("task id");
+    let child_session_id = execution.payload["queued_outcome"]["child_session_id"]
+        .as_str()
+        .expect("queued child session id");
     let recipes = execution.payload["recipes"]
         .as_array()
         .expect("recipes array");
@@ -946,7 +949,15 @@ async fn execute_tasks_command_create_queues_background_task_and_surfaces_follow
         execution.payload["task"]["session"]["kind"],
         "delegate_child"
     );
-    assert!(task_id.starts_with("delegate:"));
+    assert_eq!(task_id, "ops-root");
+    assert_eq!(
+        execution.payload["task"]["task_session_id"],
+        execution.payload["queued_outcome"]["child_session_id"]
+    );
+    assert_eq!(
+        execution.payload["task"]["owner_session_id"],
+        execution.payload["queued_outcome"]["child_session_id"]
+    );
     assert_eq!(recipes.len(), 3);
     let task_started_immediately = task_status == "running";
     assert!(
@@ -990,7 +1001,7 @@ async fn execute_tasks_command_create_queues_background_task_and_surfaces_follow
         .expect("load root session")
         .expect("root session");
     let child_session = repo
-        .load_session(task_id)
+        .load_session(child_session_id)
         .expect("load child session")
         .expect("child session");
 
@@ -1110,11 +1121,11 @@ async fn execute_tasks_command_create_latest_session_selector_resolves_newest_re
     .await
     .expect("tasks create with latest selector should succeed");
 
-    let created_task_id = execution.payload["task"]["task_id"]
+    let created_task_session_id = execution.payload["queued_outcome"]["child_session_id"]
         .as_str()
-        .expect("created task id");
+        .expect("created task session id");
     let created_task = repo
-        .load_session(created_task_id)
+        .load_session(created_task_session_id)
         .expect("load created task session")
         .expect("created task session");
 
@@ -1277,11 +1288,8 @@ async fn execute_tasks_command_events_and_wait_surface_incremental_payloads() {
 
     assert_eq!(events_execution.payload["command"], "events");
     assert_eq!(events_execution.payload["task_id"], "delegate:task-1");
-    assert_eq!(
-        events_execution.payload["events"][0]["event_kind"],
-        "delegate_queued"
-    );
-    assert!(next_after_id >= 1);
+    assert_eq!(events_execution.payload["events"], json!([]));
+    assert_eq!(next_after_id, 0);
 
     let wait_execution = loong_daemon::tasks_cli::execute_tasks_command(
         loong_daemon::tasks_cli::TasksCommandOptions {
@@ -1301,7 +1309,10 @@ async fn execute_tasks_command_events_and_wait_surface_incremental_payloads() {
     assert_eq!(wait_execution.payload["command"], "wait");
     assert_eq!(wait_execution.payload["task_id"], "delegate:task-1");
     assert_eq!(wait_execution.payload["wait_status"], "timeout");
-    assert_eq!(wait_execution.payload["events"], json!([]));
+    assert_eq!(
+        wait_execution.payload["events"][0]["event_kind"],
+        "delegate_queued"
+    );
     assert_eq!(wait_execution.payload["task"]["task_id"], "delegate:task-1");
     assert_eq!(
         wait_execution.payload["task"]["task_status"]["status"],
