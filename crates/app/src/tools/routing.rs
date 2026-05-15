@@ -142,7 +142,7 @@ fn route_direct_browser_tool_name_for_view(
     view: &ToolView,
 ) -> Result<&'static str, String> {
     let routed_tool_name = route_direct_browser_tool_name(payload)?;
-    let browser_runtime_modes = tool_surface::direct_browser_runtime_modes_for_view(view);
+    let page_inspection_available = tool_surface::browser_page_inspection_available_in_view(view);
     let interactive_tool = matches!(
         routed_tool_name,
         "browser.companion.snapshot"
@@ -151,12 +151,12 @@ fn route_direct_browser_tool_name_for_view(
             | "browser.companion.wait"
     );
     if interactive_tool {
-        if browser_runtime_modes.page_inspection_available {
+        if view.contains(routed_tool_name) {
             return Ok(routed_tool_name);
         }
         return Err("managed browser automation is unavailable in this runtime".to_owned());
     }
-    if browser_runtime_modes.page_inspection_available {
+    if page_inspection_available {
         return Ok(routed_tool_name);
     }
     Err("browser page inspection is unavailable in this runtime".to_owned())
@@ -921,13 +921,8 @@ mod tests {
             "selector": "#submit",
             "text": "hello"
         });
-        let request = loong_contracts::ToolCoreRequest {
-            tool_name: "browse".to_owned(),
-            payload,
-        };
-        let error =
-            route_direct_tool_request(request, &runtime_config::ToolRuntimeConfig::default())
-                .expect_err("interactive browser automation should be unavailable");
+        let error = route_direct_browser_tool_name_for_view(&payload, &runtime_view)
+            .expect_err("interactive browser automation should be unavailable");
 
         assert!(error.contains("managed browser automation is unavailable"));
         assert_eq!(
