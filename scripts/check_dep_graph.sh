@@ -69,6 +69,7 @@ for node in meta["resolve"]["nodes"]:
 
 # Allowed edges (from architecture contract).
 allowed=(
+  "kernel -> plugin-sdk"
   "kernel -> contracts"
   "bridge-runtime -> contracts"
   "bridge-runtime -> kernel"

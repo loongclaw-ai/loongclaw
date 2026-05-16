@@ -52,7 +52,7 @@ one product/runtime crate, two validation rails, and one daemon assembly crate.
 direct dependency DAG
 
 contracts       (stable contract vocabulary)
-├── kernel         -> contracts
+├── kernel         -> contracts, plugin-sdk
 ├── protocol       (independent transport foundation)
 ├── bridge-runtime -> contracts, kernel, protocol
 ├── app            -> contracts, kernel
@@ -78,7 +78,7 @@ daemon     operator CLI and service assembly over the lower layers
 | Crate | Role |
 |-------|------|
 | `contracts` | Shared types and stable contract vocabulary: capability tokens, policy/audit types, runtime/tool/memory request-outcome shapes, task state, namespaces, and pack manifests. Zero internal dependencies. |
-| `kernel` | Governed execution core. Owns audit, policy, runtime/tool/memory/connector planes, harness brokerage, task supervision, plugin and integration control, bootstrap execution, and architecture awareness. |
+| `kernel` | Governed execution core. Owns audit, policy, runtime/tool/memory/connector planes, harness brokerage, task supervision, plugin and integration control, bootstrap execution, architecture awareness, and canonical plugin contract translation. |
 | `protocol` | Transport and route foundation: frames, route resolution, capability-aware authorization, json-line transport, and linked in-memory transport primitives. Independent leaf crate. |
 | `bridge-runtime` | Shared managed bridge transport primitives for `http_json` and `process_stdio`, reused by both the spec rail and production bridge execution paths. |
 | `app` | Product/runtime layer. Owns providers, channels, tools, memory backends, chat/conversation/session logic, config loading, runtime environment helpers, and presentation-facing surfaces. Houses the feature-flagged product modules. |

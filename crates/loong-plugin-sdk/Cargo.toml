@@ -15,5 +15,8 @@ name = "loong_plugin_sdk"
 loong-core = { path = "../loong-core" }
 serde.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

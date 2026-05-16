@@ -3,6 +3,7 @@ use std::{
     path::Path,
 };
 
+use loong_plugin_sdk as plugin_sdk;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
@@ -105,6 +106,31 @@ pub struct PluginChannelBridgeContract {
     pub runtime_metadata_issues: Vec<String>,
     #[serde(default)]
     pub readiness: PluginChannelBridgeReadiness,
+}
+
+impl From<&PluginChannelBridgeReadiness> for plugin_sdk::PluginChannelBridgeReadiness {
+    fn from(value: &PluginChannelBridgeReadiness) -> Self {
+        Self {
+            ready: value.ready,
+            missing_fields: value.missing_fields.clone(),
+        }
+    }
+}
+
+impl From<&PluginChannelBridgeContract> for plugin_sdk::PluginChannelBridgeContract {
+    fn from(value: &PluginChannelBridgeContract) -> Self {
+        Self {
+            channel_id: value.channel_id.clone(),
+            setup_surface: value.setup_surface.clone(),
+            transport_family: value.transport_family.clone(),
+            target_contract: value.target_contract.clone(),
+            account_scope: value.account_scope.clone(),
+            runtime_contract: value.runtime_contract.clone(),
+            runtime_operations: value.runtime_operations.clone(),
+            runtime_metadata_issues: value.runtime_metadata_issues.clone(),
+            readiness: (&value.readiness).into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1865,6 +1891,55 @@ mod tests {
         );
         assert!(channel_bridge.readiness.ready);
         assert!(channel_bridge.readiness.missing_fields.is_empty());
+    }
+
+    #[test]
+    fn channel_bridge_contract_converts_to_plugin_sdk_contract() {
+        let contract = PluginChannelBridgeContract {
+            channel_id: Some("weixin".to_owned()),
+            setup_surface: Some("channel".to_owned()),
+            transport_family: Some("wechat_clawbot_ilink_bridge".to_owned()),
+            target_contract: Some("weixin_reply_loop".to_owned()),
+            account_scope: Some("per_account".to_owned()),
+            runtime_contract: Some("loong_channel_bridge_v1".to_owned()),
+            runtime_operations: vec!["send_message".to_owned(), "receive_batch".to_owned()],
+            runtime_metadata_issues: vec!["missing metadata.command".to_owned()],
+            readiness: PluginChannelBridgeReadiness {
+                ready: false,
+                missing_fields: vec!["metadata.command".to_owned()],
+            },
+        };
+
+        let sdk_contract: plugin_sdk::PluginChannelBridgeContract = (&contract).into();
+
+        assert_eq!(sdk_contract.channel_id.as_deref(), Some("weixin"));
+        assert_eq!(sdk_contract.setup_surface.as_deref(), Some("channel"));
+        assert_eq!(
+            sdk_contract.transport_family.as_deref(),
+            Some("wechat_clawbot_ilink_bridge")
+        );
+        assert_eq!(
+            sdk_contract.target_contract.as_deref(),
+            Some("weixin_reply_loop")
+        );
+        assert_eq!(sdk_contract.account_scope.as_deref(), Some("per_account"));
+        assert_eq!(
+            sdk_contract.runtime_contract.as_deref(),
+            Some("loong_channel_bridge_v1")
+        );
+        assert_eq!(
+            sdk_contract.runtime_operations,
+            vec!["send_message".to_owned(), "receive_batch".to_owned()]
+        );
+        assert_eq!(
+            sdk_contract.runtime_metadata_issues,
+            vec!["missing metadata.command".to_owned()]
+        );
+        assert!(!sdk_contract.readiness.ready);
+        assert_eq!(
+            sdk_contract.readiness.missing_fields,
+            vec!["metadata.command".to_owned()]
+        );
     }
 
     #[test]
