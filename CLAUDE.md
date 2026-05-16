@@ -25,8 +25,8 @@ contracts (leaf — zero internal deps)
 ├── bridge-runtime → contracts, kernel, protocol
 ├── app → contracts, kernel
 ├── spec → contracts, kernel, protocol, bridge-runtime
-├── bench → contracts, kernel, spec
-└── daemon (binary) → all of the above
+├── bench → kernel, spec
+└── daemon (binary) → app, bench, contracts, kernel, spec, bridge-runtime
 ```
 
 Non-negotiable: no dependency cycles. See [Core Beliefs](docs/design-docs/core-beliefs.md).

@@ -6,6 +6,19 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionEvent {
+    SessionCreated {
+        session_id: String,
+        workspace: WorkspaceContext,
+    },
+    WorktreeSwitched {
+        session_id: String,
+        previous_workspace: WorkspaceContext,
+        next_workspace: WorkspaceContext,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskEvent {
     TaskCreated {
         task_id: String,

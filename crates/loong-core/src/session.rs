@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ChildBudgetPolicy, CoreModelError, SessionBudgetOverlay, Task, TaskBudget, TaskEvent,
-    TaskExecutionMode, WorkspaceContext,
+    ChildBudgetPolicy, CoreModelError, SessionBudgetOverlay, SessionEvent, Task, TaskBudget,
+    TaskEvent, TaskExecutionMode, WorkspaceContext,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,6 +13,7 @@ pub struct Session {
     workspace: WorkspaceContext,
     pub overlay_budget: SessionBudgetOverlay,
     tasks: BTreeMap<String, Task>,
+    events: Vec<SessionEvent>,
 }
 
 impl Session {
@@ -21,11 +22,16 @@ impl Session {
         workspace: WorkspaceContext,
         overlay_budget: SessionBudgetOverlay,
     ) -> Self {
+        let session_id = session_id.into();
         Self {
-            session_id: session_id.into(),
-            workspace,
+            session_id: session_id.clone(),
+            workspace: workspace.clone(),
             overlay_budget,
             tasks: BTreeMap::new(),
+            events: vec![SessionEvent::SessionCreated {
+                session_id,
+                workspace,
+            }],
         }
     }
 
@@ -39,6 +45,10 @@ impl Session {
 
     pub fn task(&self, task_id: &str) -> Option<&Task> {
         self.tasks.get(task_id)
+    }
+
+    pub fn session_events(&self) -> &[SessionEvent] {
+        &self.events
     }
 
     pub fn spawn_task(
@@ -111,7 +121,13 @@ impl Session {
                 actual: workspace.repo_root,
             });
         }
-        self.workspace = workspace;
+        let previous_workspace = self.workspace.clone();
+        self.workspace = workspace.clone();
+        self.events.push(SessionEvent::WorktreeSwitched {
+            session_id: self.session_id.clone(),
+            previous_workspace,
+            next_workspace: workspace,
+        });
         Ok(())
     }
 

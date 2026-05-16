@@ -51,14 +51,14 @@ one product/runtime crate, two validation rails, and one daemon assembly crate.
 ```text
 direct dependency DAG
 
-contracts      (stable contract vocabulary)
-├── kernel        -> contracts
-├── protocol      (independent transport foundation)
+contracts       (stable contract vocabulary)
+├── kernel         -> contracts
+├── protocol       (independent transport foundation)
 ├── bridge-runtime -> contracts, kernel, protocol
-├── app           -> contracts, kernel
-├── spec          -> contracts, kernel, protocol, bridge-runtime
-├── bench         -> kernel, spec
-└── daemon        -> app, bench, contracts, kernel, spec, bridge-runtime
+├── app            -> contracts, kernel
+├── spec           -> contracts, kernel, protocol, bridge-runtime
+├── bench          -> kernel, spec
+└── daemon         -> app, bench, contracts, kernel, spec, bridge-runtime
 ```
 
 No dependency cycles. This is non-negotiable.

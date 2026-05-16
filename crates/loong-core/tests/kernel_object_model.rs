@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use loong_core::{
     ApprovalState, ArtifactDurabilityClass, ChildBudgetPolicy, ExecutionArtifact,
-    ExecutionArtifactKind, Session, SessionBudgetOverlay, Task, TaskBudget, TaskEvent,
-    TaskExecutionMode, TaskLifecycle, TurnStatus, WorkspaceContext,
+    ExecutionArtifactKind, Session, SessionBudgetOverlay, SessionEvent, Task, TaskBudget,
+    TaskEvent, TaskExecutionMode, TaskLifecycle, TurnStatus, WorkspaceContext,
 };
 
 fn workspace(branch: &str, worktree_suffix: &str) -> WorkspaceContext {
@@ -97,6 +97,25 @@ fn workspace_binding_is_durable_and_subtasks_inherit_context() {
     );
 
     session.switch_worktree(second_workspace.clone()).unwrap();
+    let session_events = session.session_events();
+    assert_eq!(session_events.len(), 2);
+    assert!(matches!(
+        &session_events[0],
+        SessionEvent::SessionCreated {
+            session_id,
+            workspace,
+        } if session_id == "session-1" && workspace == &first_workspace
+    ));
+    assert!(matches!(
+        &session_events[1],
+        SessionEvent::WorktreeSwitched {
+            session_id,
+            previous_workspace,
+            next_workspace,
+        } if session_id == "session-1"
+            && previous_workspace == &first_workspace
+            && next_workspace == &second_workspace
+    ));
     session
         .spawn_task(
             "task-detached",
@@ -123,6 +142,41 @@ fn workspace_binding_is_durable_and_subtasks_inherit_context() {
     assert_eq!(child.budget(), &split_budget);
     assert_eq!(child.parent_task_id.as_deref(), Some("task-detached"));
     assert_eq!(session.task("task-detached").unwrap().subtasks().len(), 1);
+}
+
+#[test]
+fn session_rejects_cross_repo_worktree_switches_without_mutating_truth() {
+    let first_workspace = workspace("feat/phase-2", "phase-2-a");
+    let other_repo_workspace = WorkspaceContext::new(
+        "/tmp/other/.worktrees/phase-2-b",
+        "/tmp/other",
+        "/tmp/other/.worktrees/phase-2-b",
+        "/tmp/other/.worktrees/phase-2-b/crates/loong-core",
+        "feat/other".to_owned(),
+    );
+
+    let mut session = Session::new(
+        "session-2",
+        first_workspace.clone(),
+        SessionBudgetOverlay::default(),
+    );
+
+    let error = session.switch_worktree(other_repo_workspace).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("session workspace repo root mismatch"),
+        "cross-repo switch should fail with a repo mismatch"
+    );
+    assert_eq!(session.workspace(), &first_workspace);
+    assert_eq!(session.session_events().len(), 1);
+    assert!(matches!(
+        &session.session_events()[0],
+        SessionEvent::SessionCreated {
+            session_id,
+            workspace,
+        } if session_id == "session-2" && workspace == &first_workspace
+    ));
 }
 
 #[test]
