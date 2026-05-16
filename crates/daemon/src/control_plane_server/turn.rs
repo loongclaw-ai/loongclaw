@@ -91,19 +91,17 @@ pub(super) async fn turn_submit(
             working_directory.clone(),
             false,
         );
-        let (turn_request, turn_options) =
-            crate::mvp::turn_gateway::project_turn_gateway_execution(
-                &projection_request,
-                Some(&event_forwarder),
-            )
-            .expect("project control-plane turn gateway execution");
         let turn_service =
             crate::mvp::agent_runtime::TurnExecutionService::new(resolved_path, config)
                 .with_acp_manager(acp_manager)
                 .without_runtime_environment_init();
-        let execution_result = turn_service
-            .execute(Some(session_id.as_str()), &turn_request, turn_options)
-            .await;
+        let execution_result = crate::mvp::turn_gateway::execute_projected_turn_gateway_request(
+            &turn_service,
+            Some(session_id.as_str()),
+            &projection_request,
+            Some(&event_forwarder),
+        )
+        .await;
 
         match execution_result {
             Ok(result) => {
