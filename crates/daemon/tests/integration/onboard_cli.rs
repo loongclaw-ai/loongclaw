@@ -6145,8 +6145,8 @@ fn onboarding_success_summary_suggests_registry_backed_channels_when_none_are_en
 }
 
 #[test]
-fn onboarding_success_summary_adds_doctor_action_for_plugin_backed_channels_needing_bridge_review()
-{
+fn onboarding_success_summary_uses_generic_channel_handoff_for_plugin_backed_channels_needing_bridge_review()
+ {
     let mut config: mvp::config::LoongConfig = serde_json::from_value(json!({
         "weixin": {
             "enabled": true,
@@ -6161,37 +6161,21 @@ fn onboarding_success_summary_adds_doctor_action_for_plugin_backed_channels_need
     config.skills.install_root = None;
 
     let summary = crate::onboard_cli::build_onboarding_success_summary(&path, &config, None);
-    let action_kinds = summary
-        .next_actions
-        .iter()
-        .map(|action| action.kind)
-        .collect::<Vec<_>>();
-    let action_labels = summary
-        .next_actions
-        .iter()
-        .map(|action| action.label.clone())
-        .collect::<Vec<_>>();
-
-    assert!(
-        summary.next_actions.iter().any(|action| action.kind
-            == crate::onboard_cli::OnboardingActionKind::Doctor
-            && action.command
-                == format!(
-                    "{} doctor --config '/tmp/loong-config.toml'",
-                    super::active_cli_command_name()
-                )),
-        "plugin-backed channels that still need managed bridge review should surface doctor as an explicit next action: {summary:#?}"
+    assert_eq!(
+        summary.next_actions[3].kind,
+        crate::onboard_cli::OnboardingActionKind::Channel
+    );
+    assert_eq!(summary.next_actions[3].label, "review Weixin bridge");
+    assert_eq!(
+        summary.next_actions[3].command,
+        "loong channels --config '/tmp/loong-config.toml'"
     );
     assert!(
         summary
             .next_actions
             .iter()
-            .position(|action| action.kind == crate::onboard_cli::OnboardingActionKind::Doctor)
-            < summary.next_actions.iter().position(|action| {
-                action.kind == crate::onboard_cli::OnboardingActionKind::Channel
-                    && action.label == "review Weixin bridge"
-            }),
-        "doctor should be promoted ahead of the contextual bridge review handoff when a managed bridge still needs review: kinds={action_kinds:?} labels={action_labels:?}"
+            .all(|action| action.kind != crate::onboard_cli::OnboardingActionKind::Doctor),
+        "setup should no longer inject channel-platform doctor choreography into onboarding handoffs: {summary:#?}"
     );
 }
 
@@ -8511,33 +8495,22 @@ fn onboarding_success_summary_uses_contextual_discord_review_handoff_when_outbou
 
     let path = PathBuf::from("/tmp/loong-config.toml");
     let summary = loong_daemon::onboard_cli::build_onboarding_success_summary(&path, &config, None);
-    let lines =
-        loong_daemon::onboard_cli::render_onboarding_success_summary_with_width(&summary, 90);
 
     assert_eq!(
         summary.next_actions[0].kind,
-        loong_daemon::onboard_cli::OnboardingActionKind::Doctor
-    );
-    assert_eq!(summary.next_actions[0].label, "verify Discord setup");
-    assert_eq!(
-        summary.next_actions[0].command,
-        "loong doctor --config '/tmp/loong-config.toml'"
-    );
-    assert_eq!(
-        summary.next_actions[1].kind,
         loong_daemon::onboard_cli::OnboardingActionKind::Channel
     );
-    assert_eq!(summary.next_actions[1].label, "inspect Discord");
+    assert_eq!(summary.next_actions[0].label, "review Discord setup");
     assert_eq!(
-        summary.next_actions[1].command,
+        summary.next_actions[0].command,
         "loong channels --config '/tmp/loong-config.toml'"
     );
     assert!(
-        lines.iter().any(|line| {
-            line.contains("verify Discord setup")
-                && line.contains("loong doctor --config '/tmp/loong-config.toml'")
-        }),
-        "success summary should steer blocked outbound-only setups into a doctor-first handoff: {lines:#?}"
+        summary
+            .next_actions
+            .iter()
+            .all(|action| action.kind != loong_daemon::onboard_cli::OnboardingActionKind::Doctor),
+        "blocked outbound setups should still be handed off through `channels`, not setup-owned doctor choreography: {summary:#?}"
     );
 }
 
@@ -8586,7 +8559,8 @@ fn onboarding_success_summary_uses_outbound_group_handoff_when_multiple_outbound
 }
 
 #[test]
-fn onboarding_success_summary_keeps_mixed_runtime_and_outbound_followups_after_doctor() {
+fn onboarding_success_summary_keeps_mixed_runtime_and_outbound_followups_without_doctor_insertion()
+{
     let mut config = mvp::config::LoongConfig::default();
     config.cli.enabled = false;
     config.telegram.enabled = true;
@@ -8601,25 +8575,20 @@ fn onboarding_success_summary_keeps_mixed_runtime_and_outbound_followups_after_d
 
     assert_eq!(
         summary.next_actions[0].kind,
-        loong_daemon::onboard_cli::OnboardingActionKind::Doctor
+        loong_daemon::onboard_cli::OnboardingActionKind::Channel
     );
-    assert_eq!(summary.next_actions[0].label, "verify Discord setup");
+    assert_eq!(summary.next_actions[0].label, "Telegram");
+    assert_eq!(
+        summary.next_actions[0].command,
+        "loong channels serve telegram --config '/tmp/loong-config.toml'"
+    );
     assert_eq!(
         summary.next_actions[1].kind,
         loong_daemon::onboard_cli::OnboardingActionKind::Channel
     );
-    assert_eq!(summary.next_actions[1].label, "Telegram");
+    assert_eq!(summary.next_actions[1].label, "review Discord setup");
     assert_eq!(
         summary.next_actions[1].command,
-        "loong channels serve telegram --config '/tmp/loong-config.toml'"
-    );
-    assert_eq!(
-        summary.next_actions[2].kind,
-        loong_daemon::onboard_cli::OnboardingActionKind::Channel
-    );
-    assert_eq!(summary.next_actions[2].label, "inspect Discord");
-    assert_eq!(
-        summary.next_actions[2].command,
         "loong channels --config '/tmp/loong-config.toml'"
     );
     assert!(
@@ -8630,9 +8599,9 @@ fn onboarding_success_summary_keeps_mixed_runtime_and_outbound_followups_after_d
     );
     assert!(
         lines.iter().any(|line| {
-            line == "- inspect Discord: loong channels --config '/tmp/loong-config.toml'"
+            line == "- review Discord setup: loong channels --config '/tmp/loong-config.toml'"
         }),
-        "mixed runtime-backed plus outbound setups should still render the outbound inspection handoff after doctor: {lines:#?}"
+        "mixed runtime-backed plus outbound setups should still render the outbound channel handoff after the runtime-backed channel handoff: {lines:#?}"
     );
 }
 
@@ -8651,41 +8620,30 @@ fn onboarding_success_summary_uses_outbound_review_handoff_when_multiple_outboun
 
     let path = PathBuf::from("/tmp/loong-config.toml");
     let summary = loong_daemon::onboard_cli::build_onboarding_success_summary(&path, &config, None);
-    let lines =
-        loong_daemon::onboard_cli::render_onboarding_success_summary_with_width(&summary, 90);
 
     assert_eq!(
         summary.next_actions[0].kind,
-        loong_daemon::onboard_cli::OnboardingActionKind::Doctor
-    );
-    assert_eq!(summary.next_actions[0].label, "verify Slack setup");
-    assert_eq!(
-        summary.next_actions[0].command,
-        "loong doctor --config '/tmp/loong-config.toml'"
-    );
-    assert_eq!(
-        summary.next_actions[1].kind,
         loong_daemon::onboard_cli::OnboardingActionKind::Channel
     );
     assert_eq!(
-        summary.next_actions[1].label,
-        "inspect configured outbound channels"
+        summary.next_actions[0].label,
+        "review configured outbound channels"
     );
     assert_eq!(
-        summary.next_actions[1].command,
+        summary.next_actions[0].command,
         "loong channels --config '/tmp/loong-config.toml'"
     );
     assert!(
-        lines.iter().any(|line| {
-            line.contains("verify Slack setup")
-                && line.contains("loong doctor --config '/tmp/loong-config.toml'")
-        }),
-        "success summary should elevate blocked outbound-only groups into a doctor-first handoff that points at the exact blocked surface when one is known: {lines:#?}"
+        summary
+            .next_actions
+            .iter()
+            .all(|action| action.kind != loong_daemon::onboard_cli::OnboardingActionKind::Doctor),
+        "setup should keep grouped outbound follow-up generic rather than injecting doctor-first choreography: {summary:#?}"
     );
 }
 
 #[test]
-fn onboarding_success_summary_uses_doctor_handoff_for_plugin_backed_channels_when_cli_is_disabled()
+fn onboarding_success_summary_uses_channel_handoff_for_plugin_backed_channels_when_cli_is_disabled()
 {
     let mut config = mvp::config::LoongConfig::default();
     config.cli.enabled = false;
@@ -8703,40 +8661,15 @@ fn onboarding_success_summary_uses_doctor_handoff_for_plugin_backed_channels_whe
 
     assert_eq!(
         summary.next_actions[0].kind,
-        loong_daemon::onboard_cli::OnboardingActionKind::Doctor,
-        "plugin-backed channel setups should guide operators into diagnostics before the generic channel catalog: {summary:#?}"
-    );
-    assert_eq!(
-        summary.next_actions[0].label,
-        "verify weixin managed bridge"
-    );
-    assert_eq!(
-        summary.next_actions[0].command,
-        format!(
-            "{} doctor --config '/tmp/loong-config.toml'",
-            super::active_cli_command_name()
-        )
-    );
-    assert_eq!(
-        summary.next_actions[1].kind,
         loong_daemon::onboard_cli::OnboardingActionKind::Channel,
-        "a contextual bridge review handoff should remain available as a secondary fallback: {summary:#?}"
+        "plugin-backed channel setups should now hand off directly to the channel surface: {summary:#?}"
     );
-    assert_eq!(summary.next_actions[1].label, "review Weixin bridge");
+    assert_eq!(summary.next_actions[0].label, "review Weixin bridge");
     assert!(
         lines.iter().any(|line| line == "start here")
-            && lines
-                .iter()
-                .any(|line| line.contains("verify weixin managed bridge"))
-            && lines.iter().any(|line| {
-                line.contains(
-                    format!("{} doctor --config", super::active_cli_command_name()).as_str(),
-                )
-            })
-            && lines
-                .iter()
-                .any(|line| line.contains("/tmp/loong-config.toml")),
-        "success summary should render the managed bridge verification handoff as the primary action: {lines:#?}"
+            && lines.iter().any(|line| line
+                == "- review Weixin bridge: loong channels --config '/tmp/loong-config.toml'"),
+        "success summary should render the generic channel handoff as the primary action: {lines:#?}"
     );
 }
 
@@ -8801,8 +8734,8 @@ fn onboarding_success_summary_uses_contextual_bridge_handoff_when_ready_plugin_b
 }
 
 #[test]
-fn onboarding_success_summary_lists_doctor_followup_for_plugin_backed_channels_when_cli_is_enabled()
-{
+fn onboarding_success_summary_lists_channel_followup_for_plugin_backed_channels_when_cli_is_enabled()
+ {
     let mut config = mvp::config::LoongConfig::default();
     config.weixin.enabled = true;
     config.weixin.bridge_url = Some("https://bridge.example.test/weixin".to_owned());
@@ -8827,10 +8760,6 @@ fn onboarding_success_summary_lists_doctor_followup_for_plugin_backed_channels_w
         action.kind == loong_daemon::onboard_cli::OnboardingActionKind::Personalize
             && action.label == "teach Loong your working style"
     });
-    let doctor_position = summary.next_actions.iter().position(|action| {
-        action.kind == loong_daemon::onboard_cli::OnboardingActionKind::Doctor
-            && action.label == "verify weixin managed bridge"
-    });
     let bridge_review_position = summary
         .next_actions
         .iter()
@@ -8849,30 +8778,17 @@ fn onboarding_success_summary_lists_doctor_followup_for_plugin_backed_channels_w
     let personalize_position = personalize_position.expect(
         "cli-enabled plugin-backed setups should keep the personalization handoff visible before diagnostics",
     );
-    let doctor_position =
-        doctor_position.expect("managed-bridge diagnostics should remain available");
     let bridge_review_position = bridge_review_position
         .expect("contextual bridge inspection handoff should remain available");
     assert!(
-        personalize_position < doctor_position,
-        "personalization should stay ahead of managed-bridge diagnostics in cli-enabled setups: {summary:#?}"
-    );
-    assert!(
-        doctor_position < bridge_review_position,
-        "managed-bridge diagnostics should still appear before the contextual bridge review handoff: {summary:#?}"
+        personalize_position < bridge_review_position,
+        "personalization should stay ahead of the generic channel follow-up in cli-enabled setups: {summary:#?}"
     );
     assert!(
         lines.iter().any(|line| {
-            line.contains("verify weixin managed bridge")
-                && line.contains(
-                    format!(
-                        "{} doctor --config '/tmp/loong-config.toml'",
-                        super::active_cli_command_name()
-                    )
-                    .as_str(),
-                )
+            line == "- review Weixin bridge: loong channels --config '/tmp/loong-config.toml'"
         }),
-        "success summary should surface the managed bridge verification follow-up in the secondary actions: {lines:#?}"
+        "success summary should surface the generic channel follow-up in the secondary actions: {lines:#?}"
     );
 }
 

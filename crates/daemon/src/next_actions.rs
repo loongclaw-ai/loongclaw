@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::ffi::OsStr;
 
 use crate::personalize_presentation::personalize_action_label;
@@ -37,14 +36,6 @@ pub(crate) const fn setup_boundary_kind_for_action_kind(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ManagedBridgeRuntimeAttentionSurface {
-    id: &'static str,
-    reasons: Vec<&'static str>,
-    preferred_owner_pids: Vec<u32>,
-    cleanup_owner_pids: Vec<u32>,
-}
-
 pub fn collect_setup_next_actions(
     config: &mvp::config::LoongConfig,
     config_path: &str,
@@ -61,11 +52,6 @@ pub(crate) fn collect_setup_next_actions_with_path_env(
     let mut actions = Vec::new();
     let channel_actions =
         crate::migration::channels::collect_channel_next_actions(config, config_path);
-    let runtime_attention_plugin_bridge_surfaces =
-        collect_runtime_attention_plugin_bridge_surfaces(config);
-    let unresolved_plugin_bridge_surfaces =
-        collect_unresolved_plugin_bridge_surface_ids(config, &channel_actions);
-    let blocked_outbound_surfaces = collect_blocked_outbound_surface_ids(config);
     if config.cli.enabled {
         actions.push(SetupNextAction {
             kind: SetupNextActionKind::Ask,
@@ -94,25 +80,6 @@ pub(crate) fn collect_setup_next_actions_with_path_env(
             });
         }
     }
-    if !runtime_attention_plugin_bridge_surfaces.is_empty() {
-        let doctor_action = build_managed_bridge_runtime_doctor_action(
-            config_path,
-            &runtime_attention_plugin_bridge_surfaces,
-        );
-        actions.push(doctor_action);
-    }
-    if !unresolved_plugin_bridge_surfaces.is_empty() {
-        let doctor_action =
-            build_managed_bridge_doctor_action(config_path, &unresolved_plugin_bridge_surfaces);
-        actions.push(doctor_action);
-    }
-    if !blocked_outbound_surfaces.is_empty() {
-        let doctor_action =
-            build_outbound_channel_doctor_action(config_path, &blocked_outbound_surfaces);
-        actions.push(doctor_action);
-    }
-    let channel_actions =
-        normalize_channel_actions_for_outbound_doctor(channel_actions, &blocked_outbound_surfaces);
     let channel_setup_actions = channel_actions
         .into_iter()
         .map(channel_next_action_to_setup_action);
@@ -128,350 +95,6 @@ pub(crate) fn collect_setup_next_actions_with_path_env(
     actions
 }
 
-fn collect_unresolved_plugin_bridge_surface_ids(
-    config: &mvp::config::LoongConfig,
-    _channel_actions: &[crate::migration::channels::ChannelNextAction],
-) -> Vec<&'static str> {
-    unresolved_plugin_bridge_surface_ids(config)
-}
-
-fn collect_runtime_attention_plugin_bridge_surfaces(
-    config: &mvp::config::LoongConfig,
-) -> Vec<ManagedBridgeRuntimeAttentionSurface> {
-    let inventory = mvp::channel::channel_inventory(config);
-
-    inventory
-        .channel_surfaces
-        .into_iter()
-        .filter(enabled_plugin_bridge_surface)
-        .filter_map(|surface| {
-            let reasons = plugin_bridge_surface_runtime_attention_reasons(&surface);
-            if reasons.is_empty() {
-                return None;
-            }
-            Some(ManagedBridgeRuntimeAttentionSurface {
-                id: surface.catalog.id,
-                reasons,
-                preferred_owner_pids: collect_surface_preferred_runtime_owner_pids(&surface),
-                cleanup_owner_pids: collect_surface_duplicate_runtime_cleanup_owner_pids(&surface),
-            })
-        })
-        .collect()
-}
-
-fn unresolved_plugin_bridge_surface_ids(config: &mvp::config::LoongConfig) -> Vec<&'static str> {
-    let inventory = mvp::channel::channel_inventory(config);
-    let channel_checks = crate::migration::channels::collect_channel_preflight_checks(config);
-    let unresolved_surface_names = channel_checks
-        .into_iter()
-        .filter(|check| check.level != crate::migration::channels::ChannelCheckLevel::Pass)
-        .map(|check| check.name)
-        .collect::<BTreeSet<_>>();
-
-    inventory
-        .channel_surfaces
-        .into_iter()
-        .filter(enabled_plugin_bridge_surface)
-        .filter(|surface| {
-            let surface_name = plugin_bridge_surface_name(surface.catalog.id);
-            unresolved_surface_names.contains(surface_name)
-        })
-        .map(|surface| surface.catalog.id)
-        .collect()
-}
-
-fn plugin_bridge_surface_runtime_attention_reasons(
-    surface: &mvp::channel::ChannelSurface,
-) -> Vec<&'static str> {
-    let mut reasons = BTreeSet::new();
-
-    for snapshot in surface
-        .configured_accounts
-        .iter()
-        .filter(|snapshot| snapshot.enabled)
-    {
-        for reason in channel_snapshot_runtime_attention_reasons(snapshot) {
-            reasons.insert(reason);
-        }
-    }
-
-    reasons.into_iter().collect()
-}
-
-fn channel_snapshot_runtime_attention_reasons(
-    snapshot: &mvp::channel::ChannelStatusSnapshot,
-) -> Vec<&'static str> {
-    let Some(runtime) = snapshot
-        .operation(mvp::channel::CHANNEL_OPERATION_SERVE_ID)
-        .and_then(|operation| operation.runtime.as_ref())
-    else {
-        return Vec::new();
-    };
-
-    let mut reasons = Vec::new();
-    if runtime.consecutive_failures > 0 {
-        reasons.push("retrying");
-    }
-    if runtime.stale {
-        reasons.push("stale");
-    }
-    if runtime.running_instances > 1 {
-        reasons.push("duplicate_runtime_instances");
-    }
-
-    reasons
-}
-
-fn collect_surface_preferred_runtime_owner_pids(
-    surface: &mvp::channel::ChannelSurface,
-) -> Vec<u32> {
-    let mut owner_pids = BTreeSet::new();
-
-    for snapshot in &surface.configured_accounts {
-        let Some(runtime) = snapshot
-            .operation(mvp::channel::CHANNEL_OPERATION_SERVE_ID)
-            .and_then(|operation| operation.runtime.as_ref())
-        else {
-            continue;
-        };
-        if runtime.duplicate_owner_pids.is_empty() {
-            continue;
-        }
-        let Some(pid) = runtime.pid else {
-            continue;
-        };
-        owner_pids.insert(pid);
-    }
-
-    owner_pids.into_iter().collect()
-}
-
-fn collect_surface_duplicate_runtime_cleanup_owner_pids(
-    surface: &mvp::channel::ChannelSurface,
-) -> Vec<u32> {
-    let mut owner_pids = BTreeSet::new();
-
-    for snapshot in &surface.configured_accounts {
-        let Some(runtime) = snapshot
-            .operation(mvp::channel::CHANNEL_OPERATION_SERVE_ID)
-            .and_then(|operation| operation.runtime.as_ref())
-        else {
-            continue;
-        };
-        if runtime.duplicate_owner_pids.is_empty() {
-            continue;
-        }
-        let preferred_pid = runtime.pid;
-        for owner_pid in &runtime.duplicate_owner_pids {
-            if Some(*owner_pid) == preferred_pid {
-                continue;
-            }
-            owner_pids.insert(*owner_pid);
-        }
-    }
-
-    owner_pids.into_iter().collect()
-}
-
-fn collect_blocked_outbound_surface_ids(config: &mvp::config::LoongConfig) -> Vec<&'static str> {
-    let inventory = mvp::channel::channel_inventory(config);
-
-    inventory
-        .channel_surfaces
-        .into_iter()
-        .filter(crate::migration::channels::surface_is_outbound_only)
-        .filter(|surface| {
-            surface
-                .configured_accounts
-                .iter()
-                .any(|snapshot| snapshot.enabled)
-        })
-        .filter(|surface| {
-            surface
-                .configured_accounts
-                .iter()
-                .filter(|snapshot| snapshot.enabled)
-                .any(|snapshot| {
-                    !snapshot
-                        .operation(mvp::channel::CHANNEL_OPERATION_SEND_ID)
-                        .is_some_and(|operation| {
-                            operation.health == mvp::channel::ChannelOperationHealth::Ready
-                        })
-                })
-        })
-        .map(|surface| surface.catalog.id)
-        .collect()
-}
-
-fn enabled_plugin_bridge_surface(surface: &mvp::channel::ChannelSurface) -> bool {
-    let has_plugin_bridge_contract = surface.catalog.plugin_bridge_contract.is_some();
-
-    if !has_plugin_bridge_contract {
-        return false;
-    }
-
-    surface
-        .configured_accounts
-        .iter()
-        .any(|snapshot| snapshot.enabled)
-}
-
-fn plugin_bridge_surface_name(channel_id: &'static str) -> &'static str {
-    let descriptor = mvp::config::channel_descriptor(channel_id);
-
-    match descriptor {
-        Some(descriptor) => descriptor.surface_label,
-        None => channel_id,
-    }
-}
-
-fn build_managed_bridge_doctor_action(
-    config_path: &str,
-    unresolved_surface_ids: &[&'static str],
-) -> SetupNextAction {
-    let command = crate::cli_handoff::format_subcommand_with_config("doctor", config_path);
-    let label = managed_bridge_doctor_action_label(unresolved_surface_ids);
-
-    SetupNextAction {
-        kind: SetupNextActionKind::Doctor,
-        channel_action_id: None,
-        label,
-        command,
-    }
-}
-
-fn build_managed_bridge_runtime_doctor_action(
-    config_path: &str,
-    runtime_attention_surfaces: &[ManagedBridgeRuntimeAttentionSurface],
-) -> SetupNextAction {
-    let command = crate::cli_handoff::format_subcommand_with_config("doctor", config_path);
-    let label = managed_bridge_runtime_doctor_action_label(runtime_attention_surfaces);
-
-    SetupNextAction {
-        kind: SetupNextActionKind::Doctor,
-        channel_action_id: None,
-        label,
-        command,
-    }
-}
-
-fn build_outbound_channel_doctor_action(
-    config_path: &str,
-    blocked_surface_ids: &[&'static str],
-) -> SetupNextAction {
-    let command = crate::cli_handoff::format_subcommand_with_config("doctor", config_path);
-    let label = outbound_channel_doctor_action_label(blocked_surface_ids);
-
-    SetupNextAction {
-        kind: SetupNextActionKind::Doctor,
-        channel_action_id: None,
-        label,
-        command,
-    }
-}
-
-fn managed_bridge_doctor_action_label(unresolved_surface_ids: &[&'static str]) -> String {
-    if unresolved_surface_ids.len() == 1 {
-        let surface_id = unresolved_surface_ids
-            .first()
-            .copied()
-            .unwrap_or("managed bridge");
-        return format!("verify {surface_id} managed bridge");
-    }
-
-    if unresolved_surface_ids.is_empty() {
-        return "verify managed bridges".to_owned();
-    }
-
-    let rendered_surface_ids = unresolved_surface_ids.join(", ");
-    let label = format!("verify managed bridges: {rendered_surface_ids}");
-
-    label
-}
-
-fn outbound_channel_doctor_action_label(blocked_surface_ids: &[&'static str]) -> String {
-    if blocked_surface_ids.len() == 1 {
-        let surface_id = blocked_surface_ids
-            .first()
-            .copied()
-            .unwrap_or("configured outbound channel");
-        let label = mvp::config::channel_descriptor(surface_id)
-            .map(|descriptor| descriptor.label)
-            .unwrap_or(surface_id);
-        return format!("verify {label} setup");
-    }
-
-    if blocked_surface_ids.is_empty() {
-        return "verify configured outbound channels".to_owned();
-    }
-
-    "verify configured outbound channels".to_owned()
-}
-
-fn managed_bridge_runtime_doctor_action_label(
-    runtime_attention_surfaces: &[ManagedBridgeRuntimeAttentionSurface],
-) -> String {
-    if runtime_attention_surfaces.len() == 1 {
-        let surface = runtime_attention_surfaces.first().expect("one surface");
-        let rendered_reasons = if surface.reasons.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", surface.reasons.join(","))
-        };
-        let keep_suffix = if surface.reasons.contains(&"duplicate_runtime_instances") {
-            let keep = if surface.preferred_owner_pids.len() == 1 {
-                let pid = surface
-                    .preferred_owner_pids
-                    .first()
-                    .copied()
-                    .unwrap_or_default();
-                format!(" keep pid={pid}")
-            } else {
-                String::new()
-            };
-            let cleanup = if surface.cleanup_owner_pids.is_empty() {
-                String::new()
-            } else {
-                let rendered_cleanup = surface
-                    .cleanup_owner_pids
-                    .iter()
-                    .map(u32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",");
-                format!(" cleanup pids={rendered_cleanup}")
-            };
-            format!("{keep}{cleanup}")
-        } else {
-            String::new()
-        };
-        return format!(
-            "inspect {} managed bridge runtime{}{}",
-            surface.id, rendered_reasons, keep_suffix
-        );
-    }
-
-    if runtime_attention_surfaces.is_empty() {
-        return "inspect managed bridge runtimes".to_owned();
-    }
-
-    let rendered_surface_ids = runtime_attention_surfaces
-        .iter()
-        .map(|surface| surface.id)
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("inspect managed bridge runtimes: {rendered_surface_ids}")
-}
-
-#[cfg(test)]
-pub(crate) fn is_managed_bridge_doctor_action(action: &SetupNextAction) -> bool {
-    let is_doctor = action.kind == SetupNextActionKind::Doctor;
-    let label = action.label.as_str();
-    let is_managed_bridge_label = (label.starts_with("verify ") || label.starts_with("inspect "))
-        && label.contains("managed bridge");
-
-    is_doctor && is_managed_bridge_label
-}
-
 fn channel_next_action_to_setup_action(
     action: crate::migration::channels::ChannelNextAction,
 ) -> SetupNextAction {
@@ -481,67 +104,6 @@ fn channel_next_action_to_setup_action(
         label: action.label.to_owned(),
         command: action.command,
     }
-}
-
-fn normalize_channel_actions_for_outbound_doctor(
-    channel_actions: Vec<crate::migration::channels::ChannelNextAction>,
-    blocked_outbound_surface_ids: &[&'static str],
-) -> Vec<crate::migration::channels::ChannelNextAction> {
-    channel_actions
-        .into_iter()
-        .map(|action| {
-            normalize_channel_action_for_outbound_doctor(action, blocked_outbound_surface_ids)
-        })
-        .collect()
-}
-
-fn normalize_channel_action_for_outbound_doctor(
-    mut action: crate::migration::channels::ChannelNextAction,
-    blocked_outbound_surface_ids: &[&'static str],
-) -> crate::migration::channels::ChannelNextAction {
-    let is_configured_channels_action =
-        action.id == crate::migration::channels::CONFIGURED_CHANNELS_ACTION_ID;
-
-    if !is_configured_channels_action {
-        return action;
-    }
-
-    let Some(normalized_label) =
-        normalized_outbound_follow_up_label(action.label, blocked_outbound_surface_ids)
-    else {
-        return action;
-    };
-
-    action.label = Box::leak(normalized_label.into_boxed_str());
-
-    action
-}
-
-fn normalized_outbound_follow_up_label(
-    current_label: &str,
-    blocked_outbound_surface_ids: &[&'static str],
-) -> Option<String> {
-    if blocked_outbound_surface_ids.is_empty() {
-        return None;
-    }
-
-    if current_label == "review configured outbound channels" {
-        return Some("inspect configured outbound channels".to_owned());
-    }
-
-    if blocked_outbound_surface_ids.len() == 1 {
-        let channel_id = blocked_outbound_surface_ids.first().copied()?;
-        let descriptor = mvp::config::channel_descriptor(channel_id)?;
-        let review_label = format!("review {} setup", descriptor.label);
-
-        if current_label == review_label {
-            return Some(format!("inspect {}", descriptor.label));
-        }
-
-        return None;
-    }
-
-    None
 }
 
 fn should_suggest_personalization(config: &mvp::config::LoongConfig) -> bool {
@@ -791,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_setup_next_actions_labels_single_unresolved_plugin_bridge_surface() {
+    fn collect_setup_next_actions_uses_generic_channel_handoff_for_plugin_backed_channels() {
         let mut config = mvp::config::LoongConfig::default();
         config.weixin.enabled = true;
         config.weixin.bridge_url = Some("https://bridge.example.test/weixin".to_owned());
@@ -805,20 +367,20 @@ mod tests {
             "/tmp/loong.toml",
             Some(std::ffi::OsStr::new("")),
         );
-        let doctor_action = actions
+        let channel_action = actions
             .iter()
-            .find(|action| action.kind == SetupNextActionKind::Doctor)
-            .expect("managed bridge doctor action");
+            .find(|action| action.kind == SetupNextActionKind::Channel)
+            .expect("channel action");
 
-        assert_eq!(doctor_action.label, "verify weixin managed bridge");
+        assert_eq!(channel_action.label, "review Weixin bridge");
         assert_eq!(
-            doctor_action.command,
-            "loong doctor --config '/tmp/loong.toml'"
+            channel_action.command,
+            "loong channels --config '/tmp/loong.toml'"
         );
     }
 
     #[test]
-    fn collect_setup_next_actions_labels_single_runtime_attention_plugin_bridge_surface() {
+    fn collect_setup_next_actions_ignores_runtime_attention_bridge_state() {
         let home = unique_temp_dir("loong-next-actions-runtime-attention");
         let mut env = crate::test_support::ScopedEnv::new();
         env.set("LOONG_HOME", home.as_os_str());
@@ -842,23 +404,20 @@ mod tests {
             "/tmp/loong.toml",
             Some(std::ffi::OsStr::new("")),
         );
-        let doctor_action = actions
+        let channel_action = actions
             .iter()
-            .find(|action| action.kind == SetupNextActionKind::Doctor)
-            .expect("managed bridge runtime doctor action");
+            .find(|action| action.kind == SetupNextActionKind::Channel)
+            .expect("channel action");
 
+        assert_eq!(channel_action.label, "review Weixin bridge");
         assert_eq!(
-            doctor_action.label,
-            "inspect weixin managed bridge runtime (retrying)"
-        );
-        assert_eq!(
-            doctor_action.command,
-            "loong doctor --config '/tmp/loong.toml'"
+            channel_action.command,
+            "loong channels --config '/tmp/loong.toml'"
         );
     }
 
     #[test]
-    fn collect_setup_next_actions_labels_multiple_unresolved_plugin_bridge_surfaces() {
+    fn collect_setup_next_actions_uses_generic_channel_handoff_for_multiple_plugin_bridges() {
         let mut config = mvp::config::LoongConfig::default();
         config.weixin.enabled = true;
         config.weixin.bridge_url = Some("https://bridge.example.test/weixin".to_owned());
@@ -878,21 +437,20 @@ mod tests {
             "/tmp/loong.toml",
             Some(std::ffi::OsStr::new("")),
         );
-        let doctor_action = actions
+        let channel_action = actions
             .iter()
-            .find(|action| action.kind == SetupNextActionKind::Doctor)
-            .expect("managed bridge doctor action");
+            .find(|action| action.kind == SetupNextActionKind::Channel)
+            .expect("channel action");
 
-        assert_eq!(doctor_action.label, "verify weixin managed bridge");
+        assert_eq!(channel_action.label, "review configured bridges");
         assert_eq!(
-            doctor_action.command,
-            "loong doctor --config '/tmp/loong.toml'"
+            channel_action.command,
+            "loong channels --config '/tmp/loong.toml'"
         );
     }
 
     #[test]
-    fn collect_setup_next_actions_keeps_outbound_follow_up_as_inspection_after_doctor_for_single_surface()
-     {
+    fn collect_setup_next_actions_uses_generic_channel_handoff_for_single_outbound_surface() {
         let mut config = mvp::config::LoongConfig::default();
         config.discord.enabled = true;
         config.discord.bot_token = None;
@@ -909,21 +467,13 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(
-            labels.contains(&"verify Discord setup"),
-            "blocked outbound-only surfaces should still expose a doctor-first handoff: {labels:?}"
-        );
-        assert!(
-            labels.contains(&"inspect Discord"),
-            "the secondary outbound-only handoff should be inspection rather than a duplicate review label: {labels:?}"
-        );
-        assert!(
-            !labels.contains(&"review Discord setup"),
-            "outbound-only follow-up actions should not duplicate the doctor wording: {labels:?}"
+            labels.contains(&"review Discord setup"),
+            "setup should keep only the generic channel handoff for single outbound surfaces: {labels:?}"
         );
     }
 
     #[test]
-    fn collect_setup_next_actions_keeps_outbound_group_follow_up_as_inspection_after_doctor() {
+    fn collect_setup_next_actions_uses_generic_channel_handoff_for_outbound_groups() {
         let mut config = mvp::config::LoongConfig::default();
         config.discord.enabled = true;
         config.discord.bot_token = Some(loong_contracts::SecretRef::Inline(
@@ -944,76 +494,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(
-            labels.contains(&"verify Slack setup"),
-            "blocked outbound groups should still lead with the concrete doctor handoff: {labels:?}"
+            labels.contains(&"review configured outbound channels"),
+            "setup should keep only the generic grouped channel handoff for outbound groups: {labels:?}"
         );
-        assert!(
-            labels.contains(&"inspect configured outbound channels"),
-            "blocked outbound groups should keep channels as an inspection handoff: {labels:?}"
-        );
-        assert!(
-            !labels.contains(&"review configured outbound channels"),
-            "grouped outbound follow-up should not repeat review wording once doctor already owns repair guidance: {labels:?}"
-        );
-    }
-
-    #[test]
-    fn is_managed_bridge_doctor_action_matches_single_surface_label() {
-        let action = SetupNextAction {
-            kind: SetupNextActionKind::Doctor,
-            channel_action_id: None,
-            label: "verify weixin managed bridge".to_owned(),
-            command: "loong doctor --config '/tmp/loong.toml'".to_owned(),
-        };
-
-        assert!(is_managed_bridge_doctor_action(&action));
-    }
-
-    #[test]
-    fn is_managed_bridge_doctor_action_matches_multi_surface_label() {
-        let action = SetupNextAction {
-            kind: SetupNextActionKind::Doctor,
-            channel_action_id: None,
-            label: "verify managed bridges: weixin, qqbot".to_owned(),
-            command: "loong doctor --config '/tmp/loong.toml'".to_owned(),
-        };
-
-        assert!(is_managed_bridge_doctor_action(&action));
-    }
-
-    #[test]
-    fn is_managed_bridge_doctor_action_matches_runtime_attention_label() {
-        let action = SetupNextAction {
-            kind: SetupNextActionKind::Doctor,
-            channel_action_id: None,
-            label: "inspect weixin managed bridge runtime (retrying)".to_owned(),
-            command: "loong doctor --config '/tmp/loong.toml'".to_owned(),
-        };
-
-        assert!(is_managed_bridge_doctor_action(&action));
-    }
-
-    #[test]
-    fn is_managed_bridge_doctor_action_rejects_unrelated_doctor_action() {
-        let action = SetupNextAction {
-            kind: SetupNextActionKind::Doctor,
-            channel_action_id: None,
-            label: "doctor".to_owned(),
-            command: "loong doctor --config '/tmp/loong.toml'".to_owned(),
-        };
-
-        assert!(!is_managed_bridge_doctor_action(&action));
-    }
-
-    #[test]
-    fn is_managed_bridge_doctor_action_rejects_non_doctor_action() {
-        let action = SetupNextAction {
-            kind: SetupNextActionKind::Channel,
-            channel_action_id: Some(crate::migration::channels::CHANNEL_CATALOG_ACTION_ID),
-            label: "verify weixin managed bridge".to_owned(),
-            command: "loong channels --config '/tmp/loong.toml'".to_owned(),
-        };
-
-        assert!(!is_managed_bridge_doctor_action(&action));
     }
 }
