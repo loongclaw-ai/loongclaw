@@ -1,0 +1,19 @@
+[package]
+name = "loong-app-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "App-facing runtime protocol for the additive Loong SDK spine"
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "loong_app_protocol"
+
+[dependencies]
+loong-runtime = { path = "../loong-runtime" }
+serde.workspace = true
+
+[lints]
+workspace = true
