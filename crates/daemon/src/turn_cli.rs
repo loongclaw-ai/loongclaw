@@ -242,12 +242,13 @@ impl AppProtocolOneshotExecutor for LegacyOneshotExecutor {
             request.acp_cwd.clone(),
             false,
         );
-        let (turn_request, turn_options) =
-            mvp::turn_gateway::project_turn_gateway_execution(&projection_request, None)
-                .expect("project turn runtime gateway execution");
-        let result = turn_service
-            .execute(request.session_hint.as_deref(), &turn_request, turn_options)
-            .await?;
+        let result = mvp::turn_gateway::execute_projected_turn_gateway_request(
+            &turn_service,
+            request.session_hint.as_deref(),
+            &projection_request,
+            None,
+        )
+        .await?;
 
         Ok(AppProtocolRuntimeExecutorResult {
             session_id: result.session_id,

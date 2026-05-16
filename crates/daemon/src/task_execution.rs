@@ -110,16 +110,17 @@ impl HarnessAdapter for EmbeddedAgentHarness {
                 loong_app::agent_runtime::AgentTurnMode::Interactive
             ),
         );
-        let (turn_request, turn_options) =
-            loong_app::turn_gateway::project_turn_gateway_execution(&projection_request, None)
-                .map_err(HarnessError::Execution)?;
         let turn_service =
             loong_app::agent_runtime::load_turn_execution_service(payload.config_path.as_deref())
                 .map_err(HarnessError::Execution)?;
-        let turn_result = turn_service
-            .execute(payload.session_hint.as_deref(), &turn_request, turn_options)
-            .await
-            .map_err(HarnessError::Execution)?;
+        let turn_result = loong_app::turn_gateway::execute_projected_turn_gateway_request(
+            &turn_service,
+            payload.session_hint.as_deref(),
+            &projection_request,
+            None,
+        )
+        .await
+        .map_err(HarnessError::Execution)?;
 
         Ok(HarnessOutcome {
             status: "ok".to_owned(),

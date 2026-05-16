@@ -195,6 +195,18 @@ pub fn project_turn_gateway_execution<'a>(
     Ok((turn_request, turn_options))
 }
 
+pub async fn execute_projected_turn_gateway_request(
+    turn_service: &TurnExecutionService,
+    session_hint: Option<&str>,
+    request: &TurnGatewayRequest,
+    event_sink: Option<&dyn AcpTurnEventSink>,
+) -> CliResult<AgentTurnResult> {
+    let (turn_request, turn_options) = project_turn_gateway_execution(request, event_sink)?;
+    turn_service
+        .execute(session_hint, &turn_request, turn_options)
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
