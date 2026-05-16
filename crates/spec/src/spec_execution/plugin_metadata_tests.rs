@@ -555,4 +555,21 @@ fn enrich_scan_report_adds_channel_bridge_contract_metadata() {
             .map(String::as_str),
         Some("[]")
     );
+    let raw_contract = metadata
+        .get(crate::spec_runtime::PLUGIN_CHANNEL_BRIDGE_CONTRACT_METADATA_KEY)
+        .expect("channel bridge contract metadata");
+    let contract: kernel::CanonicalPluginChannelBridgeContract =
+        serde_json::from_str(raw_contract).expect("decode canonical channel bridge contract");
+    assert_eq!(contract.channel_id.as_deref(), Some("weixin"));
+    assert_eq!(
+        contract.transport_family.as_deref(),
+        Some("wechat_clawbot_ilink_bridge")
+    );
+    assert_eq!(
+        contract.target_contract.as_deref(),
+        Some("weixin:<account>:contact:<id> | weixin:<account>:room:<id>")
+    );
+    assert_eq!(contract.account_scope.as_deref(), Some("multi_account"));
+    assert!(contract.readiness.ready);
+    assert!(contract.readiness.missing_fields.is_empty());
 }
