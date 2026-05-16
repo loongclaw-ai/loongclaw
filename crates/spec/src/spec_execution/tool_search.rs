@@ -29,7 +29,6 @@ struct ToolSearchTranslationSnapshot {
     adapter_family: String,
     entrypoint_hint: String,
     source_language: String,
-    channel_id: Option<String>,
     channel_bridge: Option<kernel::CanonicalPluginChannelBridgeContract>,
 }
 
@@ -235,9 +234,6 @@ pub(super) fn execute_tool_search(
     for report in plugin_translation_reports {
         for entry in &report.entries {
             let channel_bridge = entry.channel_bridge.as_ref();
-            let channel_id = channel_bridge
-                .and_then(|bridge| bridge.channel_id.clone())
-                .or_else(|| entry.channel_id.clone());
             let channel_bridge = channel_bridge.map(kernel::canonical_channel_bridge_contract);
 
             translation_by_key.insert(
@@ -247,7 +243,6 @@ pub(super) fn execute_tool_search(
                     adapter_family: entry.runtime.adapter_family.clone(),
                     entrypoint_hint: entry.runtime.entrypoint_hint.clone(),
                     source_language: entry.runtime.source_language.clone(),
-                    channel_id,
                     channel_bridge,
                 },
             );
@@ -370,7 +365,11 @@ pub(super) fn execute_tool_search(
                 adapter_family = Some(snapshot.adapter_family.clone());
                 entrypoint_hint = Some(snapshot.entrypoint_hint.clone());
                 source_language = Some(snapshot.source_language.clone());
-                channel_id = snapshot.channel_id.clone().or(channel_id);
+                channel_id = snapshot
+                    .channel_bridge
+                    .as_ref()
+                    .and_then(|bridge| bridge.channel_id.clone())
+                    .or(channel_id);
                 merge_tool_search_bridge_snapshot(
                     &mut channel_bridge,
                     tool_search_bridge_snapshot_from_canonical_translation(
@@ -536,7 +535,9 @@ pub(super) fn execute_tool_search(
                 .get(&(descriptor.path.clone(), manifest.plugin_id.clone()));
             let activation_fallback =
                 activation_by_key.get(&(descriptor.path.clone(), manifest.plugin_id.clone()));
-            let channel_id = translation.and_then(|snapshot| snapshot.channel_id.clone());
+            let channel_id = translation
+                .and_then(|snapshot| snapshot.channel_bridge.as_ref())
+                .and_then(|bridge| bridge.channel_id.clone());
             let mut channel_bridge =
                 tool_search_bridge_snapshot_from_manifest_metadata(&manifest.metadata);
             merge_tool_search_bridge_snapshot(
