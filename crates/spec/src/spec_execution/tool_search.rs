@@ -30,11 +30,7 @@ struct ToolSearchTranslationSnapshot {
     entrypoint_hint: String,
     source_language: String,
     channel_id: Option<String>,
-    channel_bridge_transport_family: Option<String>,
-    channel_bridge_target_contract: Option<String>,
-    channel_bridge_account_scope: Option<String>,
-    channel_bridge_ready: Option<bool>,
-    channel_bridge_missing_fields: Vec<String>,
+    channel_bridge: Option<kernel::CanonicalPluginChannelBridgeContract>,
 }
 
 pub(super) fn build_tool_search_operation_summary(
@@ -242,16 +238,7 @@ pub(super) fn execute_tool_search(
             let channel_id = channel_bridge
                 .and_then(|bridge| bridge.channel_id.clone())
                 .or_else(|| entry.channel_id.clone());
-            let channel_bridge_transport_family =
-                channel_bridge.and_then(|bridge| bridge.transport_family.clone());
-            let channel_bridge_target_contract =
-                channel_bridge.and_then(|bridge| bridge.target_contract.clone());
-            let channel_bridge_account_scope =
-                channel_bridge.and_then(|bridge| bridge.account_scope.clone());
-            let channel_bridge_ready = channel_bridge.map(|bridge| bridge.readiness.ready);
-            let channel_bridge_missing_fields = channel_bridge
-                .map(|bridge| bridge.readiness.missing_fields.clone())
-                .unwrap_or_default();
+            let channel_bridge = channel_bridge.map(kernel::canonical_channel_bridge_contract);
 
             translation_by_key.insert(
                 (entry.source_path.clone(), entry.plugin_id.clone()),
@@ -261,11 +248,7 @@ pub(super) fn execute_tool_search(
                     entrypoint_hint: entry.runtime.entrypoint_hint.clone(),
                     source_language: entry.runtime.source_language.clone(),
                     channel_id,
-                    channel_bridge_transport_family,
-                    channel_bridge_target_contract,
-                    channel_bridge_account_scope,
-                    channel_bridge_ready,
-                    channel_bridge_missing_fields,
+                    channel_bridge,
                 },
             );
         }
@@ -404,22 +387,22 @@ pub(super) fn execute_tool_search(
                 entrypoint_hint = Some(snapshot.entrypoint_hint.clone());
                 source_language = Some(snapshot.source_language.clone());
                 channel_id = snapshot.channel_id.clone().or(channel_id);
-                channel_bridge_transport_family = snapshot
-                    .channel_bridge_transport_family
-                    .clone()
-                    .or(channel_bridge_transport_family);
-                channel_bridge_target_contract = snapshot
-                    .channel_bridge_target_contract
-                    .clone()
-                    .or(channel_bridge_target_contract);
-                channel_bridge_account_scope = snapshot
-                    .channel_bridge_account_scope
-                    .clone()
-                    .or(channel_bridge_account_scope);
+                if let Some(channel_bridge) = snapshot.channel_bridge.as_ref() {
+                    channel_bridge_transport_family = channel_bridge
+                        .transport_family
+                        .clone()
+                        .or(channel_bridge_transport_family);
+                    channel_bridge_target_contract = channel_bridge
+                        .target_contract
+                        .clone()
+                        .or(channel_bridge_target_contract);
+                    channel_bridge_account_scope = channel_bridge
+                        .account_scope
+                        .clone()
+                        .or(channel_bridge_account_scope);
 
-                if let Some(snapshot_channel_bridge_ready) = snapshot.channel_bridge_ready {
-                    channel_bridge_ready = Some(snapshot_channel_bridge_ready);
-                    channel_bridge_missing_fields = snapshot.channel_bridge_missing_fields.clone();
+                    channel_bridge_ready = Some(channel_bridge.readiness.ready);
+                    channel_bridge_missing_fields = channel_bridge.readiness.missing_fields.clone();
                 }
             }
         }
@@ -589,7 +572,12 @@ pub(super) fn execute_tool_search(
                 .or_else(|| manifest.metadata.get("plugin_channel_id").cloned())
                 .or_else(|| manifest.channel_id.clone());
             let channel_bridge_transport_family = translation
-                .and_then(|snapshot| snapshot.channel_bridge_transport_family.clone())
+                .and_then(|snapshot| {
+                    snapshot
+                        .channel_bridge
+                        .as_ref()
+                        .and_then(|bridge| bridge.transport_family.clone())
+                })
                 .or_else(|| {
                     manifest
                         .metadata
@@ -598,7 +586,12 @@ pub(super) fn execute_tool_search(
                 })
                 .or_else(|| manifest.metadata.get("transport_family").cloned());
             let channel_bridge_target_contract = translation
-                .and_then(|snapshot| snapshot.channel_bridge_target_contract.clone())
+                .and_then(|snapshot| {
+                    snapshot
+                        .channel_bridge
+                        .as_ref()
+                        .and_then(|bridge| bridge.target_contract.clone())
+                })
                 .or_else(|| {
                     manifest
                         .metadata
@@ -607,7 +600,12 @@ pub(super) fn execute_tool_search(
                 })
                 .or_else(|| manifest.metadata.get("target_contract").cloned());
             let channel_bridge_account_scope = translation
-                .and_then(|snapshot| snapshot.channel_bridge_account_scope.clone())
+                .and_then(|snapshot| {
+                    snapshot
+                        .channel_bridge
+                        .as_ref()
+                        .and_then(|bridge| bridge.account_scope.clone())
+                })
                 .or_else(|| {
                     manifest
                         .metadata
@@ -616,10 +614,21 @@ pub(super) fn execute_tool_search(
                 })
                 .or_else(|| manifest.metadata.get("account_scope").cloned());
             let channel_bridge_ready = translation
-                .and_then(|snapshot| snapshot.channel_bridge_ready)
+                .and_then(|snapshot| {
+                    snapshot
+                        .channel_bridge
+                        .as_ref()
+                        .map(|bridge| bridge.readiness.ready)
+                })
                 .or_else(|| metadata_bool(&manifest.metadata, "plugin_channel_bridge_ready"));
             let channel_bridge_missing_fields = translation
-                .map(|snapshot| snapshot.channel_bridge_missing_fields.clone())
+                .map(|snapshot| {
+                    snapshot
+                        .channel_bridge
+                        .as_ref()
+                        .map(|bridge| bridge.readiness.missing_fields.clone())
+                        .unwrap_or_default()
+                })
                 .unwrap_or_else(|| {
                     metadata_strings(
                         &manifest.metadata,
