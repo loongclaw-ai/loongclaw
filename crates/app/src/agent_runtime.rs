@@ -46,9 +46,6 @@ pub struct AgentTurnRequest {
     pub thread_id: Option<String>,
     pub metadata: BTreeMap<String, String>,
     pub acp: bool,
-    pub acp_event_stream: bool,
-    pub acp_bootstrap_mcp_servers: Vec<String>,
-    pub acp_cwd: Option<String>,
     pub live_surface_enabled: bool,
 }
 
@@ -118,6 +115,9 @@ pub struct TurnExecutionOptions<'a> {
     pub provenance: AcpTurnProvenance<'a>,
     pub provider_error_mode: crate::conversation::ProviderErrorMode,
     pub retry_progress: crate::provider::ProviderRetryProgressCallback,
+    pub acp_event_stream: bool,
+    pub acp_bootstrap_mcp_servers: Vec<String>,
+    pub acp_working_directory: Option<PathBuf>,
 }
 
 pub(crate) struct RuntimeTurnExecutionService<'a> {
@@ -134,6 +134,9 @@ impl Default for TurnExecutionOptions<'_> {
             provenance: AcpTurnProvenance::default(),
             provider_error_mode: crate::conversation::ProviderErrorMode::InlineMessage,
             retry_progress: None,
+            acp_event_stream: false,
+            acp_bootstrap_mcp_servers: Vec::new(),
+            acp_working_directory: None,
         }
     }
 }
@@ -165,6 +168,8 @@ impl<'a> RuntimeTurnExecutionService<'a> {
         let provenance = options.provenance;
         let provider_error_mode = options.provider_error_mode;
         let retry_progress = options.retry_progress;
+        let acp_bootstrap_mcp_servers = options.acp_bootstrap_mcp_servers.clone();
+        let acp_working_directory = options.acp_working_directory.clone();
         let acp_manager = self.acp_manager.clone();
 
         Box::pin(async move {
@@ -181,8 +186,14 @@ impl<'a> RuntimeTurnExecutionService<'a> {
 
             if explicit_acp_request {
                 let turn_config = load_runtime_turn_config(runtime)?;
-                let acp_options = acp_turn_options_from_runtime(runtime, event_sink, request)
-                    .with_provenance(provenance);
+                let acp_options = acp_turn_options_from_runtime(
+                    runtime,
+                    event_sink,
+                    request,
+                    acp_bootstrap_mcp_servers.as_slice(),
+                    acp_working_directory.as_deref(),
+                )
+                .with_provenance(provenance);
                 let execution = crate::acp::execute_acp_conversation_turn_for_address(
                     &turn_config,
                     &turn_address,
@@ -304,6 +315,7 @@ impl TurnExecutionService {
         let config = self.config.clone();
         let kernel_ctx = self.kernel_ctx.clone();
         let acp_manager = self.acp_manager.clone();
+        let cli_options = cli_chat_options_for_turn_request(request, &options);
         let event_sink = options.event_sink;
         let observer = options.observer;
         let ingress = options.ingress;
@@ -313,7 +325,6 @@ impl TurnExecutionService {
         let initialize_runtime_environment = self.initialize_runtime_environment;
 
         Box::pin(async move {
-            let cli_options = cli_chat_options_for_turn_request(request);
             let cli_runtime = match kernel_ctx {
                 Some(kernel_ctx) => initialize_cli_turn_runtime_with_loaded_config_and_kernel_ctx(
                     resolved_path,
@@ -340,6 +351,9 @@ impl TurnExecutionService {
                 provenance,
                 provider_error_mode,
                 retry_progress,
+                acp_event_stream: options.acp_event_stream,
+                acp_bootstrap_mcp_servers: options.acp_bootstrap_mcp_servers.clone(),
+                acp_working_directory: options.acp_working_directory.clone(),
             };
             let runtime_service = match acp_manager {
                 Some(acp_manager) => {
@@ -378,12 +392,13 @@ impl AgentRuntime {
 
         let turn_service = load_turn_execution_service(config_path)?;
         let acp_event_printer = request
-            .acp_event_stream
+            .acp
             .then(|| JsonlAcpTurnEventSink::stderr_with_prefix("acp-event> "));
         let turn_options = TurnExecutionOptions {
             event_sink: acp_event_printer
                 .as_ref()
                 .map(|printer| printer as &dyn AcpTurnEventSink),
+            acp_event_stream: request.acp,
             ..Default::default()
         };
 
@@ -497,6 +512,9 @@ impl AgentRuntime {
             provenance,
             provider_error_mode,
             retry_progress: None,
+            acp_event_stream: runtime.explicit_acp_request || request.acp,
+            acp_bootstrap_mcp_servers: runtime.effective_bootstrap_mcp_servers.clone(),
+            acp_working_directory: runtime.effective_working_directory.clone(),
         };
         let runtime_service = match acp_manager {
             Some(acp_manager) => {
@@ -535,7 +553,7 @@ impl AgentRuntime {
             return Err("agent runtime message must not be empty".to_owned());
         }
 
-        let options = cli_chat_options_for_turn_request(request);
+        let options = cli_chat_options_for_turn_request(request, &TurnExecutionOptions::default());
         let runtime = initialize_cli_turn_runtime_with_loaded_config(
             resolved_path,
             config,
@@ -564,7 +582,7 @@ impl AgentRuntime {
             return Err("agent runtime message must not be empty".to_owned());
         }
 
-        let options = cli_chat_options_for_turn_request(request);
+        let options = cli_chat_options_for_turn_request(request, &TurnExecutionOptions::default());
         let runtime = initialize_cli_turn_runtime_with_loaded_config(
             resolved_path,
             config,
@@ -606,7 +624,7 @@ impl AgentRuntime {
             return Err("agent runtime message must not be empty".to_owned());
         }
 
-        let options = cli_chat_options_for_turn_request(request);
+        let options = cli_chat_options_for_turn_request(request, &TurnExecutionOptions::default());
         let runtime = initialize_cli_turn_runtime_with_loaded_config(
             resolved_path,
             config,
@@ -716,12 +734,20 @@ impl AgentRuntime {
 ///
 /// The rest of the request remains turn-local and is passed later to the
 /// coordinator/provider pipeline.
-fn cli_chat_options_for_turn_request(request: &AgentTurnRequest) -> CliChatOptions {
+fn cli_chat_options_for_turn_request(
+    request: &AgentTurnRequest,
+    options: &TurnExecutionOptions<'_>,
+) -> CliChatOptions {
     CliChatOptions {
         acp_requested: request.acp || matches!(request.turn_mode, AgentTurnMode::Acp),
-        acp_event_stream: request.acp_event_stream,
-        acp_bootstrap_mcp_servers: request.acp_bootstrap_mcp_servers.clone(),
-        acp_working_directory: normalized_turn_working_directory(request.acp_cwd.as_deref()),
+        acp_event_stream: options.acp_event_stream,
+        acp_bootstrap_mcp_servers: options.acp_bootstrap_mcp_servers.clone(),
+        acp_working_directory: normalized_turn_working_directory(
+            options
+                .acp_working_directory
+                .as_deref()
+                .and_then(|path| path.to_str()),
+        ),
     }
 }
 
@@ -766,6 +792,8 @@ fn acp_turn_options_from_runtime<'a>(
     runtime: &'a crate::chat::CliTurnRuntime,
     event_sink: Option<&'a dyn AcpTurnEventSink>,
     request: &'a AgentTurnRequest,
+    additional_bootstrap_mcp_servers: &'a [String],
+    working_directory: Option<&'a std::path::Path>,
 ) -> crate::acp::AcpConversationTurnOptions<'a> {
     let base = if runtime.explicit_acp_request || request.acp {
         crate::acp::AcpConversationTurnOptions::explicit()
@@ -773,8 +801,8 @@ fn acp_turn_options_from_runtime<'a>(
         crate::acp::AcpConversationTurnOptions::automatic()
     };
     base.with_event_sink(event_sink)
-        .with_additional_bootstrap_mcp_servers(&runtime.effective_bootstrap_mcp_servers)
-        .with_working_directory(runtime.effective_working_directory.as_deref())
+        .with_additional_bootstrap_mcp_servers(additional_bootstrap_mcp_servers)
+        .with_working_directory(working_directory)
         .with_metadata(Some(&request.metadata))
 }
 
@@ -986,17 +1014,45 @@ mod tests {
 
     #[test]
     fn cli_chat_options_for_turn_request_ignores_blank_working_directory() {
-        let request = AgentTurnRequest {
-            acp_cwd: Some("   ".to_owned()),
-            ..AgentTurnRequest::default()
+        let request = AgentTurnRequest::default();
+        let options = TurnExecutionOptions {
+            acp_working_directory: Some(PathBuf::from("   ")),
+            ..TurnExecutionOptions::default()
         };
 
-        let options = cli_chat_options_for_turn_request(&request);
+        let options = cli_chat_options_for_turn_request(&request, &options);
 
         assert!(options.acp_working_directory.is_none());
         assert!(!options.acp_requested);
         assert!(!options.acp_event_stream);
         assert!(options.acp_bootstrap_mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn cli_chat_options_for_turn_request_uses_execution_options_acp_envelope() {
+        let request = AgentTurnRequest {
+            acp: true,
+            ..AgentTurnRequest::default()
+        };
+        let options = TurnExecutionOptions {
+            acp_event_stream: true,
+            acp_bootstrap_mcp_servers: vec!["filesystem".to_owned(), "search".to_owned()],
+            acp_working_directory: Some(PathBuf::from("/workspace/project")),
+            ..TurnExecutionOptions::default()
+        };
+
+        let cli_options = cli_chat_options_for_turn_request(&request, &options);
+
+        assert!(cli_options.acp_requested);
+        assert!(cli_options.acp_event_stream);
+        assert_eq!(
+            cli_options.acp_bootstrap_mcp_servers,
+            vec!["filesystem".to_owned(), "search".to_owned()]
+        );
+        assert_eq!(
+            cli_options.acp_working_directory,
+            Some(PathBuf::from("/workspace/project"))
+        );
     }
 
     #[test]
