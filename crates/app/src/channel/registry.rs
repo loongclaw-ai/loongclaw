@@ -578,24 +578,12 @@ const FEISHU_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboard
     repair_command: Some("loong feishu onboard"),
 };
 
-const QQBOT_CAPABILITIES: &[ChannelCapability] = &[
-    ChannelCapability::RuntimeBacked,
-    ChannelCapability::MultiAccount,
-    ChannelCapability::Send,
-    ChannelCapability::Serve,
-    ChannelCapability::RuntimeTracking,
-];
 pub const QQBOT_CATALOG_COMMAND_FAMILY_DESCRIPTOR: ChannelCatalogCommandFamilyDescriptor =
     ChannelCatalogCommandFamilyDescriptor {
         channel_id: "qqbot",
         default_send_target_kind: ChannelCatalogTargetKind::Conversation,
         send: QQBOT_SEND_OPERATION,
         serve: QQBOT_SERVE_OPERATION,
-    };
-pub const QQBOT_COMMAND_FAMILY_DESCRIPTOR: ChannelCommandFamilyDescriptor =
-    ChannelCommandFamilyDescriptor {
-        runtime: QQBOT_RUNTIME_COMMAND_DESCRIPTOR,
-        catalog: QQBOT_CATALOG_COMMAND_FAMILY_DESCRIPTOR,
     };
 
 const QQBOT_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
@@ -658,9 +646,9 @@ const QQBOT_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 
 const QQBOT_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
-    label: "gateway send",
-    command: "qqbot-send",
-    availability: ChannelCatalogOperationAvailability::Implemented,
+    label: "bridge send",
+    command: "channels send qqbot",
+    availability: ChannelCatalogOperationAvailability::ManagedBridge,
     tracks_runtime: false,
     requirements: QQBOT_SEND_REQUIREMENTS,
     default_target_kind: None,
@@ -669,10 +657,10 @@ const QQBOT_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
 
 const QQBOT_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SERVE_ID,
-    label: "gateway reply loop",
-    command: "qqbot-serve",
-    availability: ChannelCatalogOperationAvailability::Implemented,
-    tracks_runtime: true,
+    label: "bridge serve",
+    command: "channels serve qqbot",
+    availability: ChannelCatalogOperationAvailability::ManagedBridge,
+    tracks_runtime: false,
     requirements: QQBOT_SERVE_REQUIREMENTS,
     default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Conversation],
@@ -706,8 +694,8 @@ const QQBOT_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
 ];
 
 const QQBOT_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
-    strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure qqbot app_id, client_secret, and allowed_peer_ids under qqbot or qqbot.accounts.<account> in loong.toml before serving the runtime channel",
+    strategy: ChannelOnboardingStrategy::PluginBridge,
+    setup_hint: "install and configure a QQBot bridge plugin that declares setup.surface=channel plus qqbot app_id, client_secret, and allowed_peer_ids requirements before serving the managed bridge surface",
     status_command: "loong doctor",
     repair_command: None,
 };

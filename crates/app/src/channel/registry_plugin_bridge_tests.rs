@@ -271,7 +271,10 @@ fn resolve_channel_catalog_entry_exposes_plugin_bridge_contracts() {
         ]
     );
 
-    assert_eq!(qqbot.plugin_bridge_contract, None);
+    let qqbot_contract = qqbot
+        .plugin_bridge_contract
+        .as_ref()
+        .expect("qqbot plugin bridge contract");
     assert_eq!(
         qqbot
             .operations
@@ -279,10 +282,11 @@ fn resolve_channel_catalog_entry_exposes_plugin_bridge_contracts() {
             .map(|operation| operation.availability)
             .collect::<Vec<_>>(),
         vec![
-            ChannelCatalogOperationAvailability::Implemented,
-            ChannelCatalogOperationAvailability::Implemented,
+            ChannelCatalogOperationAvailability::ManagedBridge,
+            ChannelCatalogOperationAvailability::ManagedBridge,
         ]
     );
+    assert_eq!(qqbot_contract.manifest_channel_id, "qqbot");
 
     let onebot_contract = onebot
         .plugin_bridge_contract
@@ -312,7 +316,10 @@ fn resolve_channel_catalog_entry_exposes_plugin_bridge_stable_targets() {
         .plugin_bridge_contract
         .as_ref()
         .expect("weixin plugin bridge contract");
-    assert_eq!(qqbot.plugin_bridge_contract, None);
+    let qqbot_contract = qqbot
+        .plugin_bridge_contract
+        .as_ref()
+        .expect("qqbot plugin bridge contract");
     let onebot_contract = onebot
         .plugin_bridge_contract
         .as_ref()
@@ -338,6 +345,19 @@ fn resolve_channel_catalog_entry_exposes_plugin_bridge_stable_targets() {
         ]
     );
     assert_eq!(weixin_contract.account_scope_note, None);
+
+    assert_eq!(
+        qqbot_contract
+            .stable_targets
+            .iter()
+            .map(|target| { (target.template, target.target_kind, target.description,) })
+            .collect::<Vec<_>>(),
+        vec![(
+            "qqbot:<account>:conversation:<peer_id>",
+            ChannelCatalogTargetKind::Conversation,
+            "official gateway conversation peer id",
+        )]
+    );
 
     assert_eq!(
         onebot_contract
@@ -406,12 +426,12 @@ fn validate_plugin_channel_bridge_manifest_reports_contract_mismatches() {
         ChannelPluginBridgeManifestStatus::UnsupportedChannelSurface
     );
 
-    let qqbot_manifest = sample_channel_bridge_manifest(Some("qqbot"), None);
+    let qqbot_manifest = sample_channel_bridge_manifest(Some("qqbot"), Some("channel"));
     let qqbot_validation = validate_plugin_channel_bridge_manifest(&qqbot_manifest)
         .expect("qqbot runtime-backed channel validation");
     assert_eq!(
         qqbot_validation.status,
-        ChannelPluginBridgeManifestStatus::UnsupportedChannelSurface
+        ChannelPluginBridgeManifestStatus::Compatible
     );
 }
 
@@ -529,12 +549,12 @@ fn channel_inventory_reports_managed_bridge_plugin_statuses_per_surface() {
         ChannelPluginBridgeDiscoveryStatus::MatchesFound
     );
     assert_eq!(qqbot_discovery.compatible_plugins, 0);
-    assert_eq!(qqbot_discovery.incomplete_plugins, 0);
-    assert_eq!(qqbot_discovery.incompatible_plugins, 1);
+    assert_eq!(qqbot_discovery.incomplete_plugins, 1);
+    assert_eq!(qqbot_discovery.incompatible_plugins, 0);
     assert_eq!(qqbot_discovery.plugins.len(), 1);
     assert_eq!(
         qqbot_discovery.plugins[0].status,
-        ChannelDiscoveredPluginBridgeStatus::UnsupportedChannelSurface
+        ChannelDiscoveredPluginBridgeStatus::CompatibleIncompleteContract
     );
 
     assert_eq!(

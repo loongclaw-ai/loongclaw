@@ -378,18 +378,16 @@ const NOSTR_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor = ChannelRegi
 pub(crate) const QQBOT_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
     ChannelRegistryDescriptor {
         id: "qqbot",
-        runtime: Some(ChannelRuntimeDescriptor {
-            family: QQBOT_COMMAND_FAMILY_DESCRIPTOR,
-        }),
+        runtime: None,
         snapshot_builder: Some(build_qqbot_snapshots),
         selection_order: 36,
         selection_label: "qq gateway bot",
-        blurb: "Shipped QQBot official gateway surface with WebSocket ingress and C2C message reply-loop runtime support.",
-        implementation_status: ChannelCatalogImplementationStatus::RuntimeBacked,
-        capabilities: QQBOT_CAPABILITIES,
+        blurb: "Plugin-backed QQBot surface for official gateway bridges that externalize send and reply-loop contract ownership into a managed bridge plugin.",
+        implementation_status: ChannelCatalogImplementationStatus::PluginBacked,
+        capabilities: PLUGIN_BACKED_CHANNEL_CAPABILITIES,
         label: "QQ Bot",
         aliases: &["qq", "qq-bot", "tencent-qq"],
-        transport: "qq_official_bot_gateway",
+        transport: "qq_official_bot_gateway_or_plugin_bridge",
         onboarding: QQBOT_ONBOARDING_DESCRIPTOR,
         operations: QQBOT_OPERATIONS,
     };
