@@ -10,12 +10,16 @@ use serde::{Deserialize, Serialize};
 pub use loong_runtime::WorkspaceContext as AppProtocolWorkspaceContext;
 use loong_runtime::{
     ChildBudgetPolicy, ExecutionArtifact, RuntimeExecutorRequest, RuntimeExecutorResult,
-    RuntimeOneshotExecution, RuntimeOneshotExecutor, Session, SessionEvent, Task, TaskBudget,
-    TaskEvent, TaskExecutionMode, TaskLifecycle, WorkspaceContext,
+    RuntimeInteractiveExecution, RuntimeInteractiveExecutor, RuntimeInteractiveExecutorRequest,
+    RuntimeInteractiveExecutorResult, RuntimeInteractiveRequest, RuntimeOneshotExecution,
+    RuntimeOneshotExecutor, Session, SessionEvent, Task, TaskBudget, TaskEvent, TaskExecutionMode,
+    TaskLifecycle, WorkspaceContext,
 };
 pub use loong_runtime::{
     RuntimeExecutorRequest as AppProtocolRuntimeExecutorRequest,
     RuntimeExecutorResult as AppProtocolRuntimeExecutorResult,
+    RuntimeInteractiveExecutorRequest as AppProtocolRuntimeInteractiveExecutorRequest,
+    RuntimeInteractiveExecutorResult as AppProtocolRuntimeInteractiveExecutorResult,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +156,7 @@ pub enum AppResponse {
     Events(Vec<TaskEvent>),
     Artifacts(Vec<ExecutionArtifact>),
     OneshotTurn(RuntimeOneshotExecution),
+    InteractiveShell(RuntimeInteractiveExecution),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,6 +228,65 @@ pub fn render_oneshot_turn_output(execution: &RuntimeOneshotExecution) -> &str {
     execution.output_text.as_str()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InteractiveShellRequest {
+    pub config_path: Option<String>,
+    pub session_hint: Option<String>,
+    pub acp: bool,
+    pub acp_event_stream: bool,
+    pub acp_bootstrap_mcp_servers: Vec<String>,
+    pub acp_cwd: Option<String>,
+}
+
+#[async_trait]
+pub trait AppProtocolInteractiveExecutor: Send + Sync {
+    async fn run_interactive(
+        &self,
+        request: RuntimeInteractiveExecutorRequest,
+    ) -> Result<RuntimeInteractiveExecutorResult, String>;
+}
+
+struct RuntimeInteractiveExecutorAdapter<'a, E> {
+    inner: &'a E,
+}
+
+#[async_trait]
+impl<E> RuntimeInteractiveExecutor for RuntimeInteractiveExecutorAdapter<'_, E>
+where
+    E: AppProtocolInteractiveExecutor,
+{
+    async fn run_interactive(
+        &self,
+        request: RuntimeInteractiveExecutorRequest,
+    ) -> Result<RuntimeInteractiveExecutorResult, String> {
+        self.inner.run_interactive(request).await
+    }
+}
+
+pub fn build_runtime_interactive_request(
+    request: &InteractiveShellRequest,
+    workspace: WorkspaceContext,
+) -> RuntimeInteractiveRequest {
+    RuntimeInteractiveRequest {
+        session_hint: request.session_hint.clone(),
+        workspace,
+        acp: request.acp,
+        acp_event_stream: request.acp_event_stream,
+        acp_bootstrap_mcp_servers: request.acp_bootstrap_mcp_servers.clone(),
+        acp_cwd: request.acp_cwd.clone(),
+    }
+}
+
+pub async fn execute_interactive_shell<E: AppProtocolInteractiveExecutor>(
+    request: &InteractiveShellRequest,
+    workspace: WorkspaceContext,
+    executor: &E,
+) -> Result<RuntimeInteractiveExecution, String> {
+    let runtime_request = build_runtime_interactive_request(request, workspace);
+    let adapter = RuntimeInteractiveExecutorAdapter { inner: executor };
+    loong_runtime::execute_interactive_shell(&runtime_request, &adapter).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +312,22 @@ mod tests {
                 state: Some("ok".to_owned()),
                 stop_reason: Some("completed".to_owned()),
                 event_count: 1,
+            })
+        }
+    }
+
+    struct MockInteractiveExecutor;
+
+    #[async_trait]
+    impl AppProtocolInteractiveExecutor for MockInteractiveExecutor {
+        async fn run_interactive(
+            &self,
+            request: RuntimeInteractiveExecutorRequest,
+        ) -> Result<RuntimeInteractiveExecutorResult, String> {
+            assert_eq!(request.session_hint.as_deref(), Some("latest"));
+            Ok(RuntimeInteractiveExecutorResult {
+                session_id: "interactive-session".to_owned(),
+                exit_state: "completed".to_owned(),
             })
         }
     }
@@ -280,5 +360,35 @@ mod tests {
         assert_eq!(execution.output_text, "protocol result");
         assert_eq!(execution.task.task_id, "turn-run:resolved-session");
         assert_eq!(execution.task.lifecycle, TaskLifecycle::Completed);
+    }
+
+    #[tokio::test]
+    async fn protocol_interactive_shell_routes_into_runtime_execution() {
+        let request = InteractiveShellRequest {
+            config_path: None,
+            session_hint: Some("latest".to_owned()),
+            acp: false,
+            acp_event_stream: false,
+            acp_bootstrap_mcp_servers: Vec::new(),
+            acp_cwd: None,
+        };
+        let workspace = WorkspaceContext::new(
+            "/tmp/chat",
+            "/tmp/chat",
+            "/tmp/chat",
+            "/tmp/chat",
+            "feature/chat".to_owned(),
+        );
+
+        let execution =
+            execute_interactive_shell(&request, workspace.clone(), &MockInteractiveExecutor)
+                .await
+                .expect("execute interactive shell");
+
+        assert_eq!(execution.session.session_id, "interactive-session");
+        assert_eq!(execution.session.workspace, workspace);
+        assert_eq!(execution.task.task_id, "chat-shell:interactive-session");
+        assert_eq!(execution.task.lifecycle, TaskLifecycle::Completed);
+        assert_eq!(execution.exit_state, "completed");
     }
 }

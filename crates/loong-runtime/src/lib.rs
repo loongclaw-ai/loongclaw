@@ -223,6 +223,114 @@ pub async fn execute_oneshot_turn<E: RuntimeOneshotExecutor>(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteractiveRequest {
+    pub session_hint: Option<String>,
+    pub workspace: WorkspaceContext,
+    pub acp: bool,
+    pub acp_event_stream: bool,
+    pub acp_bootstrap_mcp_servers: Vec<String>,
+    pub acp_cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteractiveExecutorRequest {
+    pub session_hint: Option<String>,
+    pub acp: bool,
+    pub acp_event_stream: bool,
+    pub acp_bootstrap_mcp_servers: Vec<String>,
+    pub acp_cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteractiveExecutorResult {
+    pub session_id: String,
+    pub exit_state: String,
+}
+
+#[async_trait]
+pub trait RuntimeInteractiveExecutor: Send + Sync {
+    async fn run_interactive(
+        &self,
+        request: RuntimeInteractiveExecutorRequest,
+    ) -> Result<RuntimeInteractiveExecutorResult, String>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteractiveExecution {
+    pub session: RuntimeSessionDescriptor,
+    pub task: RuntimeTaskDescriptor,
+    pub session_events: Vec<SessionEvent>,
+    pub task_events: Vec<TaskEvent>,
+    pub exit_state: String,
+}
+
+pub async fn execute_interactive_shell<E: RuntimeInteractiveExecutor>(
+    request: &RuntimeInteractiveRequest,
+    executor: &E,
+) -> Result<RuntimeInteractiveExecution, String> {
+    let executor_result = executor
+        .run_interactive(RuntimeInteractiveExecutorRequest {
+            session_hint: request.session_hint.clone(),
+            acp: request.acp,
+            acp_event_stream: request.acp_event_stream,
+            acp_bootstrap_mcp_servers: request.acp_bootstrap_mcp_servers.clone(),
+            acp_cwd: request.acp_cwd.clone(),
+        })
+        .await?;
+
+    let session_id = executor_result.session_id.clone();
+    let task_id = format!("chat-shell:{session_id}");
+    let mut session = Session::new(
+        session_id.clone(),
+        request.workspace.clone(),
+        SessionBudgetOverlay::default(),
+    );
+    session
+        .spawn_task(
+            task_id.as_str(),
+            "interactive chat shell",
+            TaskBudget::default(),
+            TaskExecutionMode::InteractiveAttached,
+        )
+        .map_err(|error| error.to_string())?;
+    let task = session
+        .task_mut(task_id.as_str())
+        .ok_or_else(|| "interactive shell task missing after spawn".to_owned())?;
+    task.transition_to(TaskLifecycle::Running)
+        .map_err(|error| error.to_string())?;
+    task.begin_turn(
+        "turn-1",
+        "run interactive chat shell through the additive spine",
+    )
+    .map_err(|error| error.to_string())?;
+    task.finish_current_turn(TurnStatus::Completed);
+    task.transition_to(TaskLifecycle::Completed)
+        .map_err(|error| error.to_string())?;
+
+    let task = session
+        .task(task_id.as_str())
+        .ok_or_else(|| "interactive shell task missing after completion".to_owned())?;
+
+    Ok(RuntimeInteractiveExecution {
+        session: RuntimeSessionDescriptor {
+            session_id,
+            workspace: session.workspace().clone(),
+        },
+        task: RuntimeTaskDescriptor {
+            task_id: task.task_id.clone(),
+            objective: task.objective.clone(),
+            lifecycle: task.lifecycle().clone(),
+            execution_mode: task.execution_mode.clone(),
+            current_turn_id: task.current_turn().map(|turn| turn.turn_id.clone()),
+            artifact_count: task.artifacts().len(),
+        },
+        session_events: session.session_events().to_vec(),
+        task_events: task.fact_events().to_vec(),
+        exit_state: executor_result.exit_state,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +405,59 @@ mod tests {
                 .any(|event| matches!(event, TaskEvent::ArtifactRecorded { .. })),
             "task events should include artifact truth"
         );
+    }
+
+    struct MockInteractiveExecutor {
+        session_id: String,
+    }
+
+    #[async_trait]
+    impl RuntimeInteractiveExecutor for MockInteractiveExecutor {
+        async fn run_interactive(
+            &self,
+            _request: RuntimeInteractiveExecutorRequest,
+        ) -> Result<RuntimeInteractiveExecutorResult, String> {
+            Ok(RuntimeInteractiveExecutorResult {
+                session_id: self.session_id.clone(),
+                exit_state: "completed".to_owned(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_interactive_execution_builds_visible_core_truth() {
+        let workspace = WorkspaceContext::new(
+            "/tmp/phase3-chat",
+            "/tmp/phase3-chat",
+            "/tmp/phase3-chat",
+            "/tmp/phase3-chat",
+            "feature/phase3-chat".to_owned(),
+        );
+        let request = RuntimeInteractiveRequest {
+            session_hint: Some("latest".to_owned()),
+            workspace: workspace.clone(),
+            acp: false,
+            acp_event_stream: false,
+            acp_bootstrap_mcp_servers: Vec::new(),
+            acp_cwd: None,
+        };
+        let executor = MockInteractiveExecutor {
+            session_id: "chat-session".to_owned(),
+        };
+
+        let execution = execute_interactive_shell(&request, &executor)
+            .await
+            .expect("execute interactive shell");
+
+        assert_eq!(execution.session.session_id, "chat-session");
+        assert_eq!(execution.session.workspace, workspace);
+        assert_eq!(execution.task.task_id, "chat-shell:chat-session");
+        assert_eq!(
+            execution.task.execution_mode,
+            TaskExecutionMode::InteractiveAttached
+        );
+        assert_eq!(execution.task.lifecycle, TaskLifecycle::Completed);
+        assert_eq!(execution.task.current_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(execution.exit_state, "completed");
     }
 }
