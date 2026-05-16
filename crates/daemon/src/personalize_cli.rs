@@ -34,6 +34,9 @@ enum PersonalizeReviewAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PersonalizationDraft {
     preferred_name: Option<String>,
+    prompt_personality: Option<mvp::prompt::PromptPersonality>,
+    prompt_addendum: Option<String>,
+    inline_system_prompt: Option<String>,
     response_density: Option<mvp::config::ResponseDensity>,
     initiative_level: Option<mvp::config::InitiativeLevel>,
     standing_boundaries: Option<String>,
@@ -64,7 +67,7 @@ pub(crate) fn run_personalize_cli_with_ui(
     let (resolved_path, mut config) = load_result;
     let existing_personalization = config.memory.trimmed_personalization();
     print_suppressed_recovery_guidance(ui, existing_personalization.as_ref())?;
-    let draft = collect_personalization_draft(ui, existing_personalization.as_ref())?;
+    let draft = collect_personalization_draft(ui, &config, existing_personalization.as_ref())?;
     let review_action = select_review_action(ui, &draft)?;
 
     match review_action {
@@ -109,6 +112,7 @@ fn print_suppressed_recovery_guidance(
 
 fn collect_personalization_draft(
     ui: &mut impl OperatorPromptUi,
+    config: &mvp::config::LoongConfig,
     existing_personalization: Option<&mvp::config::PersonalizationConfig>,
 ) -> CliResult<PersonalizationDraft> {
     let preferred_name_default = existing_personalization
@@ -151,8 +155,30 @@ fn collect_personalization_draft(
         locale_default,
     )?;
 
+    let prompt_personality =
+        select_prompt_personality(ui, config.cli.personality.unwrap_or_default())?;
+
+    let prompt_addendum = prompt_optional_text(
+        ui,
+        personalize_prompt_label(PersonalizePromptKind::PromptAddendum),
+        config.cli.system_prompt_addendum.as_deref(),
+    )?;
+
+    let inline_system_prompt = prompt_optional_text(
+        ui,
+        personalize_prompt_label(PersonalizePromptKind::InlineSystemPrompt),
+        if config.cli.uses_native_prompt_pack() {
+            None
+        } else {
+            Some(config.cli.system_prompt.as_str())
+        },
+    )?;
+
     Ok(PersonalizationDraft {
         preferred_name,
+        prompt_personality,
+        prompt_addendum,
+        inline_system_prompt,
         response_density,
         initiative_level,
         standing_boundaries,
@@ -173,6 +199,52 @@ fn prompt_optional_text(
     let selected_value = prompt_optional_operator_text(ui, label, current_value)?;
 
     Ok(selected_value)
+}
+
+fn select_prompt_personality(
+    ui: &mut impl OperatorPromptUi,
+    current_value: mvp::prompt::PromptPersonality,
+) -> CliResult<Option<mvp::prompt::PromptPersonality>> {
+    ui.print_line(personalize_select_current_value_guidance(current_value.id()).as_str())?;
+
+    let mut options = mvp::prompt::prompt_personality_catalog()
+        .iter()
+        .map(|descriptor| SelectOption {
+            label: descriptor.label.to_owned(),
+            slug: descriptor.id.to_owned(),
+            description: if descriptor.experimental {
+                format!("experimental · {}", descriptor.selection_summary)
+            } else {
+                descriptor.selection_summary.to_owned()
+            },
+            recommended: descriptor.personality == current_value,
+        })
+        .collect::<Vec<_>>();
+    options.push(SelectOption {
+        label: "clear current value".to_owned(),
+        slug: "clear".to_owned(),
+        description: "restore the default native prompt personality".to_owned(),
+        recommended: false,
+    });
+    let default_index = options.iter().position(|option| option.recommended);
+    let selected_index = ui.select_one(
+        personalize_prompt_label(PersonalizePromptKind::PromptPersonality),
+        &options,
+        default_index,
+        SelectInteractionMode::List,
+    )?;
+    if Some(selected_index) == find_select_option_index(&options, "clear") {
+        return Ok(None);
+    }
+    let selected_slug = options
+        .get(selected_index)
+        .ok_or_else(|| "prompt personality selection out of range".to_owned())?
+        .slug
+        .clone();
+
+    mvp::prompt::parse_prompt_personality(selected_slug.as_str())
+        .map(Some)
+        .ok_or_else(|| format!("unsupported prompt personality: {selected_slug}"))
 }
 
 fn select_response_density(
@@ -289,6 +361,9 @@ fn find_select_option_index(options: &[SelectOption], slug: &str) -> Option<usiz
 
 fn draft_has_meaningful_preferences(draft: &PersonalizationDraft) -> bool {
     draft.preferred_name.is_some()
+        || draft.prompt_personality.is_some()
+        || draft.prompt_addendum.is_some()
+        || draft.inline_system_prompt.is_some()
         || draft.response_density.is_some()
         || draft.initiative_level.is_some()
         || draft.standing_boundaries.is_some()
@@ -298,6 +373,12 @@ fn draft_has_meaningful_preferences(draft: &PersonalizationDraft) -> bool {
 
 fn render_review_lines(draft: &PersonalizationDraft) -> Vec<String> {
     let preferred_name = draft.preferred_name.as_deref().unwrap_or("not set");
+    let prompt_personality = draft
+        .prompt_personality
+        .map(|value| value.id())
+        .unwrap_or("default");
+    let prompt_addendum = draft.prompt_addendum.as_deref().unwrap_or("not set");
+    let inline_system_prompt = draft.inline_system_prompt.as_deref().unwrap_or("not set");
     let response_density = draft
         .response_density
         .map(|value| value.display_text())
@@ -313,6 +394,9 @@ fn render_review_lines(draft: &PersonalizationDraft) -> Vec<String> {
     vec![
         personalize_review_intro().to_owned(),
         format!("- preferred name: {preferred_name}"),
+        format!("- prompt personality: {prompt_personality}"),
+        format!("- prompt addendum: {prompt_addendum}"),
+        format!("- inline system prompt: {inline_system_prompt}"),
         format!("- response density: {response_density}"),
         format!("- initiative level: {initiative_level}"),
         format!("- standing boundaries: {standing_boundaries}"),
@@ -331,7 +415,7 @@ fn save_personalization(
 ) -> CliResult<PersonalizeCliOutcome> {
     let existing_has_preferences = existing_personalization
         .is_some_and(mvp::config::PersonalizationConfig::has_operator_preferences);
-    let personalization = build_configured_personalization(draft, now);
+    let personalization = build_configured_personalization(draft.clone(), now);
     if !personalization.has_operator_preferences() {
         if !existing_has_preferences {
             return Err("personalize save requires at least one operator preference".to_owned());
@@ -362,6 +446,7 @@ fn save_personalization(
         }
     }
 
+    apply_prompt_preferences(config, &draft);
     config.memory.personalization = Some(personalization);
     let saved_path = write_personalization_config(config, resolved_path)?;
 
@@ -376,6 +461,24 @@ fn save_personalization(
     Ok(PersonalizeCliOutcome::Saved {
         upgraded_memory_profile,
     })
+}
+
+fn apply_prompt_preferences(config: &mut mvp::config::LoongConfig, draft: &PersonalizationDraft) {
+    if let Some(system_prompt) = draft.inline_system_prompt.as_deref() {
+        let trimmed = system_prompt.trim();
+        if !trimmed.is_empty() {
+            config.cli.prompt_pack_id = Some(String::new());
+            config.cli.personality = None;
+            config.cli.system_prompt_addendum = None;
+            config.cli.system_prompt = trimmed.to_owned();
+            return;
+        }
+    }
+
+    config.cli.prompt_pack_id = Some(mvp::prompt::DEFAULT_PROMPT_PACK_ID.to_owned());
+    config.cli.personality = Some(draft.prompt_personality.unwrap_or_default());
+    config.cli.system_prompt_addendum = draft.prompt_addendum.clone();
+    config.cli.refresh_native_system_prompt();
 }
 
 fn build_configured_personalization(
@@ -619,6 +722,9 @@ mod tests {
             "Ask before destructive actions.",
             "Asia/Shanghai",
             "zh-CN",
+            "",
+            "",
+            "",
             "1",
             "y",
         ]);
@@ -640,6 +746,11 @@ mod tests {
                 upgraded_memory_profile: true
             }
         );
+        assert_eq!(
+            loaded_config.cli.personality,
+            Some(mvp::prompt::PromptPersonality::Classicist)
+        );
+        assert_eq!(loaded_config.cli.system_prompt_addendum, None);
         assert_eq!(
             loaded_config.memory.profile,
             mvp::config::MemoryProfile::ProfilePlusWindow
@@ -673,11 +784,59 @@ mod tests {
     }
 
     #[test]
+    fn personalize_cli_save_updates_prompt_preferences() {
+        let config_path = unique_config_path("save-prompt-preferences");
+        let config_path_string = config_path.display().to_string();
+        write_default_config(&config_path);
+        let mut ui = TestPromptUi::with_inputs([
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "hermit",
+            "Keep answers direct.",
+            "",
+            "1",
+            "n",
+        ]);
+
+        let outcome =
+            run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
+                .expect("save flow should succeed");
+        let load_result =
+            mvp::config::load(Some(config_path_string.as_str())).expect("load personalized config");
+        let (_, loaded_config) = load_result;
+
+        assert_eq!(
+            outcome,
+            PersonalizeCliOutcome::Saved {
+                upgraded_memory_profile: false
+            }
+        );
+        assert_eq!(
+            loaded_config.cli.personality,
+            Some(mvp::prompt::PromptPersonality::Hermit)
+        );
+        assert_eq!(
+            loaded_config.cli.system_prompt_addendum.as_deref(),
+            Some("Keep answers direct.")
+        );
+        assert!(
+            loaded_config.cli.uses_native_prompt_pack(),
+            "prompt personality selection should keep the native prompt pack active"
+        );
+
+        let _ = std::fs::remove_file(config_path);
+    }
+
+    #[test]
     fn personalize_cli_skip_leaves_config_untouched() {
         let config_path = unique_config_path("skip");
         let config_path_string = config_path.display().to_string();
         write_default_config(&config_path);
-        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "2"]);
+        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "", "", "", "2"]);
 
         let outcome =
             run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
@@ -702,7 +861,7 @@ mod tests {
         let config_path_string = config_path.display().to_string();
         write_default_config(&config_path);
         let expected_schema_version = personalization_schema_version_for_tests();
-        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "3"]);
+        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "", "", "", "3"]);
 
         let outcome =
             run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
@@ -758,8 +917,18 @@ mod tests {
         config.memory.profile = mvp::config::MemoryProfile::ProfilePlusWindow;
         config.memory.personalization = Some(personalization);
         write_config(&config_path, &config);
-        let mut ui =
-            TestPromptUi::with_inputs(["New Name", "3", "3", "New boundary", "UTC", "en-US", "3"]);
+        let mut ui = TestPromptUi::with_inputs([
+            "New Name",
+            "3",
+            "3",
+            "New boundary",
+            "UTC",
+            "en-US",
+            "",
+            "",
+            "",
+            "3",
+        ]);
 
         let outcome =
             run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
@@ -813,6 +982,9 @@ mod tests {
             "Ask before destructive actions.",
             "",
             "",
+            "",
+            "",
+            "",
             "1",
             "n",
         ]);
@@ -861,7 +1033,7 @@ mod tests {
         let config_path_string = config_path.display().to_string();
         let config = configured_personalize_config_for_tests();
         write_config(&config_path, &config);
-        let mut ui = TestPromptUi::with_inputs(["-", "", "", "-", "", "", "1"]);
+        let mut ui = TestPromptUi::with_inputs(["-", "", "", "-", "", "", "", "", "", "1"]);
 
         run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
             .expect("clear-text save flow should succeed");
@@ -909,7 +1081,7 @@ mod tests {
             updated_at_epoch_seconds: Some(1_775_095_200),
         });
         write_config(&config_path, &config);
-        let mut ui = TestPromptUi::with_inputs(["", "clear", "clear", "", "", "", "1"]);
+        let mut ui = TestPromptUi::with_inputs(["", "clear", "clear", "", "", "", "", "", "", "1"]);
 
         run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
             .expect("clear-enum save flow should succeed");
@@ -934,7 +1106,8 @@ mod tests {
         let config_path_string = config_path.display().to_string();
         let config = configured_personalize_config_for_tests();
         write_config(&config_path, &config);
-        let mut ui = TestPromptUi::with_inputs(["-", "clear", "clear", "-", "-", "-", "1"]);
+        let mut ui =
+            TestPromptUi::with_inputs(["-", "clear", "clear", "-", "-", "-", "", "", "", "1"]);
 
         let outcome =
             run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
@@ -975,7 +1148,7 @@ mod tests {
             updated_at_epoch_seconds: Some(1_775_095_200),
         });
         write_config(&config_path, &config);
-        let mut ui = TestPromptUi::with_inputs(["Chum", "", "", "", "", "", "1"]);
+        let mut ui = TestPromptUi::with_inputs(["Chum", "", "", "", "", "", "", "", "", "1"]);
 
         let outcome =
             run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
@@ -1015,7 +1188,7 @@ mod tests {
         let config_path = unique_config_path("empty-save");
         let config_path_string = config_path.display().to_string();
         write_default_config(&config_path);
-        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "1"]);
+        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "", "", "", "1"]);
 
         run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
             .expect("recommended defaults should save");
@@ -1060,7 +1233,7 @@ mod tests {
             updated_at_epoch_seconds: Some(1_775_095_200),
         });
         write_config(&config_path, &config);
-        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "1"]);
+        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "", "", "", "1"]);
 
         run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
             .expect("recommended defaults should unsuppress personalization");
@@ -1088,6 +1261,9 @@ mod tests {
     fn render_review_lines_uses_human_readable_initiative_copy() {
         let draft = PersonalizationDraft {
             preferred_name: Some("Chum".to_owned()),
+            prompt_personality: None,
+            prompt_addendum: None,
+            inline_system_prompt: None,
             response_density: Some(mvp::config::ResponseDensity::Balanced),
             initiative_level: Some(mvp::config::InitiativeLevel::AskBeforeActing),
             standing_boundaries: Some("Ask before destructive actions.".to_owned()),
@@ -1107,14 +1283,18 @@ mod tests {
 
     #[test]
     fn collect_personalization_draft_uses_guidance_prompt_labels() {
-        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", ""]);
+        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "", "", ""]);
+        let config = mvp::config::LoongConfig::default();
 
-        let draft = collect_personalization_draft(&mut ui, None).expect("collect draft");
+        let draft = collect_personalization_draft(&mut ui, &config, None).expect("collect draft");
 
         assert_eq!(
             draft,
             PersonalizationDraft {
                 preferred_name: None,
+                prompt_personality: Some(mvp::prompt::PromptPersonality::Classicist),
+                prompt_addendum: None,
+                inline_system_prompt: None,
                 response_density: Some(mvp::config::ResponseDensity::Balanced),
                 initiative_level: Some(mvp::config::InitiativeLevel::Balanced),
                 standing_boundaries: None,
@@ -1129,6 +1309,8 @@ mod tests {
                 "Any standing boundaries Loong should keep in mind? (optional)",
                 "Which timezone should Loong assume? (optional)",
                 "Which locale should Loong default to? (optional)",
+                "Any prompt addendum Loong should apply? (optional)",
+                "Which inline system prompt should replace the native prompt pack? (optional)",
             ],
             "text prompts should read like operator guidance, not raw field labels: {:#?}",
             ui.prompt_labels
@@ -1138,6 +1320,7 @@ mod tests {
             vec![
                 "How detailed should Loong usually be?",
                 "How proactive should Loong be?",
+                "Which native prompt personality should Loong use? (optional)",
             ],
             "selection prompts should stay conversational and operator-facing: {:#?}",
             ui.select_labels
@@ -1149,6 +1332,9 @@ mod tests {
         let mut ui = TestPromptUi::with_inputs([""]);
         let draft = PersonalizationDraft {
             preferred_name: None,
+            prompt_personality: None,
+            prompt_addendum: None,
+            inline_system_prompt: None,
             response_density: None,
             initiative_level: None,
             standing_boundaries: None,
@@ -1310,7 +1496,7 @@ mod tests {
         let config_path = unique_config_path("recommended-defaults");
         let config_path_string = config_path.display().to_string();
         write_default_config(&config_path);
-        let mut ui = TestPromptUi::with_inputs(["Chum", "", "", "", "", "", "1", "n"]);
+        let mut ui = TestPromptUi::with_inputs(["Chum", "", "", "", "", "", "", "", "", "1", "n"]);
 
         run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
             .expect("save flow should succeed");
@@ -1342,7 +1528,7 @@ mod tests {
         let config_path = unique_config_path("empty-draft-skip-default");
         let config_path_string = config_path.display().to_string();
         write_default_config(&config_path);
-        let mut ui = TestPromptUi::with_inputs(["", "unset", "unset", "", "", "", ""]);
+        let mut ui = TestPromptUi::with_inputs(["", "unset", "unset", "", "", "", "", "", "", ""]);
 
         let outcome =
             run_personalize_cli_with_ui(Some(config_path_string.as_str()), &mut ui, fixed_now())
@@ -1363,14 +1549,19 @@ mod tests {
     #[test]
     fn collect_personalization_draft_existing_enum_preferences_prints_current_value_guidance() {
         let existing = configured_personalization_for_tests();
-        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", ""]);
+        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "", "", ""]);
+        let config = configured_personalize_config_for_tests();
 
-        let draft = collect_personalization_draft(&mut ui, Some(&existing)).expect("collect draft");
+        let draft = collect_personalization_draft(&mut ui, &config, Some(&existing))
+            .expect("collect draft");
 
         assert_eq!(
             draft,
             PersonalizationDraft {
                 preferred_name: Some("Chum".to_owned()),
+                prompt_personality: Some(mvp::prompt::PromptPersonality::Classicist),
+                prompt_addendum: None,
+                inline_system_prompt: None,
                 response_density: Some(mvp::config::ResponseDensity::Balanced),
                 initiative_level: Some(mvp::config::InitiativeLevel::AskBeforeActing),
                 standing_boundaries: Some("Ask before destructive actions.".to_owned()),
@@ -1401,9 +1592,10 @@ mod tests {
     #[test]
     fn collect_personalization_draft_existing_text_preferences_prints_compact_guidance() {
         let existing = configured_personalization_for_tests();
-        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", ""]);
+        let mut ui = TestPromptUi::with_inputs(["", "", "", "", "", "", "", "", ""]);
+        let config = configured_personalize_config_for_tests();
 
-        collect_personalization_draft(&mut ui, Some(&existing)).expect("collect draft");
+        collect_personalization_draft(&mut ui, &config, Some(&existing)).expect("collect draft");
 
         assert!(
             ui.printed_lines
