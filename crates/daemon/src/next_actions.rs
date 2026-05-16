@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::ffi::OsStr;
 
 use crate::personalize_presentation::personalize_action_label;
+use crate::setup_boundary::SetupBoundaryKind;
 use loong_app as mvp;
 use serde::Serialize;
 
@@ -22,6 +23,18 @@ pub struct SetupNextAction {
     pub channel_action_id: Option<&'static str>,
     pub label: String,
     pub command: String,
+}
+
+pub(crate) const fn setup_boundary_kind_for_action_kind(
+    kind: SetupNextActionKind,
+) -> SetupBoundaryKind {
+    match kind {
+        SetupNextActionKind::Ask => SetupBoundaryKind::Ask,
+        SetupNextActionKind::Chat => SetupBoundaryKind::Chat,
+        SetupNextActionKind::Personalize => SetupBoundaryKind::Personalize,
+        SetupNextActionKind::Channel => SetupBoundaryKind::ChannelReview,
+        SetupNextActionKind::Doctor => SetupBoundaryKind::Doctor,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
