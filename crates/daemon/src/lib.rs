@@ -156,6 +156,7 @@ pub mod next_actions;
 mod observability;
 pub mod onboard_cli;
 mod onboard_finalize;
+mod onboard_import;
 mod onboard_preflight;
 mod onboard_preflight_presentation;
 pub mod onboard_presentation;

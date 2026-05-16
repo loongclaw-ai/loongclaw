@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, MutexGuard};
 
+use crate::onboard_import::select_non_interactive_starting_config;
 use crate::test_support::ScopedEnv;
 
 struct TestOnboardUi {
