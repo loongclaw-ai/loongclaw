@@ -417,8 +417,16 @@ fn build_matches_discovery_by_id(
     grouped_matches: BTreeMap<&'static str, Vec<ChannelDiscoveredPluginBridge>>,
 ) -> BTreeMap<&'static str, ChannelPluginBridgeDiscovery> {
     let mut discovery_by_id = BTreeMap::new();
+    let mut surfaced_channel_ids = BTreeSet::new();
 
     for channel_id in plugin_backed_channel_ids {
+        surfaced_channel_ids.insert(*channel_id);
+    }
+    for channel_id in grouped_matches.keys() {
+        surfaced_channel_ids.insert(*channel_id);
+    }
+
+    for channel_id in surfaced_channel_ids {
         let grouped_plugins = grouped_matches.get(channel_id);
         let plugins = grouped_plugins.cloned().unwrap_or_default();
         let configured_plugin_id = configured_managed_bridge_plugin_id(config, channel_id);
@@ -453,7 +461,7 @@ fn build_matches_discovery_by_id(
             plugins,
         };
 
-        discovery_by_id.insert(*channel_id, discovery);
+        discovery_by_id.insert(channel_id, discovery);
     }
 
     discovery_by_id
@@ -692,9 +700,8 @@ fn count_incompatible_plugins(plugins: &[ChannelDiscoveredPluginBridge]) -> usiz
 fn discovered_plugin_matches_by_channel_id(
     scan_report: &PluginScanReport,
     translation: &PluginTranslationReport,
-    plugin_backed_channel_ids: &[&'static str],
+    _plugin_backed_channel_ids: &[&'static str],
 ) -> BTreeMap<&'static str, Vec<ChannelDiscoveredPluginBridge>> {
-    let plugin_backed_channel_id_set = plugin_backed_channel_id_set(plugin_backed_channel_ids);
     let translation_by_key = translation_entries_by_key(translation);
     let mut grouped_matches = BTreeMap::new();
 
@@ -709,12 +716,6 @@ fn discovered_plugin_matches_by_channel_id(
             continue;
         };
 
-        let channel_is_plugin_backed = plugin_backed_channel_id_set.contains(&resolved_channel_id);
-
-        if !channel_is_plugin_backed {
-            continue;
-        }
-
         let translation_key = plugin_translation_key(descriptor);
         let translation_entry = translation_by_key.get(&translation_key).copied();
         let match_entry =
@@ -727,18 +728,6 @@ fn discovered_plugin_matches_by_channel_id(
     }
 
     grouped_matches
-}
-
-fn plugin_backed_channel_id_set(
-    plugin_backed_channel_ids: &[&'static str],
-) -> BTreeSet<&'static str> {
-    let mut plugin_backed_channel_id_set = BTreeSet::new();
-
-    for channel_id in plugin_backed_channel_ids {
-        plugin_backed_channel_id_set.insert(*channel_id);
-    }
-
-    plugin_backed_channel_id_set
 }
 
 fn translation_entries_by_key(
