@@ -14,6 +14,10 @@ name = "loong_app_protocol"
 [dependencies]
 loong-runtime = { path = "../loong-runtime" }
 serde.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
 
 [lints]
 workspace = true

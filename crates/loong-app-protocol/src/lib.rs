@@ -4,11 +4,18 @@
 //! Delete overlapping task/session orchestration inside legacy CLI surfaces once
 //! Phase 3 retargets a real user path through this protocol layer.
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+pub use loong_runtime::WorkspaceContext as AppProtocolWorkspaceContext;
 use loong_runtime::{
-    ChildBudgetPolicy, ExecutionArtifact, Session, SessionEvent, Task, TaskBudget, TaskEvent,
-    TaskExecutionMode, TaskLifecycle, WorkspaceContext,
+    ChildBudgetPolicy, ExecutionArtifact, RuntimeExecutorRequest, RuntimeExecutorResult,
+    RuntimeOneshotExecution, RuntimeOneshotExecutor, Session, SessionEvent, Task, TaskBudget,
+    TaskEvent, TaskExecutionMode, TaskLifecycle, WorkspaceContext,
+};
+pub use loong_runtime::{
+    RuntimeExecutorRequest as AppProtocolRuntimeExecutorRequest,
+    RuntimeExecutorResult as AppProtocolRuntimeExecutorResult,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,4 +151,134 @@ pub enum AppResponse {
     SessionEvents(Vec<SessionEvent>),
     Events(Vec<TaskEvent>),
     Artifacts(Vec<ExecutionArtifact>),
+    OneshotTurn(RuntimeOneshotExecution),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OneshotTurnRequest {
+    pub config_path: Option<String>,
+    pub session_hint: Option<String>,
+    pub message: String,
+    pub acp: bool,
+    pub acp_event_stream: bool,
+    pub acp_bootstrap_mcp_servers: Vec<String>,
+    pub acp_cwd: Option<String>,
+}
+
+#[async_trait]
+pub trait AppProtocolOneshotExecutor: Send + Sync {
+    async fn execute(
+        &self,
+        request: RuntimeExecutorRequest,
+    ) -> Result<RuntimeExecutorResult, String>;
+}
+
+pub fn build_runtime_oneshot_request(
+    request: &OneshotTurnRequest,
+    workspace: WorkspaceContext,
+) -> Result<loong_runtime::RuntimeOneshotRequest, String> {
+    if request.message.trim().is_empty() {
+        return Err("turn message must not be empty".to_owned());
+    }
+
+    Ok(loong_runtime::RuntimeOneshotRequest {
+        session_hint: request.session_hint.clone(),
+        message: request.message.clone(),
+        workspace,
+        acp: request.acp,
+        acp_event_stream: request.acp_event_stream,
+        acp_bootstrap_mcp_servers: request.acp_bootstrap_mcp_servers.clone(),
+        acp_cwd: request.acp_cwd.clone(),
+    })
+}
+
+struct RuntimeExecutorAdapter<'a, E> {
+    inner: &'a E,
+}
+
+#[async_trait]
+impl<E> RuntimeOneshotExecutor for RuntimeExecutorAdapter<'_, E>
+where
+    E: AppProtocolOneshotExecutor,
+{
+    async fn execute(
+        &self,
+        request: RuntimeExecutorRequest,
+    ) -> Result<RuntimeExecutorResult, String> {
+        self.inner.execute(request).await
+    }
+}
+
+pub async fn execute_oneshot_turn<E: AppProtocolOneshotExecutor>(
+    request: &OneshotTurnRequest,
+    workspace: WorkspaceContext,
+    executor: &E,
+) -> Result<RuntimeOneshotExecution, String> {
+    let runtime_request = build_runtime_oneshot_request(request, workspace)?;
+    let adapter = RuntimeExecutorAdapter { inner: executor };
+    loong_runtime::execute_oneshot_turn(&runtime_request, &adapter).await
+}
+
+pub fn render_oneshot_turn_output(execution: &RuntimeOneshotExecution) -> &str {
+    execution.output_text.as_str()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockExecutor;
+
+    #[async_trait]
+    impl AppProtocolOneshotExecutor for MockExecutor {
+        async fn execute(
+            &self,
+            request: RuntimeExecutorRequest,
+        ) -> Result<RuntimeExecutorResult, String> {
+            assert_eq!(request.session_hint.as_deref(), Some("latest"));
+            assert_eq!(request.message, "summarize via protocol");
+            assert!(request.acp_event_stream);
+            assert_eq!(
+                request.acp_bootstrap_mcp_servers,
+                vec!["filesystem".to_owned()]
+            );
+            Ok(RuntimeExecutorResult {
+                session_id: "resolved-session".to_owned(),
+                output_text: "protocol result".to_owned(),
+                state: Some("ok".to_owned()),
+                stop_reason: Some("completed".to_owned()),
+                event_count: 1,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn protocol_oneshot_turn_routes_into_runtime_execution() {
+        let request = OneshotTurnRequest {
+            config_path: None,
+            session_hint: Some("latest".to_owned()),
+            message: "summarize via protocol".to_owned(),
+            acp: false,
+            acp_event_stream: true,
+            acp_bootstrap_mcp_servers: vec!["filesystem".to_owned()],
+            acp_cwd: Some("/tmp/project".to_owned()),
+        };
+        let workspace = WorkspaceContext::new(
+            "/tmp/project",
+            "/tmp/project",
+            "/tmp/project",
+            "/tmp/project",
+            "feature/phase3".to_owned(),
+        );
+
+        let execution = execute_oneshot_turn(&request, workspace.clone(), &MockExecutor)
+            .await
+            .expect("execute protocol oneshot turn");
+
+        assert_eq!(execution.session.session_id, "resolved-session");
+        assert_eq!(execution.session.workspace, workspace);
+        assert_eq!(execution.output_text, "protocol result");
+        assert_eq!(execution.task.task_id, "turn-run:resolved-session");
+        assert_eq!(execution.task.lifecycle, TaskLifecycle::Completed);
+    }
 }

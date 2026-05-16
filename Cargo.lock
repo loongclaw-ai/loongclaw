@@ -3021,6 +3021,7 @@ dependencies = [
  "hex",
  "libc",
  "loong-app",
+ "loong-app-protocol",
  "loong-bench",
  "loong-bridge-runtime",
  "loong-contracts",
@@ -3120,8 +3121,10 @@ dependencies = [
 name = "loong-app-protocol"
 version = "0.1.2-alpha.1"
 dependencies = [
+ "async-trait",
  "loong-runtime",
  "serde",
+ "tokio",
 ]
 
 [[package]]
@@ -3219,8 +3222,10 @@ dependencies = [
 name = "loong-runtime"
 version = "0.1.2-alpha.1"
 dependencies = [
+ "async-trait",
  "loong-core",
  "serde",
+ "tokio",
 ]
 
 [[package]]

@@ -47,6 +47,10 @@ impl Session {
         self.tasks.get(task_id)
     }
 
+    pub fn task_mut(&mut self, task_id: &str) -> Option<&mut Task> {
+        self.tasks.get_mut(task_id)
+    }
+
     pub fn session_events(&self) -> &[SessionEvent] {
         &self.events
     }
