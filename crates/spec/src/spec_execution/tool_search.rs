@@ -1169,16 +1169,13 @@ fn tool_search_bridge_snapshot_from_manifest_metadata(
     ToolSearchChannelBridgeSnapshot {
         transport_family: canonical
             .as_ref()
-            .and_then(|bridge| bridge.transport_family.clone())
-            .or_else(|| metadata.get("transport_family").cloned()),
+            .and_then(|bridge| bridge.transport_family.clone()),
         target_contract: canonical
             .as_ref()
-            .and_then(|bridge| bridge.target_contract.clone())
-            .or_else(|| metadata.get("target_contract").cloned()),
+            .and_then(|bridge| bridge.target_contract.clone()),
         account_scope: canonical
             .as_ref()
-            .and_then(|bridge| bridge.account_scope.clone())
-            .or_else(|| metadata.get("account_scope").cloned()),
+            .and_then(|bridge| bridge.account_scope.clone()),
         ready: canonical.as_ref().map(|bridge| bridge.readiness.ready),
         missing_fields: canonical
             .map(|bridge| bridge.readiness.missing_fields)
