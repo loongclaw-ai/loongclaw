@@ -9,6 +9,9 @@ pub(crate) const PERSONALIZE_COMMAND_LONG_ABOUT: &str = "Teach Loong your workin
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PersonalizePromptKind {
     PreferredName,
+    PromptPersonality,
+    PromptAddendum,
+    InlineSystemPrompt,
     StandingBoundaries,
     Timezone,
     Locale,
@@ -39,6 +42,15 @@ pub(crate) const fn personalize_review_intro() -> &'static str {
 pub(crate) const fn personalize_prompt_label(kind: PersonalizePromptKind) -> &'static str {
     match kind {
         PersonalizePromptKind::PreferredName => "How should Loong address you? (optional)",
+        PersonalizePromptKind::PromptPersonality => {
+            "Which native prompt personality should Loong use? (optional)"
+        }
+        PersonalizePromptKind::PromptAddendum => {
+            "Any prompt addendum Loong should apply? (optional)"
+        }
+        PersonalizePromptKind::InlineSystemPrompt => {
+            "Which inline system prompt should replace the native prompt pack? (optional)"
+        }
         PersonalizePromptKind::StandingBoundaries => {
             "Any standing boundaries Loong should keep in mind? (optional)"
         }
