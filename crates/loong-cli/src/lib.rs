@@ -37,7 +37,7 @@ pub struct FirstPartyCliSpine {
     pub namespaces: Vec<CliCommandSurface>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CliDispatchEnvelope {
     pub command: AppCommand,
     pub expected_response: Option<AppResponse>,

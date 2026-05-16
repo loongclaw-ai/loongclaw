@@ -3124,6 +3124,7 @@ dependencies = [
  "async-trait",
  "loong-runtime",
  "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -3225,6 +3226,7 @@ dependencies = [
  "async-trait",
  "loong-core",
  "serde",
+ "serde_json",
  "tokio",
 ]
 
