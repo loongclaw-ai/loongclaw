@@ -191,6 +191,7 @@ pub mod session_cli;
 mod session_prompt_frame_cli;
 mod session_runtime_truth_cli;
 pub mod sessions_cli;
+mod setup_boundary;
 pub mod skills_cli;
 mod skills_policy_probe;
 pub mod source_presentation;

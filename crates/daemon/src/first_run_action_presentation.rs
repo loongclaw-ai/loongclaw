@@ -1,3 +1,4 @@
+use crate::setup_boundary::SetupSurfaceOwnership;
 use loong_app::tui_surface::{TuiActionSpec, TuiSectionSpec};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,28 +10,19 @@ pub(crate) enum FirstRunActionGroup {
 pub(crate) const fn first_run_group_for_setup_action_kind(
     kind: crate::next_actions::SetupNextActionKind,
 ) -> FirstRunActionGroup {
-    match kind {
-        crate::next_actions::SetupNextActionKind::Channel => FirstRunActionGroup::ContinueSetup,
-        crate::next_actions::SetupNextActionKind::Ask
-        | crate::next_actions::SetupNextActionKind::Chat
-        | crate::next_actions::SetupNextActionKind::Personalize
-        | crate::next_actions::SetupNextActionKind::Doctor => FirstRunActionGroup::GeneralFollowup,
+    match crate::next_actions::setup_boundary_kind_for_action_kind(kind).ownership() {
+        SetupSurfaceOwnership::ContinueSetup => FirstRunActionGroup::ContinueSetup,
+        SetupSurfaceOwnership::FollowUpProduct => FirstRunActionGroup::GeneralFollowup,
     }
 }
 
 pub(crate) const fn first_run_group_for_onboarding_action_kind(
     kind: crate::onboard_finalize::OnboardingActionKind,
 ) -> FirstRunActionGroup {
-    match kind {
-        crate::onboard_finalize::OnboardingActionKind::Channel => {
-            FirstRunActionGroup::ContinueSetup
-        }
-        crate::onboard_finalize::OnboardingActionKind::Ask
-        | crate::onboard_finalize::OnboardingActionKind::Chat
-        | crate::onboard_finalize::OnboardingActionKind::Personalize
-        | crate::onboard_finalize::OnboardingActionKind::Doctor => {
-            FirstRunActionGroup::GeneralFollowup
-        }
+    match crate::onboard_finalize::setup_boundary_kind_for_onboarding_action_kind(kind).ownership()
+    {
+        SetupSurfaceOwnership::ContinueSetup => FirstRunActionGroup::ContinueSetup,
+        SetupSurfaceOwnership::FollowUpProduct => FirstRunActionGroup::GeneralFollowup,
     }
 }
 
@@ -149,9 +141,14 @@ pub(crate) fn render_first_run_action_text_item(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::setup_boundary::SetupBoundaryKind;
 
     #[test]
     fn setup_action_kind_groups_setup_extensions_separately() {
+        assert_eq!(
+            SetupBoundaryKind::Ask.ownership(),
+            SetupSurfaceOwnership::FollowUpProduct
+        );
         assert_eq!(
             first_run_group_for_setup_action_kind(crate::next_actions::SetupNextActionKind::Ask),
             FirstRunActionGroup::GeneralFollowup
@@ -172,6 +169,10 @@ mod tests {
 
     #[test]
     fn onboarding_action_kind_groups_setup_extensions_separately() {
+        assert_eq!(
+            SetupBoundaryKind::ChannelReview.ownership(),
+            SetupSurfaceOwnership::ContinueSetup
+        );
         assert_eq!(
             first_run_group_for_onboarding_action_kind(
                 crate::onboard_finalize::OnboardingActionKind::Ask,

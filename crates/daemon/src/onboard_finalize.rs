@@ -11,6 +11,7 @@ use crate::first_run_action_presentation::{
     build_first_run_action_sections, first_run_group_for_onboarding_action_kind,
 };
 use crate::onboard_types::OnboardingCredentialSummary;
+use crate::setup_boundary::SetupBoundaryKind;
 use mvp::tui_surface::{
     TuiActionSpec, TuiHeaderStyle, TuiKeyValueSpec, TuiScreenSpec, TuiSectionSpec,
     render_onboard_screen_spec,
@@ -104,6 +105,18 @@ pub struct OnboardingAction {
     pub kind: OnboardingActionKind,
     pub label: String,
     pub command: String,
+}
+
+pub(crate) const fn setup_boundary_kind_for_onboarding_action_kind(
+    kind: OnboardingActionKind,
+) -> SetupBoundaryKind {
+    match kind {
+        OnboardingActionKind::Ask => SetupBoundaryKind::Ask,
+        OnboardingActionKind::Chat => SetupBoundaryKind::Chat,
+        OnboardingActionKind::Personalize => SetupBoundaryKind::Personalize,
+        OnboardingActionKind::Channel => SetupBoundaryKind::ChannelReview,
+        OnboardingActionKind::Doctor => SetupBoundaryKind::Doctor,
+    }
 }
 
 pub fn build_onboarding_success_summary(
