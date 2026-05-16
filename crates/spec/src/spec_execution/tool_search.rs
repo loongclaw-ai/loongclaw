@@ -1126,37 +1126,87 @@ fn metadata_bool(metadata: &BTreeMap<String, String>, key: &str) -> Option<bool>
 fn tool_search_bridge_snapshot_from_provider_metadata(
     metadata: &BTreeMap<String, String>,
 ) -> ToolSearchChannelBridgeSnapshot {
+    let canonical = metadata
+        .get(crate::spec_runtime::PLUGIN_CHANNEL_BRIDGE_CONTRACT_METADATA_KEY)
+        .and_then(|raw| {
+            serde_json::from_str::<kernel::CanonicalPluginChannelBridgeContract>(raw).ok()
+        });
+
     ToolSearchChannelBridgeSnapshot {
-        transport_family: metadata
-            .get("plugin_channel_bridge_transport_family")
-            .cloned(),
-        target_contract: metadata
-            .get("plugin_channel_bridge_target_contract")
-            .cloned(),
-        account_scope: metadata.get("plugin_channel_bridge_account_scope").cloned(),
-        ready: metadata_bool(metadata, "plugin_channel_bridge_ready"),
-        missing_fields: metadata_strings(metadata, "plugin_channel_bridge_missing_fields_json"),
+        transport_family: canonical
+            .as_ref()
+            .and_then(|bridge| bridge.transport_family.clone())
+            .or_else(|| {
+                metadata
+                    .get("plugin_channel_bridge_transport_family")
+                    .cloned()
+            }),
+        target_contract: canonical
+            .as_ref()
+            .and_then(|bridge| bridge.target_contract.clone())
+            .or_else(|| {
+                metadata
+                    .get("plugin_channel_bridge_target_contract")
+                    .cloned()
+            }),
+        account_scope: canonical
+            .as_ref()
+            .and_then(|bridge| bridge.account_scope.clone())
+            .or_else(|| metadata.get("plugin_channel_bridge_account_scope").cloned()),
+        ready: canonical
+            .as_ref()
+            .map(|bridge| bridge.readiness.ready)
+            .or_else(|| metadata_bool(metadata, "plugin_channel_bridge_ready")),
+        missing_fields: canonical
+            .map(|bridge| bridge.readiness.missing_fields)
+            .unwrap_or_else(|| {
+                metadata_strings(metadata, "plugin_channel_bridge_missing_fields_json")
+            }),
     }
 }
 
 fn tool_search_bridge_snapshot_from_manifest_metadata(
     metadata: &BTreeMap<String, String>,
 ) -> ToolSearchChannelBridgeSnapshot {
+    let canonical = metadata
+        .get(crate::spec_runtime::PLUGIN_CHANNEL_BRIDGE_CONTRACT_METADATA_KEY)
+        .and_then(|raw| {
+            serde_json::from_str::<kernel::CanonicalPluginChannelBridgeContract>(raw).ok()
+        });
+
     ToolSearchChannelBridgeSnapshot {
-        transport_family: metadata
-            .get("plugin_channel_bridge_transport_family")
-            .cloned()
+        transport_family: canonical
+            .as_ref()
+            .and_then(|bridge| bridge.transport_family.clone())
+            .or_else(|| {
+                metadata
+                    .get("plugin_channel_bridge_transport_family")
+                    .cloned()
+            })
             .or_else(|| metadata.get("transport_family").cloned()),
-        target_contract: metadata
-            .get("plugin_channel_bridge_target_contract")
-            .cloned()
+        target_contract: canonical
+            .as_ref()
+            .and_then(|bridge| bridge.target_contract.clone())
+            .or_else(|| {
+                metadata
+                    .get("plugin_channel_bridge_target_contract")
+                    .cloned()
+            })
             .or_else(|| metadata.get("target_contract").cloned()),
-        account_scope: metadata
-            .get("plugin_channel_bridge_account_scope")
-            .cloned()
+        account_scope: canonical
+            .as_ref()
+            .and_then(|bridge| bridge.account_scope.clone())
+            .or_else(|| metadata.get("plugin_channel_bridge_account_scope").cloned())
             .or_else(|| metadata.get("account_scope").cloned()),
-        ready: metadata_bool(metadata, "plugin_channel_bridge_ready"),
-        missing_fields: metadata_strings(metadata, "plugin_channel_bridge_missing_fields_json"),
+        ready: canonical
+            .as_ref()
+            .map(|bridge| bridge.readiness.ready)
+            .or_else(|| metadata_bool(metadata, "plugin_channel_bridge_ready")),
+        missing_fields: canonical
+            .map(|bridge| bridge.readiness.missing_fields)
+            .unwrap_or_else(|| {
+                metadata_strings(metadata, "plugin_channel_bridge_missing_fields_json")
+            }),
     }
 }
 
@@ -2913,6 +2963,86 @@ mod tests {
             &catalog,
             &[],
             &[translation],
+            &PluginSetupReadinessContext::default(),
+            &[],
+            "weixin",
+            10,
+            &[],
+            true,
+            false,
+        );
+
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(
+            report.results[0].channel_bridge.transport_family.as_deref(),
+            Some("wechat_clawbot_ilink_bridge")
+        );
+        assert_eq!(
+            report.results[0].channel_bridge.target_contract.as_deref(),
+            Some("weixin:<account>:contact:<id> | weixin:<account>:room:<id>")
+        );
+        assert_eq!(
+            report.results[0].channel_bridge.account_scope.as_deref(),
+            Some("multi_account")
+        );
+        assert_eq!(report.results[0].channel_bridge.ready, Some(true));
+        assert!(report.results[0].channel_bridge.missing_fields.is_empty());
+    }
+
+    #[test]
+    fn execute_tool_search_reads_canonical_bridge_contract_metadata_before_legacy_bridge_fields() {
+        let mut catalog = IntegrationCatalog::new();
+        let raw_canonical = serde_json::json!({
+            "channel_id": "weixin",
+            "setup_surface": "channel",
+            "transport_family": "wechat_clawbot_ilink_bridge",
+            "target_contract": "weixin:<account>:contact:<id> | weixin:<account>:room:<id>",
+            "account_scope": "multi_account",
+            "runtime_contract": "loong_channel_bridge_v1",
+            "runtime_operations": ["send_message"],
+            "runtime_metadata_issues": [],
+            "readiness": {
+                "ready": true,
+                "missing_fields": []
+            }
+        })
+        .to_string();
+
+        catalog.upsert_provider(ProviderConfig {
+            provider_id: "weixin-bridge".to_owned(),
+            connector_name: "weixin-clawbot-http".to_owned(),
+            version: "1.0.0".to_owned(),
+            metadata: BTreeMap::from([
+                ("plugin_id".to_owned(), "weixin-clawbot-bridge".to_owned()),
+                ("plugin_channel_id".to_owned(), "weixin".to_owned()),
+                (
+                    crate::spec_runtime::PLUGIN_CHANNEL_BRIDGE_CONTRACT_METADATA_KEY.to_owned(),
+                    raw_canonical,
+                ),
+                (
+                    "plugin_channel_bridge_transport_family".to_owned(),
+                    "stale_provider_bridge".to_owned(),
+                ),
+                (
+                    "plugin_channel_bridge_target_contract".to_owned(),
+                    "stale:<id>".to_owned(),
+                ),
+                (
+                    "plugin_channel_bridge_account_scope".to_owned(),
+                    "single_account".to_owned(),
+                ),
+                ("plugin_channel_bridge_ready".to_owned(), "false".to_owned()),
+                (
+                    "plugin_channel_bridge_missing_fields_json".to_owned(),
+                    "[\"metadata.transport_family\"]".to_owned(),
+                ),
+            ]),
+        });
+
+        let report = execute_tool_search(
+            &catalog,
+            &[],
+            &[],
             &PluginSetupReadinessContext::default(),
             &[],
             "weixin",

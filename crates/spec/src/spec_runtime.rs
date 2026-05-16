@@ -865,6 +865,8 @@ pub(crate) const PLUGIN_ACTIVATION_RUNTIME_CONTRACT_METADATA_KEY: &str =
     "plugin_activation_contract_json";
 pub(crate) const PLUGIN_ACTIVATION_RUNTIME_CONTRACT_CHECKSUM_METADATA_KEY: &str =
     "plugin_activation_contract_checksum";
+pub(crate) const PLUGIN_CHANNEL_BRIDGE_CONTRACT_METADATA_KEY: &str =
+    "plugin_channel_bridge_contract_json";
 pub(crate) const PLUGIN_RUNTIME_HEALTH_METADATA_KEY: &str = "plugin_runtime_health_json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

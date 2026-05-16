@@ -360,6 +360,7 @@ fn insert_plugin_channel_bridge_metadata(
 
     upsert_or_remove_metadata_value(metadata, "plugin_channel_id", snapshot.channel_id.as_ref());
     let channel_bridge = snapshot.channel_bridge.as_ref();
+    insert_plugin_channel_bridge_contract_metadata(metadata, channel_bridge);
     upsert_or_remove_metadata_value(
         metadata,
         "plugin_channel_bridge_transport_family",
@@ -395,11 +396,32 @@ fn insert_plugin_channel_bridge_metadata(
 
 fn remove_plugin_channel_bridge_metadata(metadata: &mut BTreeMap<String, String>) {
     metadata.remove("plugin_channel_id");
+    metadata.remove(PLUGIN_CHANNEL_BRIDGE_CONTRACT_METADATA_KEY);
     metadata.remove("plugin_channel_bridge_transport_family");
     metadata.remove("plugin_channel_bridge_target_contract");
     metadata.remove("plugin_channel_bridge_account_scope");
     metadata.remove("plugin_channel_bridge_ready");
     metadata.remove("plugin_channel_bridge_missing_fields_json");
+}
+
+fn insert_plugin_channel_bridge_contract_metadata(
+    metadata: &mut BTreeMap<String, String>,
+    contract: Option<&kernel::CanonicalPluginChannelBridgeContract>,
+) {
+    let Some(contract) = contract else {
+        metadata.remove(PLUGIN_CHANNEL_BRIDGE_CONTRACT_METADATA_KEY);
+        return;
+    };
+
+    let Ok(serialized) = serde_json::to_string(contract) else {
+        metadata.remove(PLUGIN_CHANNEL_BRIDGE_CONTRACT_METADATA_KEY);
+        return;
+    };
+
+    metadata.insert(
+        PLUGIN_CHANNEL_BRIDGE_CONTRACT_METADATA_KEY.to_owned(),
+        serialized,
+    );
 }
 
 fn upsert_or_remove_metadata_value(
