@@ -63,6 +63,17 @@ use time::OffsetDateTime;
 #[path = "onboard_select.rs"]
 mod select_support;
 
+pub use crate::onboard_import::{
+    ImportCandidate, ImportSurface, ImportSurfaceLevel, OnboardEntryChoice, OnboardEntryOption,
+    build_onboard_entry_options,
+};
+use crate::onboard_import::{
+    StartingConfigSelection, default_onboard_entry_choice, default_starting_config_selection,
+    import_candidate_from_migration, migration_candidate_for_onboard_display,
+    migration_candidate_from_onboard, onboard_starting_point_label, prepare_import_starting_state,
+    select_non_interactive_starting_config_from_state, sort_starting_point_candidates,
+};
+
 use self::select_support::*;
 #[path = "onboard_screen_specs.rs"]
 mod screen_spec_support;
@@ -782,47 +793,6 @@ fn install_selected_preinstalled_skills(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImportSurfaceLevel {
-    Ready,
-    Review,
-    Blocked,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImportSurface {
-    pub name: &'static str,
-    pub domain: crate::migration::SetupDomainKind,
-    pub level: ImportSurfaceLevel,
-    pub detail: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct ImportCandidate {
-    pub source_kind: crate::migration::ImportSourceKind,
-    pub source: String,
-    pub config: mvp::config::LoongConfig,
-    pub surfaces: Vec<ImportSurface>,
-    pub domains: Vec<crate::migration::DomainPreview>,
-    pub channel_candidates: Vec<crate::migration::ChannelCandidate>,
-    pub workspace_guidance: Vec<crate::migration::WorkspaceGuidanceCandidate>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OnboardEntryChoice {
-    ContinueCurrentSetup,
-    ImportDetectedSetup,
-    StartFresh,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OnboardEntryOption {
-    pub choice: OnboardEntryChoice,
-    pub label: &'static str,
-    pub detail: String,
-    pub recommended: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OnboardHeaderStyle {
     Compact,
 }
@@ -968,15 +938,6 @@ struct StartingPointFitHint {
     domain: Option<crate::migration::SetupDomainKind>,
 }
 
-#[derive(Debug, Clone)]
-struct StartingConfigSelection {
-    config: mvp::config::LoongConfig,
-    import_source: Option<String>,
-    provider_selection: crate::migration::ProviderSelectionPlan,
-    entry_choice: OnboardEntryChoice,
-    current_setup_state: crate::migration::CurrentSetupState,
-    review_candidate: Option<ImportCandidate>,
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OnboardShortcutKind {
     CurrentSetup,
@@ -2803,29 +2764,22 @@ fn load_import_starting_config(
     ui: &mut impl OnboardUi,
     context: &OnboardRuntimeContext,
 ) -> CliResult<StartingConfigSelection> {
-    let default_config = mvp::config::LoongConfig::default();
-    let readiness = resolve_channel_import_readiness(&default_config);
-    let current_setup_state = crate::migration::classify_current_setup(output_path);
-    let candidates = collect_import_candidates_with_context(output_path, context, readiness)?;
-    let all_candidates = candidates.clone();
-    let entry_options = build_onboard_entry_options(current_setup_state, &candidates);
-    let (current_candidate, import_candidates) = split_onboard_candidates(candidates);
+    let state = prepare_import_starting_state(
+        output_path,
+        &context.codex_config_paths,
+        context.workspace_root.as_deref(),
+    )?;
 
-    if current_candidate.is_none() && import_candidates.is_empty() {
+    if state.current_candidate.is_none() && state.import_candidates.is_empty() {
         return Ok(default_starting_config_selection());
     }
 
     if options.non_interactive {
-        return Ok(select_non_interactive_starting_config(
-            current_setup_state,
-            &entry_options,
-            current_candidate,
-            import_candidates,
-            &all_candidates,
-        ));
+        return Ok(select_non_interactive_starting_config_from_state(&state));
     }
 
-    if entry_options
+    if state
+        .entry_options
         .first()
         .is_some_and(|option| option.choice == OnboardEntryChoice::StartFresh)
     {
@@ -2834,154 +2788,32 @@ fn load_import_starting_config(
 
     print_onboard_entry_options(
         ui,
-        current_setup_state,
-        current_candidate.as_ref(),
-        &import_candidates,
-        &entry_options,
+        state.current_setup_state,
+        state.current_candidate.as_ref(),
+        &state.import_candidates,
+        &state.entry_options,
         context,
     )?;
-    match prompt_onboard_entry_choice(ui, &entry_options)? {
-        OnboardEntryChoice::ContinueCurrentSetup => Ok(current_candidate
+
+    match prompt_onboard_entry_choice(ui, &state.entry_options)? {
+        OnboardEntryChoice::ContinueCurrentSetup => Ok(state
+            .current_candidate
+            .clone()
             .map(|candidate| {
-                starting_config_selection_from_current_candidate(candidate, current_setup_state)
+                crate::onboard_import::starting_config_selection_from_current_candidate(
+                    candidate,
+                    state.current_setup_state,
+                )
             })
             .unwrap_or_else(default_starting_config_selection)),
         OnboardEntryChoice::ImportDetectedSetup => select_interactive_import_starting_config(
             ui,
             context,
-            current_setup_state,
-            import_candidates,
-            &all_candidates,
+            state.current_setup_state,
+            state.import_candidates.clone(),
+            &state.all_candidates,
         ),
         OnboardEntryChoice::StartFresh => Ok(default_starting_config_selection()),
-    }
-}
-
-pub fn build_onboard_entry_options(
-    current_setup_state: crate::migration::CurrentSetupState,
-    candidates: &[ImportCandidate],
-) -> Vec<OnboardEntryOption> {
-    let has_current_setup = candidates.iter().any(|candidate| {
-        candidate.source_kind == crate::migration::ImportSourceKind::ExistingLoongConfig
-    });
-    let recommended_plan_available = candidates.iter().any(|candidate| {
-        candidate.source_kind == crate::migration::ImportSourceKind::RecommendedPlan
-    });
-    let detected_source_count = detected_reusable_source_count_for_entry(
-        candidates.iter().find(|candidate| {
-            candidate.source_kind == crate::migration::ImportSourceKind::ExistingLoongConfig
-        }),
-        candidates,
-    );
-    let mut options = Vec::new();
-
-    if has_current_setup {
-        options.push(OnboardEntryOption {
-            choice: OnboardEntryChoice::ContinueCurrentSetup,
-            label: crate::onboard_presentation::current_setup_option_label(),
-            detail: describe_current_setup_option(current_setup_state),
-            recommended: matches!(
-                current_setup_state,
-                crate::migration::CurrentSetupState::Healthy
-            ) || matches!(
-                current_setup_state,
-                crate::migration::CurrentSetupState::Repairable
-            ) && detected_source_count == 0,
-        });
-    }
-
-    if detected_source_count > 0 || recommended_plan_available {
-        options.push(OnboardEntryOption {
-            choice: OnboardEntryChoice::ImportDetectedSetup,
-            label: crate::onboard_presentation::detected_setup_option_label(),
-            detail: describe_import_option(
-                has_current_setup,
-                recommended_plan_available,
-                detected_source_count,
-            ),
-            recommended: matches!(
-                current_setup_state,
-                crate::migration::CurrentSetupState::Absent
-                    | crate::migration::CurrentSetupState::LegacyOrIncomplete
-                    | crate::migration::CurrentSetupState::Repairable
-            ),
-        });
-    }
-
-    options.push(OnboardEntryOption {
-        choice: OnboardEntryChoice::StartFresh,
-        label: crate::onboard_presentation::start_fresh_option_label(),
-        detail: crate::onboard_presentation::start_fresh_option_detail().to_owned(),
-        recommended: !options.iter().any(|option| option.recommended),
-    });
-
-    options
-}
-
-fn describe_current_setup_option(
-    current_setup_state: crate::migration::CurrentSetupState,
-) -> String {
-    crate::onboard_presentation::current_setup_option_detail(current_setup_state).to_owned()
-}
-
-fn describe_import_option(
-    has_current_setup: bool,
-    recommended_plan_available: bool,
-    detected_source_count: usize,
-) -> String {
-    crate::onboard_presentation::import_option_detail(
-        has_current_setup,
-        recommended_plan_available,
-        detected_source_count,
-    )
-}
-
-fn split_onboard_candidates(
-    candidates: Vec<ImportCandidate>,
-) -> (Option<ImportCandidate>, Vec<ImportCandidate>) {
-    let mut current_candidate = None;
-    let mut import_candidates = Vec::new();
-
-    for candidate in candidates {
-        if candidate.source_kind == crate::migration::ImportSourceKind::ExistingLoongConfig
-            && current_candidate.is_none()
-        {
-            current_candidate = Some(candidate);
-        } else {
-            import_candidates.push(candidate);
-        }
-    }
-
-    (current_candidate, import_candidates)
-}
-
-fn select_non_interactive_starting_config(
-    current_setup_state: crate::migration::CurrentSetupState,
-    entry_options: &[OnboardEntryOption],
-    current_candidate: Option<ImportCandidate>,
-    import_candidates: Vec<ImportCandidate>,
-    all_candidates: &[ImportCandidate],
-) -> StartingConfigSelection {
-    match default_onboard_entry_choice(entry_options) {
-        OnboardEntryChoice::ContinueCurrentSetup => current_candidate
-            .map(|candidate| {
-                starting_config_selection_from_current_candidate(candidate, current_setup_state)
-            })
-            .unwrap_or_else(default_starting_config_selection),
-        OnboardEntryChoice::ImportDetectedSetup => {
-            sort_starting_point_candidates(import_candidates)
-                .into_iter()
-                .map(|candidate| {
-                    starting_config_selection_from_import_candidate(
-                        candidate,
-                        all_candidates,
-                        current_setup_state,
-                    )
-                })
-                .next()
-                .unwrap_or_else(default_starting_config_selection)
-        }
-        OnboardEntryChoice::StartFresh => default_starting_config_selection(),
     }
 }
 
@@ -3329,36 +3161,6 @@ fn prompt_onboard_entry_choice(
         .ok_or_else(|| format!("entry selection index {idx} out of range"))
 }
 
-fn default_onboard_entry_choice(options: &[OnboardEntryOption]) -> OnboardEntryChoice {
-    options
-        .iter()
-        .find(|option| option.recommended)
-        .map(|option| option.choice)
-        .unwrap_or(OnboardEntryChoice::StartFresh)
-}
-
-fn starting_point_candidate_coverage_breadth(candidate: &ImportCandidate) -> usize {
-    collect_detected_coverage_kinds([candidate]).len()
-}
-
-fn direct_starting_point_source_rank(source_kind: crate::migration::ImportSourceKind) -> usize {
-    source_kind.direct_starting_point_rank()
-}
-
-fn sort_starting_point_candidates(mut candidates: Vec<ImportCandidate>) -> Vec<ImportCandidate> {
-    candidates.sort_by_key(|candidate| {
-        (
-            usize::from(
-                candidate.source_kind != crate::migration::ImportSourceKind::RecommendedPlan,
-            ),
-            std::cmp::Reverse(starting_point_candidate_coverage_breadth(candidate)),
-            direct_starting_point_source_rank(candidate.source_kind),
-            candidate.source.to_ascii_lowercase(),
-        )
-    });
-    candidates
-}
-
 fn select_interactive_import_starting_config(
     ui: &mut impl OnboardUi,
     context: &OnboardRuntimeContext,
@@ -3373,11 +3175,13 @@ fn select_interactive_import_starting_config(
     if import_candidates.len() == 1 {
         if let Some(candidate) = import_candidates.first() {
             print_import_candidate_preview(ui, candidate, all_candidates, context)?;
-            return Ok(starting_config_selection_from_import_candidate(
-                candidate.clone(),
-                all_candidates,
-                current_setup_state,
-            ));
+            return Ok(
+                crate::onboard_import::starting_config_selection_from_import_candidate(
+                    candidate.clone(),
+                    all_candidates,
+                    current_setup_state,
+                ),
+            );
         }
         return Ok(default_starting_config_selection());
     }
@@ -3388,11 +3192,13 @@ fn select_interactive_import_starting_config(
         return Ok(default_starting_config_selection());
     };
     if let Some(candidate) = import_candidates.get(index) {
-        return Ok(starting_config_selection_from_import_candidate(
-            candidate.clone(),
-            all_candidates,
-            current_setup_state,
-        ));
+        return Ok(
+            crate::onboard_import::starting_config_selection_from_import_candidate(
+                candidate.clone(),
+                all_candidates,
+                current_setup_state,
+            ),
+        );
     }
     Ok(default_starting_config_selection())
 }
@@ -3416,74 +3222,6 @@ pub fn collect_import_candidates_with_paths(
             .map(import_candidate_from_migration)
             .collect()
     })
-}
-
-fn collect_import_candidates_with_context(
-    output_path: &Path,
-    context: &OnboardRuntimeContext,
-    readiness: ChannelImportReadiness,
-) -> CliResult<Vec<ImportCandidate>> {
-    crate::migration::discovery::collect_import_candidates_with_path_list_and_readiness(
-        output_path,
-        &context.codex_config_paths,
-        context.workspace_root.as_deref(),
-        to_migration_readiness(readiness),
-    )
-    .map(crate::migration::prepend_recommended_import_candidate)
-    .map(|candidates| {
-        candidates
-            .into_iter()
-            .map(import_candidate_from_migration)
-            .collect()
-    })
-}
-
-fn default_starting_config_selection() -> StartingConfigSelection {
-    StartingConfigSelection {
-        config: mvp::config::LoongConfig::default(),
-        import_source: None,
-        provider_selection: crate::migration::ProviderSelectionPlan::default(),
-        entry_choice: OnboardEntryChoice::StartFresh,
-        current_setup_state: crate::migration::CurrentSetupState::Absent,
-        review_candidate: None,
-    }
-}
-
-fn starting_config_selection_from_current_candidate(
-    candidate: ImportCandidate,
-    current_setup_state: crate::migration::CurrentSetupState,
-) -> StartingConfigSelection {
-    StartingConfigSelection {
-        config: candidate.config.clone(),
-        import_source: Some(onboard_starting_point_label(
-            Some(candidate.source_kind),
-            &candidate.source,
-        )),
-        provider_selection: crate::migration::ProviderSelectionPlan::default(),
-        entry_choice: OnboardEntryChoice::ContinueCurrentSetup,
-        current_setup_state,
-        review_candidate: Some(candidate),
-    }
-}
-
-fn starting_config_selection_from_import_candidate(
-    candidate: ImportCandidate,
-    all_candidates: &[ImportCandidate],
-    current_setup_state: crate::migration::CurrentSetupState,
-) -> StartingConfigSelection {
-    let provider_selection =
-        build_provider_selection_plan_for_candidate(&candidate, all_candidates);
-    StartingConfigSelection {
-        config: candidate.config.clone(),
-        import_source: Some(onboard_starting_point_label(
-            Some(candidate.source_kind),
-            &candidate.source,
-        )),
-        provider_selection,
-        entry_choice: OnboardEntryChoice::ImportDetectedSetup,
-        current_setup_state,
-        review_candidate: Some(candidate),
-    }
 }
 
 fn print_import_candidate_preview(
@@ -5459,10 +5197,6 @@ pub fn detect_import_starting_config_with_channel_readiness(
     ))
 }
 
-fn resolve_channel_import_readiness(config: &mvp::config::LoongConfig) -> ChannelImportReadiness {
-    crate::migration::resolve_channel_import_readiness_from_config(config)
-}
-
 fn default_codex_config_paths() -> Vec<PathBuf> {
     crate::migration::discovery::default_detected_codex_config_paths()
 }
@@ -5484,71 +5218,6 @@ fn import_surface_from_migration(surface: crate::migration::ImportSurface) -> Im
         },
         detail: surface.detail,
     }
-}
-
-fn import_surface_to_migration(surface: &ImportSurface) -> crate::migration::ImportSurface {
-    crate::migration::ImportSurface {
-        name: surface.name,
-        domain: surface.domain,
-        level: match surface.level {
-            ImportSurfaceLevel::Ready => crate::migration::ImportSurfaceLevel::Ready,
-            ImportSurfaceLevel::Review => crate::migration::ImportSurfaceLevel::Review,
-            ImportSurfaceLevel::Blocked => crate::migration::ImportSurfaceLevel::Blocked,
-        },
-        detail: surface.detail.clone(),
-    }
-}
-
-fn import_candidate_from_migration(
-    candidate: crate::migration::ImportCandidate,
-) -> ImportCandidate {
-    ImportCandidate {
-        source_kind: candidate.source_kind,
-        source: candidate.source,
-        config: candidate.config,
-        surfaces: candidate
-            .surfaces
-            .into_iter()
-            .map(import_surface_from_migration)
-            .collect(),
-        domains: candidate.domains,
-        channel_candidates: candidate.channel_candidates,
-        workspace_guidance: candidate.workspace_guidance,
-    }
-}
-
-fn migration_candidate_from_onboard(
-    candidate: &ImportCandidate,
-) -> crate::migration::ImportCandidate {
-    crate::migration::ImportCandidate {
-        source_kind: candidate.source_kind,
-        source: candidate.source.clone(),
-        config: candidate.config.clone(),
-        surfaces: candidate
-            .surfaces
-            .iter()
-            .map(import_surface_to_migration)
-            .collect(),
-        domains: candidate.domains.clone(),
-        channel_candidates: candidate.channel_candidates.clone(),
-        workspace_guidance: candidate.workspace_guidance.clone(),
-    }
-}
-
-fn migration_candidate_for_onboard_display(
-    candidate: &ImportCandidate,
-) -> crate::migration::ImportCandidate {
-    let mut migration_candidate = migration_candidate_from_onboard(candidate);
-    migration_candidate.source =
-        onboard_starting_point_label(Some(candidate.source_kind), &candidate.source);
-    migration_candidate
-}
-
-fn onboard_starting_point_label(
-    source_kind: Option<crate::migration::ImportSourceKind>,
-    source: &str,
-) -> String {
-    crate::migration::ImportSourceKind::onboarding_label(source_kind, source)
 }
 
 fn detect_render_width() -> usize {
