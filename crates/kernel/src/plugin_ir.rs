@@ -133,6 +133,12 @@ impl From<&PluginChannelBridgeContract> for plugin_sdk::PluginChannelBridgeContr
     }
 }
 
+pub fn canonical_channel_bridge_contract(
+    contract: &PluginChannelBridgeContract,
+) -> plugin_sdk::PluginChannelBridgeContract {
+    contract.into()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PluginIR {
     pub manifest_api_version: Option<String>,

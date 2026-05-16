@@ -73,9 +73,10 @@ pub use plugin_ir::{
     PluginActivationPlan, PluginActivationStatus, PluginBridgeKind, PluginChannelBridgeContract,
     PluginChannelBridgeReadiness, PluginCompatibilityShimSupport, PluginIR, PluginRuntimeProfile,
     PluginRuntimeScaffoldDefaults, PluginSetupReadiness, PluginSetupReadinessContext,
-    PluginTranslationReport, PluginTranslator, evaluate_plugin_setup_requirements,
-    plugin_runtime_scaffold_defaults,
+    PluginTranslationReport, PluginTranslator, canonical_channel_bridge_contract,
+    evaluate_plugin_setup_requirements, plugin_runtime_scaffold_defaults,
 };
+pub use loong_plugin_sdk::PluginChannelBridgeContract as CanonicalPluginChannelBridgeContract;
 pub use policy::{PolicyContext, PolicyDecision, PolicyEngine, PolicyRequest, StaticPolicyEngine};
 pub use policy_ext::{PolicyExtension, PolicyExtensionChain, PolicyExtensionContext};
 pub use runtime::{
