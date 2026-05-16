@@ -192,27 +192,21 @@ mod tests {
 
     #[test]
     fn build_agent_turn_request_preserves_structured_session_scope() {
-        let address = ConversationSessionAddress::from_session_id("session-1")
-            .with_channel_scope("telegram", "chat-42")
-            .with_account_id("ops-bot")
-            .with_participant_id("alice")
-            .with_thread_id("thread-7");
-        let request = TurnGatewayRequest {
-            address,
-            message: "hello".to_owned(),
-            metadata: BTreeMap::from([("trace".to_owned(), "abc".to_owned())]),
-            turn_mode: AgentTurnMode::Oneshot,
-            acp_routing_intent: crate::acp::AcpRoutingIntent::Explicit,
-            acp_event_stream: true,
-            acp_bootstrap_mcp_servers: vec!["mcp-1".to_owned()],
-            acp_cwd: Some("/tmp/runtime".to_owned()),
-            live_surface_enabled: false,
-            ingress: None,
-            observer: None,
-            provenance: TurnGatewayProvenance::default(),
-            provider_error_mode: ProviderErrorMode::InlineMessage,
-            retry_progress: None,
-        };
+        let request = build_turn_gateway_request(
+            ConversationSessionAddress::from_session_id("session-1")
+                .with_channel_scope("telegram", "chat-42")
+                .with_account_id("ops-bot")
+                .with_participant_id("alice")
+                .with_thread_id("thread-7"),
+            "hello".to_owned(),
+            BTreeMap::from([("trace".to_owned(), "abc".to_owned())]),
+            AgentTurnMode::Oneshot,
+            crate::acp::AcpRoutingIntent::Explicit,
+            true,
+            vec!["mcp-1".to_owned()],
+            Some("/tmp/runtime".to_owned()),
+            false,
+        );
 
         let built = build_agent_turn_request(&request).expect("build turn gateway request");
 
@@ -228,22 +222,17 @@ mod tests {
 
     #[test]
     fn build_agent_turn_request_rejects_empty_session_id() {
-        let request = TurnGatewayRequest {
-            address: ConversationSessionAddress::from_session_id("   "),
-            message: "hello".to_owned(),
-            metadata: BTreeMap::new(),
-            turn_mode: AgentTurnMode::Oneshot,
-            acp_routing_intent: crate::acp::AcpRoutingIntent::Automatic,
-            acp_event_stream: false,
-            acp_bootstrap_mcp_servers: Vec::new(),
-            acp_cwd: None,
-            live_surface_enabled: false,
-            ingress: None,
-            observer: None,
-            provenance: TurnGatewayProvenance::default(),
-            provider_error_mode: ProviderErrorMode::InlineMessage,
-            retry_progress: None,
-        };
+        let request = build_turn_gateway_request(
+            ConversationSessionAddress::from_session_id("   "),
+            "hello".to_owned(),
+            BTreeMap::new(),
+            AgentTurnMode::Oneshot,
+            crate::acp::AcpRoutingIntent::Automatic,
+            false,
+            Vec::new(),
+            None,
+            false,
+        );
 
         let error = build_agent_turn_request(&request).expect_err("empty session id should fail");
         assert_eq!(error, "turn gateway requires a non-empty session id");
@@ -251,25 +240,21 @@ mod tests {
 
     #[test]
     fn build_turn_execution_options_projects_acp_adapter_inputs() {
-        let request = TurnGatewayRequest {
-            address: ConversationSessionAddress::from_session_id("session-1"),
-            message: "hello".to_owned(),
-            metadata: BTreeMap::new(),
-            turn_mode: AgentTurnMode::Oneshot,
-            acp_routing_intent: crate::acp::AcpRoutingIntent::Explicit,
-            acp_event_stream: true,
-            acp_bootstrap_mcp_servers: vec!["filesystem".to_owned(), "search".to_owned()],
-            acp_cwd: Some("/workspace/project".to_owned()),
-            live_surface_enabled: false,
-            ingress: None,
-            observer: None,
-            provenance: TurnGatewayProvenance {
-                trace_id: Some("trace-1".to_owned()),
-                source_message_id: Some("message-2".to_owned()),
-                ack_cursor: Some("cursor-3".to_owned()),
-            },
-            provider_error_mode: ProviderErrorMode::InlineMessage,
-            retry_progress: None,
+        let mut request = build_turn_gateway_request(
+            ConversationSessionAddress::from_session_id("session-1"),
+            "hello".to_owned(),
+            BTreeMap::new(),
+            AgentTurnMode::Oneshot,
+            crate::acp::AcpRoutingIntent::Explicit,
+            true,
+            vec!["filesystem".to_owned(), "search".to_owned()],
+            Some("/workspace/project".to_owned()),
+            false,
+        );
+        request.provenance = TurnGatewayProvenance {
+            trace_id: Some("trace-1".to_owned()),
+            source_message_id: Some("message-2".to_owned()),
+            ack_cursor: Some("cursor-3".to_owned()),
         };
 
         let options = build_turn_execution_options(&request, None);
