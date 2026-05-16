@@ -20,7 +20,7 @@ context lives in `docs/`, while the public reader-facing docs surface lives in
 
 ```text
 contracts (leaf — zero internal deps)
-├── kernel → contracts
+├── kernel → contracts, plugin-sdk
 ├── protocol (independent leaf)
 ├── bridge-runtime → contracts, kernel, protocol
 ├── app → contracts, kernel
