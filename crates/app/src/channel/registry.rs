@@ -1494,9 +1494,9 @@ const WHATSAPP_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 ];
 const WHATSAPP_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
-    label: "business send",
+    label: "bridge send",
     command: "channels send whatsapp",
-    availability: ChannelCatalogOperationAvailability::Implemented,
+    availability: ChannelCatalogOperationAvailability::ManagedBridge,
     tracks_runtime: false,
     requirements: WHATSAPP_SEND_REQUIREMENTS,
     default_target_kind: None,
@@ -1504,10 +1504,10 @@ const WHATSAPP_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation
 };
 const WHATSAPP_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SERVE_ID,
-    label: "cloud webhook service",
+    label: "bridge serve",
     command: "channels serve whatsapp",
-    availability: ChannelCatalogOperationAvailability::Implemented,
-    tracks_runtime: true,
+    availability: ChannelCatalogOperationAvailability::ManagedBridge,
+    tracks_runtime: false,
     requirements: WHATSAPP_SERVE_REQUIREMENTS,
     default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
@@ -1545,18 +1545,11 @@ const WHATSAPP_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
         ],
     },
 ];
-const WHATSAPP_CAPABILITIES: &[ChannelCapability] = &[
-    ChannelCapability::RuntimeBacked,
-    ChannelCapability::MultiAccount,
-    ChannelCapability::Send,
-    ChannelCapability::Serve,
-    ChannelCapability::RuntimeTracking,
-];
 const WHATSAPP_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
-    strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure whatsapp cloud api credentials (access_token, phone_number_id, verify_token, app_secret) in loong.toml under whatsapp or whatsapp.accounts.<account>; both outbound business send and inbound webhook serve are shipped",
+    strategy: ChannelOnboardingStrategy::PluginBridge,
+    setup_hint: "install and configure a WhatsApp Cloud bridge plugin that declares setup.surface=channel plus access_token, phone_number_id, verify_token, and app_secret requirements before serving the managed bridge surface",
     status_command: "loong doctor",
-    repair_command: Some("loong doctor --fix"),
+    repair_command: None,
 };
 
 const EMAIL_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
