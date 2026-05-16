@@ -82,9 +82,6 @@ pub(super) async fn turn_submit(
             thread_id,
             metadata,
             acp: true,
-            acp_event_stream: true,
-            acp_bootstrap_mcp_servers: Vec::new(),
-            acp_cwd: working_directory,
             live_surface_enabled: false,
         };
         let turn_service =
@@ -93,6 +90,8 @@ pub(super) async fn turn_submit(
                 .without_runtime_environment_init();
         let turn_options = crate::mvp::agent_runtime::TurnExecutionOptions {
             event_sink: Some(&event_forwarder),
+            acp_event_stream: true,
+            acp_working_directory: working_directory.map(std::path::PathBuf::from),
             ..Default::default()
         };
         let execution_result = turn_service

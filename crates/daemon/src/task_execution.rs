@@ -97,9 +97,6 @@ impl HarnessAdapter for EmbeddedAgentHarness {
             thread_id: None,
             metadata: payload.metadata,
             acp: payload.acp,
-            acp_event_stream: payload.acp_event_stream,
-            acp_bootstrap_mcp_servers: payload.acp_bootstrap_mcp_servers,
-            acp_cwd: payload.acp_cwd,
             live_surface_enabled: matches!(
                 payload.turn_mode,
                 loong_app::agent_runtime::AgentTurnMode::Interactive
@@ -108,7 +105,12 @@ impl HarnessAdapter for EmbeddedAgentHarness {
         let turn_service =
             loong_app::agent_runtime::load_turn_execution_service(payload.config_path.as_deref())
                 .map_err(HarnessError::Execution)?;
-        let turn_options = loong_app::agent_runtime::TurnExecutionOptions::default();
+        let turn_options = loong_app::agent_runtime::TurnExecutionOptions {
+            acp_event_stream: payload.acp_event_stream,
+            acp_bootstrap_mcp_servers: payload.acp_bootstrap_mcp_servers,
+            acp_working_directory: payload.acp_cwd.map(std::path::PathBuf::from),
+            ..loong_app::agent_runtime::TurnExecutionOptions::default()
+        };
         let turn_result = turn_service
             .execute(payload.session_hint.as_deref(), &turn_request, turn_options)
             .await

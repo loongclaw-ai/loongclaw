@@ -70,9 +70,9 @@ pub async fn run_turn_gateway(
         metadata: _,
         turn_mode: _,
         acp: _,
-        acp_event_stream: _,
-        acp_bootstrap_mcp_servers: _,
-        acp_cwd: _,
+        acp_event_stream,
+        acp_bootstrap_mcp_servers,
+        acp_cwd,
         live_surface_enabled: _,
         ingress,
         observer,
@@ -98,6 +98,9 @@ pub async fn run_turn_gateway(
         provenance: provenance.as_acp_turn_provenance(),
         provider_error_mode,
         retry_progress,
+        acp_event_stream,
+        acp_bootstrap_mcp_servers,
+        acp_working_directory: acp_cwd.map(PathBuf::from),
     };
 
     turn_service
@@ -133,9 +136,6 @@ fn build_agent_turn_request(request: &TurnGatewayRequest) -> CliResult<AgentTurn
         thread_id: request.address.thread_id.clone(),
         metadata: request.metadata.clone(),
         acp: request.acp,
-        acp_event_stream: request.acp_event_stream,
-        acp_bootstrap_mcp_servers: request.acp_bootstrap_mcp_servers.clone(),
-        acp_cwd: request.acp_cwd.clone(),
         live_surface_enabled: request.live_surface_enabled,
     })
 }
@@ -179,9 +179,6 @@ mod tests {
         assert_eq!(built.thread_id.as_deref(), Some("thread-7"));
         assert_eq!(built.metadata.get("trace").map(String::as_str), Some("abc"));
         assert!(built.acp);
-        assert!(built.acp_event_stream);
-        assert_eq!(built.acp_bootstrap_mcp_servers, vec!["mcp-1".to_owned()]);
-        assert_eq!(built.acp_cwd.as_deref(), Some("/tmp/runtime"));
     }
 
     #[test]

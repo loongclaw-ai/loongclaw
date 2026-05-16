@@ -231,17 +231,16 @@ impl AppProtocolOneshotExecutor for LegacyOneshotExecutor {
             },
             metadata: std::collections::BTreeMap::new(),
             acp: request.acp,
-            acp_event_stream: request.acp_event_stream,
-            acp_bootstrap_mcp_servers: request.acp_bootstrap_mcp_servers,
-            acp_cwd: request.acp_cwd,
             ..Default::default()
         };
+        let turn_options = mvp::agent_runtime::TurnExecutionOptions {
+            acp_event_stream: request.acp_event_stream,
+            acp_bootstrap_mcp_servers: request.acp_bootstrap_mcp_servers,
+            acp_working_directory: request.acp_cwd.map(PathBuf::from),
+            ..mvp::agent_runtime::TurnExecutionOptions::default()
+        };
         let result = turn_service
-            .execute(
-                request.session_hint.as_deref(),
-                &turn_request,
-                mvp::agent_runtime::TurnExecutionOptions::default(),
-            )
+            .execute(request.session_hint.as_deref(), &turn_request, turn_options)
             .await?;
 
         Ok(AppProtocolRuntimeExecutorResult {
