@@ -482,6 +482,13 @@ const LINE_PLUGIN_BRIDGE_STABLE_TARGETS: &[ChannelPluginBridgeStableTarget] =
         description: "LINE user, room, or group id for bridged conversation routing",
     }];
 
+const WHATSAPP_PLUGIN_BRIDGE_STABLE_TARGETS: &[ChannelPluginBridgeStableTarget] =
+    &[ChannelPluginBridgeStableTarget {
+        template: "whatsapp:<account>:conversation:<phone_number_or_wa_id>",
+        target_kind: ChannelCatalogTargetKind::Conversation,
+        description: "WhatsApp Cloud conversation route keyed by phone number or WhatsApp user id",
+    }];
+
 const WHATSAPP_PERSONAL_PLUGIN_BRIDGE_STABLE_TARGETS: &[ChannelPluginBridgeStableTarget] = &[
     ChannelPluginBridgeStableTarget {
         template: "whatsapp-personal:<account>:contact:<e164-or-jid>",
@@ -696,6 +703,7 @@ pub(super) fn plugin_bridge_stable_targets_for_channel_id(
         "line" => LINE_PLUGIN_BRIDGE_STABLE_TARGETS,
         "matrix" => MATRIX_PLUGIN_BRIDGE_STABLE_TARGETS,
         "wecom" => WECOM_PLUGIN_BRIDGE_STABLE_TARGETS,
+        "whatsapp" => WHATSAPP_PLUGIN_BRIDGE_STABLE_TARGETS,
         "onebot" => ONEBOT_PLUGIN_BRIDGE_STABLE_TARGETS,
         "whatsapp-personal" => WHATSAPP_PERSONAL_PLUGIN_BRIDGE_STABLE_TARGETS,
         _ => EMPTY_PLUGIN_BRIDGE_STABLE_TARGETS,

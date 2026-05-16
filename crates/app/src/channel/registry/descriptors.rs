@@ -133,18 +133,16 @@ pub(super) const LINE_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
 pub(super) const WHATSAPP_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
     ChannelRegistryDescriptor {
         id: "whatsapp",
-        runtime: Some(ChannelRuntimeDescriptor {
-            family: WHATSAPP_COMMAND_FAMILY_DESCRIPTOR,
-        }),
+        runtime: None,
         snapshot_builder: Some(build_whatsapp_snapshots),
         selection_order: 90,
         selection_label: "business messaging app",
-        blurb: "Shipped WhatsApp Cloud API surface with business send and webhook serve runtime support.",
-        implementation_status: ChannelCatalogImplementationStatus::RuntimeBacked,
-        capabilities: WHATSAPP_CAPABILITIES,
+        blurb: "Plugin-backed WhatsApp Cloud surface for business messaging bridges that externalize send and webhook serve contract ownership into a managed bridge plugin.",
+        implementation_status: ChannelCatalogImplementationStatus::PluginBacked,
+        capabilities: PLUGIN_BACKED_CHANNEL_CAPABILITIES,
         label: "WhatsApp",
         aliases: &["wa", "whatsapp-cloud"],
-        transport: "whatsapp_cloud_api",
+        transport: "whatsapp_cloud_api_or_plugin_bridge",
         onboarding: WHATSAPP_ONBOARDING_DESCRIPTOR,
         operations: WHATSAPP_OPERATIONS,
     };
