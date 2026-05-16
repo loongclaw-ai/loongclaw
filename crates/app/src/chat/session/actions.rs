@@ -1465,11 +1465,15 @@ impl ChatSessionSurface {
             participant_id: self.runtime.session_address.participant_id.clone(),
             thread_id: self.runtime.session_address.thread_id.clone(),
             metadata: std::collections::BTreeMap::new(),
-            acp: self.runtime.explicit_acp_request,
             live_surface_enabled: true,
         };
         let turn_options = crate::agent_runtime::TurnExecutionOptions {
             observer: Some(observer),
+            acp_routing_intent: if self.runtime.explicit_acp_request {
+                crate::acp::AcpRoutingIntent::Explicit
+            } else {
+                crate::acp::AcpRoutingIntent::Automatic
+            },
             acp_bootstrap_mcp_servers: self.runtime.effective_bootstrap_mcp_servers.clone(),
             acp_working_directory: self.runtime.effective_working_directory.clone(),
             ..Default::default()

@@ -224,16 +224,16 @@ impl AppProtocolOneshotExecutor for LegacyOneshotExecutor {
         );
         let turn_request = mvp::agent_runtime::AgentTurnRequest {
             message: request.message,
-            turn_mode: if request.acp {
-                mvp::agent_runtime::AgentTurnMode::Acp
-            } else {
-                mvp::agent_runtime::AgentTurnMode::Oneshot
-            },
+            turn_mode: mvp::agent_runtime::AgentTurnMode::Oneshot,
             metadata: std::collections::BTreeMap::new(),
-            acp: request.acp,
             ..Default::default()
         };
         let turn_options = mvp::agent_runtime::TurnExecutionOptions {
+            acp_routing_intent: if request.acp {
+                mvp::acp::AcpRoutingIntent::Explicit
+            } else {
+                mvp::acp::AcpRoutingIntent::Automatic
+            },
             acp_event_stream: request.acp_event_stream,
             acp_bootstrap_mcp_servers: request.acp_bootstrap_mcp_servers,
             acp_working_directory: request.acp_cwd.map(PathBuf::from),

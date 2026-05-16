@@ -46,7 +46,7 @@ pub struct TurnGatewayRequest {
     pub message: String,
     pub metadata: BTreeMap<String, String>,
     pub turn_mode: AgentTurnMode,
-    pub acp: bool,
+    pub acp_routing_intent: crate::acp::AcpRoutingIntent,
     pub acp_event_stream: bool,
     pub acp_bootstrap_mcp_servers: Vec<String>,
     pub acp_cwd: Option<String>,
@@ -69,7 +69,7 @@ pub async fn run_turn_gateway(
         message: _,
         metadata: _,
         turn_mode: _,
-        acp: _,
+        acp_routing_intent,
         acp_event_stream,
         acp_bootstrap_mcp_servers,
         acp_cwd,
@@ -98,6 +98,7 @@ pub async fn run_turn_gateway(
         provenance: provenance.as_acp_turn_provenance(),
         provider_error_mode,
         retry_progress,
+        acp_routing_intent,
         acp_event_stream,
         acp_bootstrap_mcp_servers,
         acp_working_directory: acp_cwd.map(PathBuf::from),
@@ -135,7 +136,6 @@ fn build_agent_turn_request(request: &TurnGatewayRequest) -> CliResult<AgentTurn
         participant_id: request.address.participant_id.clone(),
         thread_id: request.address.thread_id.clone(),
         metadata: request.metadata.clone(),
-        acp: request.acp,
         live_surface_enabled: request.live_surface_enabled,
     })
 }
@@ -156,7 +156,7 @@ mod tests {
             message: "hello".to_owned(),
             metadata: BTreeMap::from([("trace".to_owned(), "abc".to_owned())]),
             turn_mode: AgentTurnMode::Acp,
-            acp: true,
+            acp_routing_intent: crate::acp::AcpRoutingIntent::Explicit,
             acp_event_stream: true,
             acp_bootstrap_mcp_servers: vec!["mcp-1".to_owned()],
             acp_cwd: Some("/tmp/runtime".to_owned()),
@@ -178,7 +178,6 @@ mod tests {
         assert_eq!(built.participant_id.as_deref(), Some("alice"));
         assert_eq!(built.thread_id.as_deref(), Some("thread-7"));
         assert_eq!(built.metadata.get("trace").map(String::as_str), Some("abc"));
-        assert!(built.acp);
     }
 
     #[test]
@@ -188,7 +187,7 @@ mod tests {
             message: "hello".to_owned(),
             metadata: BTreeMap::new(),
             turn_mode: AgentTurnMode::Oneshot,
-            acp: false,
+            acp_routing_intent: crate::acp::AcpRoutingIntent::Automatic,
             acp_event_stream: false,
             acp_bootstrap_mcp_servers: Vec::new(),
             acp_cwd: None,

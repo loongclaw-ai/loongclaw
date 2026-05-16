@@ -280,11 +280,15 @@ pub(super) async fn process_cli_chat_input(
         participant_id: runtime.session_address.participant_id.clone(),
         thread_id: runtime.session_address.thread_id.clone(),
         metadata: BTreeMap::new(),
-        acp: runtime.explicit_acp_request,
         live_surface_enabled: true,
     };
     let turn_options = crate::agent_runtime::TurnExecutionOptions {
         event_sink,
+        acp_routing_intent: if runtime.explicit_acp_request {
+            crate::acp::AcpRoutingIntent::Explicit
+        } else {
+            crate::acp::AcpRoutingIntent::Automatic
+        },
         acp_event_stream: event_sink.is_some(),
         acp_bootstrap_mcp_servers: runtime.effective_bootstrap_mcp_servers.clone(),
         acp_working_directory: runtime.effective_working_directory.clone(),

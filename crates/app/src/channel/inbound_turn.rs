@@ -274,7 +274,7 @@ pub async fn process_inbound_with_provider_and_error_mode(
                 message: message.text.clone(),
                 metadata: BTreeMap::new(),
                 turn_mode: crate::agent_runtime::AgentTurnMode::Oneshot,
-                acp: false,
+                acp_routing_intent: crate::acp::AcpRoutingIntent::Automatic,
                 acp_event_stream: false,
                 acp_bootstrap_mcp_servers: prepared.acp_turn_hints.bootstrap_mcp_servers.clone(),
                 acp_cwd: prepared
