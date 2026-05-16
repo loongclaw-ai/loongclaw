@@ -3117,6 +3117,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "loong-app-protocol"
+version = "0.1.2-alpha.1"
+dependencies = [
+ "loong-runtime",
+ "serde",
+]
+
+[[package]]
 name = "loong-bench"
 version = "0.1.2-alpha.1"
 dependencies = [
@@ -3144,6 +3152,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "loong-cli"
+version = "0.1.2-alpha.1"
+dependencies = [
+ "loong-app-protocol",
+ "serde",
+]
+
+[[package]]
 name = "loong-contracts"
 version = "0.1.2-alpha.1"
 dependencies = [
@@ -3153,6 +3169,14 @@ dependencies = [
  "thiserror 2.0.18",
  "toml",
  "zeroize",
+]
+
+[[package]]
+name = "loong-core"
+version = "0.1.2-alpha.1"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3173,6 +3197,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "loong-plugin-sdk"
+version = "0.1.2-alpha.1"
+dependencies = [
+ "loong-core",
+ "serde",
+]
+
+[[package]]
 name = "loong-protocol"
 version = "0.1.2-alpha.1"
 dependencies = [
@@ -3181,6 +3213,14 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "loong-runtime"
+version = "0.1.2-alpha.1"
+dependencies = [
+ "loong-core",
+ "serde",
 ]
 
 [[package]]

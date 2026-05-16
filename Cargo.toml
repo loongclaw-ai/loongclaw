@@ -8,6 +8,11 @@ members = [
   "crates/bench",
   "crates/app",
   "crates/daemon",
+  "crates/loong-core",
+  "crates/loong-runtime",
+  "crates/loong-app-protocol",
+  "crates/loong-cli",
+  "crates/loong-plugin-sdk",
 ]
 resolver = "2"
 
