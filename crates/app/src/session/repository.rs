@@ -345,6 +345,7 @@ pub struct SessionSummaryRecord {
     pub kind: SessionKind,
     pub parent_session_id: Option<String>,
     pub label: Option<String>,
+    pub first_user_message: Option<String>,
     pub state: SessionState,
     pub created_at: i64,
     pub updated_at: i64,
@@ -658,6 +659,38 @@ impl SessionRepository {
         Self::latest_resumable_root_session_summary_with_conn(&conn)
     }
 
+    pub fn list_resumable_root_session_summaries(
+        &self,
+    ) -> Result<Vec<SessionSummaryRecord>, String> {
+        let conn = self.open_connection()?;
+        let mut summaries = Self::list_resumable_root_session_summaries_with_conn(&conn)?;
+        sort_session_summaries(&mut summaries);
+        Ok(summaries)
+    }
+
+    pub fn update_session_label(
+        &self,
+        session_id: &str,
+        label: Option<String>,
+    ) -> Result<SessionRecord, String> {
+        let session_id = normalize_required_text(session_id, "session_id")?;
+        let label = normalize_optional_text(label);
+        let conn = self.open_connection()?;
+        let affected = conn
+            .execute(
+                "UPDATE sessions
+                 SET label = ?2, updated_at = ?3
+                 WHERE session_id = ?1",
+                params![session_id, label, unix_ts_now()],
+            )
+            .map_err(|error| format!("update session label failed: {error}"))?;
+        if affected == 0 {
+            return Err(format!("session `{session_id}` not found"));
+        }
+        self.load_session(&session_id)?
+            .ok_or_else(|| format!("session `{session_id}` missing after label update"))
+    }
+
     pub fn load_session_observation(
         &self,
         session_id: &str,
@@ -946,6 +979,14 @@ impl SessionRepository {
                     s.kind,
                     s.parent_session_id,
                     s.label,
+                    (
+                        SELECT t_first.content
+                        FROM turns t_first
+                        WHERE t_first.session_id = s.session_id
+                          AND t_first.role = 'user'
+                        ORDER BY t_first.id ASC
+                        LIMIT 1
+                    ) AS first_user_message,
                     s.state,
                     s.created_at,
                     s.updated_at,
@@ -982,13 +1023,14 @@ impl SessionRepository {
                     kind: row.get(1)?,
                     parent_session_id: row.get(2)?,
                     label: row.get(3)?,
-                    state: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                    last_error: row.get(7)?,
-                    archived_at: row.get(8)?,
-                    turn_count: row.get(9)?,
-                    last_turn_at: row.get(10)?,
+                    first_user_message: row.get(4)?,
+                    state: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                    last_error: row.get(8)?,
+                    archived_at: row.get(9)?,
+                    turn_count: row.get(10)?,
+                    last_turn_at: row.get(11)?,
                 })
             })
             .map_err(|error| format!("query visible sessions failed: {error}"))?;
@@ -2800,6 +2842,14 @@ impl SessionRepository {
                     s.kind,
                     s.parent_session_id,
                     s.label,
+                    (
+                        SELECT t_first.content
+                        FROM turns t_first
+                        WHERE t_first.session_id = s.session_id
+                          AND t_first.role = 'user'
+                        ORDER BY t_first.id ASC
+                        LIMIT 1
+                    ) AS first_user_message,
                     s.state,
                     s.created_at,
                     s.updated_at,
@@ -2828,20 +2878,21 @@ impl SessionRepository {
                     archived.archived_at",
                 params![session_id],
                 |row| {
-                    Ok(RawSessionSummaryRecord {
-                        session_id: row.get(0)?,
-                        kind: row.get(1)?,
-                        parent_session_id: row.get(2)?,
-                        label: row.get(3)?,
-                        state: row.get(4)?,
-                        created_at: row.get(5)?,
-                        updated_at: row.get(6)?,
-                        last_error: row.get(7)?,
-                        archived_at: row.get(8)?,
-                        turn_count: row.get(9)?,
-                        last_turn_at: row.get(10)?,
-                    })
-                },
+                Ok(RawSessionSummaryRecord {
+                    session_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    parent_session_id: row.get(2)?,
+                    label: row.get(3)?,
+                    first_user_message: row.get(4)?,
+                    state: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                    last_error: row.get(8)?,
+                    archived_at: row.get(9)?,
+                    turn_count: row.get(10)?,
+                    last_turn_at: row.get(11)?,
+                })
+            },
             )
             .optional()
             .map_err(|error| format!("load session summary failed: {error}"))?;
@@ -2892,6 +2943,14 @@ impl SessionRepository {
                     s.kind,
                     s.parent_session_id,
                     s.label,
+                    (
+                        SELECT t_first.content
+                        FROM turns t_first
+                        WHERE t_first.session_id = s.session_id
+                          AND t_first.role = 'user'
+                        ORDER BY t_first.id ASC
+                        LIMIT 1
+                    ) AS first_user_message,
                     s.state,
                     s.created_at,
                     s.updated_at,
@@ -2927,13 +2986,14 @@ impl SessionRepository {
                     kind: row.get(1)?,
                     parent_session_id: row.get(2)?,
                     label: row.get(3)?,
-                    state: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                    last_error: row.get(7)?,
-                    archived_at: row.get(8)?,
-                    turn_count: row.get(9)?,
-                    last_turn_at: row.get(10)?,
+                    first_user_message: row.get(4)?,
+                    state: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                    last_error: row.get(8)?,
+                    archived_at: row.get(9)?,
+                    turn_count: row.get(10)?,
+                    last_turn_at: row.get(11)?,
                 })
             })
             .map_err(|error| format!("query concrete session summaries failed: {error}"))?;
@@ -2987,11 +3047,13 @@ impl SessionRepository {
             let turn_count = bounded_turn_count as usize;
             let kind = infer_legacy_session_kind(&session_id);
 
+            let first_user_message = load_first_user_message_for_session(conn, &session_id)?;
             let summary = SessionSummaryRecord {
                 session_id,
                 kind,
                 parent_session_id: None,
                 label: None,
+                first_user_message,
                 state: SessionState::Ready,
                 created_at,
                 updated_at,
@@ -3409,6 +3471,7 @@ impl SessionRepository {
             kind,
             parent_session_id: None,
             label: None,
+            first_user_message: load_first_user_message_for_session(conn, session_id)?,
             state: SessionState::Ready,
             created_at,
             updated_at,
@@ -3418,6 +3481,24 @@ impl SessionRepository {
             last_error: None,
         }))
     }
+}
+
+fn load_first_user_message_for_session(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT content
+         FROM turns
+         WHERE session_id = ?1
+           AND role = 'user'
+         ORDER BY id ASC
+         LIMIT 1",
+        params![session_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|error| format!("load first user message failed: {error}"))
 }
 
 #[derive(Debug)]
@@ -3438,6 +3519,7 @@ struct RawSessionSummaryRecord {
     kind: String,
     parent_session_id: Option<String>,
     label: Option<String>,
+    first_user_message: Option<String>,
     state: String,
     created_at: i64,
     updated_at: i64,
@@ -3581,6 +3663,7 @@ impl SessionSummaryRecord {
             kind: SessionKind::from_db(&raw.kind)?,
             parent_session_id: raw.parent_session_id,
             label: raw.label,
+            first_user_message: raw.first_user_message,
             state: SessionState::from_db(&raw.state)?,
             created_at: raw.created_at,
             updated_at: raw.updated_at,

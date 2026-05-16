@@ -24,11 +24,14 @@ pub(crate) struct ChatControlPlaneApprovalSummary {
 pub(crate) struct ChatControlPlaneSessionSummary {
     pub(crate) session_id: String,
     pub(crate) label: String,
+    pub(crate) explicit_label: Option<String>,
+    pub(crate) first_user_message: Option<String>,
     pub(crate) state: String,
     pub(crate) kind: String,
     pub(crate) parent_session_id: Option<String>,
     pub(crate) turn_count: usize,
     pub(crate) updated_at: i64,
+    pub(crate) last_turn_at: Option<i64>,
     pub(crate) last_error: Option<String>,
 }
 
@@ -109,11 +112,14 @@ impl ChatControlPlaneSessionSummary {
         Self {
             session_id: summary.session_id.clone(),
             label,
+            explicit_label: summary.label.clone(),
+            first_user_message: summary.first_user_message.clone(),
             state,
             kind,
             parent_session_id: summary.parent_session_id.clone(),
             turn_count: summary.turn_count,
             updated_at: summary.updated_at,
+            last_turn_at: summary.last_turn_at,
             last_error: summary.last_error.clone(),
         }
     }
@@ -147,6 +153,27 @@ impl ChatControlPlaneStore {
         }
 
         Ok(summaries)
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    pub(crate) fn resumable_root_sessions(
+        &self,
+        limit: usize,
+    ) -> CliResult<Vec<ChatControlPlaneSessionSummary>> {
+        let sessions = self.repo.list_resumable_root_session_summaries()?;
+        Ok(sessions
+            .into_iter()
+            .take(limit)
+            .map(|session| ChatControlPlaneSessionSummary::from_session_summary(&session))
+            .collect())
+    }
+
+    #[cfg(not(feature = "memory-sqlite"))]
+    pub(crate) fn resumable_root_sessions(
+        &self,
+        _limit: usize,
+    ) -> CliResult<Vec<ChatControlPlaneSessionSummary>> {
+        Err("control plane requires memory-sqlite support".to_owned())
     }
 
     #[cfg(not(feature = "memory-sqlite"))]
@@ -293,12 +320,60 @@ impl ChatControlPlaneStore {
         Ok(Some(details))
     }
 
+    #[cfg(feature = "memory-sqlite")]
+    pub(crate) fn visible_transcript_turns(
+        &self,
+        session_id: &str,
+    ) -> CliResult<Vec<crate::session::store::SessionTranscriptTurn>> {
+        let snapshot = self
+            .repo
+            .load_session_trajectory_read_snapshot(session_id, 12)?
+            .ok_or_else(|| format!("session `{session_id}` not found"))?;
+        Ok(snapshot
+            .turns
+            .into_iter()
+            .filter(|turn| {
+                !(turn.role == "assistant"
+                    && turn
+                        .content
+                        .contains(crate::memory::INTERNAL_PERSISTED_RECORD_MARKER))
+            })
+            .collect())
+    }
+
     #[cfg(not(feature = "memory-sqlite"))]
     pub(crate) fn session_details(
         &self,
         _session_id: &str,
         _include_delegate_lifecycle: bool,
     ) -> CliResult<Option<ChatControlPlaneSessionDetails>> {
+        Err("control plane requires memory-sqlite support".to_owned())
+    }
+
+    #[cfg(not(feature = "memory-sqlite"))]
+    pub(crate) fn visible_transcript_turns(
+        &self,
+        _session_id: &str,
+    ) -> CliResult<Vec<crate::session::store::SessionTranscriptTurn>> {
+        Err("control plane requires memory-sqlite support".to_owned())
+    }
+
+    #[cfg(feature = "memory-sqlite")]
+    pub(crate) fn update_session_label(
+        &self,
+        session_id: &str,
+        label: Option<String>,
+    ) -> CliResult<()> {
+        self.repo.update_session_label(session_id, label)?;
+        Ok(())
+    }
+
+    #[cfg(not(feature = "memory-sqlite"))]
+    pub(crate) fn update_session_label(
+        &self,
+        _session_id: &str,
+        _label: Option<String>,
+    ) -> CliResult<()> {
         Err("control plane requires memory-sqlite support".to_owned())
     }
 }

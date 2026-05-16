@@ -37,7 +37,8 @@ use super::CLI_CHAT_HELP_COMMAND;
 use super::CLI_CHAT_HISTORY_COMMAND;
 use super::CLI_CHAT_MISSION_COMMAND;
 use super::CLI_CHAT_REVIEW_COMMAND;
-use super::CLI_CHAT_SESSIONS_COMMAND;
+use super::CLI_CHAT_NEW_COMMAND;
+use super::CLI_CHAT_RESUME_COMMAND;
 use super::CLI_CHAT_STATUS_COMMAND;
 use super::CLI_CHAT_TURN_CHECKPOINT_REPAIR_COMMAND;
 use super::CLI_CHAT_TURN_CHECKPOINT_REPAIR_COMMAND_ALIAS;
@@ -580,8 +581,12 @@ fn build_cli_chat_help_message_spec() -> TuiMessageSpec {
             value: "print the current session sliding window".to_owned(),
         },
         TuiKeyValueSpec::Plain {
-            key: CLI_CHAT_SESSIONS_COMMAND.to_owned(),
-            value: "inspect visible sessions rooted at the current session scope".to_owned(),
+            key: CLI_CHAT_RESUME_COMMAND.to_owned(),
+            value: "open the local session resume picker".to_owned(),
+        },
+        TuiKeyValueSpec::Plain {
+            key: CLI_CHAT_NEW_COMMAND.to_owned(),
+            value: "rotate to a fresh local session".to_owned(),
         },
         TuiKeyValueSpec::Plain {
             key: CLI_CHAT_MISSION_COMMAND.to_owned(),
@@ -639,7 +644,7 @@ fn build_cli_chat_help_message_spec() -> TuiMessageSpec {
                 .to_owned(),
             "M opens the mission-control overview for the current session scope.".to_owned(),
             "r reopens the latest approval screen when one is available.".to_owned(),
-            "S opens the visible session queue when related sessions are available.".to_owned(),
+            "S opens the resume picker when resumable sessions are available.".to_owned(),
             "W opens the worker queue when delegate sessions are visible.".to_owned(),
         ],
     };
@@ -653,7 +658,8 @@ fn build_cli_chat_help_message_spec() -> TuiMessageSpec {
             "Use /mission to inspect orchestration posture before spawning or reviewing lanes."
                 .to_owned(),
             "Use /history to inspect the active memory window when a reply feels off.".to_owned(),
-            "Use /compact to checkpoint the active session before the next turn.".to_owned(),
+            "Use /resume to restore an older local session and /new to rotate forward cleanly."
+                .to_owned(),
         ],
     };
     let command_section = TuiSectionSpec::KeyValues {

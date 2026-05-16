@@ -122,7 +122,8 @@ const CLI_CHAT_HISTORY_COMMAND: &str = "/history";
 const CLI_CHAT_MISSION_COMMAND: &str = "/mission";
 const CLI_CHAT_REVIEW_COMMAND: &str = "/review";
 const CLI_CHAT_WORKERS_COMMAND: &str = "/workers";
-const CLI_CHAT_SESSIONS_COMMAND: &str = "/sessions";
+const CLI_CHAT_RESUME_COMMAND: &str = "/resume";
+const CLI_CHAT_NEW_COMMAND: &str = "/new";
 const CLI_CHAT_TURN_CHECKPOINT_REPAIR_COMMAND: &str = "/turn_checkpoint_repair";
 const CLI_CHAT_TURN_CHECKPOINT_REPAIR_COMMAND_ALIAS: &str = "/turn-checkpoint-repair";
 const CLI_CHAT_COMPOSER_PROMPT: &str = "╰─ you · compose › ";
@@ -4415,8 +4416,8 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("/sessions: inspect visible sessions")),
-            "help output should surface the session queue command: {lines:#?}"
+                .any(|line| line.contains("/resume:") && line.contains("session")),
+            "help output should surface the resume command: {lines:#?}"
         );
         assert!(
             lines.iter().any(|line| {
@@ -5448,13 +5449,10 @@ allowed_decisions: yes / auto / full / esc";
         .expect_err("history should reject extra args");
         assert_eq!(history_error, "usage: /history");
 
-        let sessions_error = parse_exact_chat_command(
-            "/sessions now",
-            &[CLI_CHAT_SESSIONS_COMMAND],
-            "usage: /sessions",
-        )
-        .expect_err("sessions should reject extra args");
-        assert_eq!(sessions_error, "usage: /sessions");
+        let sessions_error =
+            parse_exact_chat_command("/resume now", &[CLI_CHAT_RESUME_COMMAND], "usage: /resume")
+                .expect_err("resume should reject extra args");
+        assert_eq!(sessions_error, "usage: /resume");
 
         let mission_error = parse_exact_chat_command(
             "/mission now",

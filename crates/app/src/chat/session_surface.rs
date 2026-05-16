@@ -95,7 +95,7 @@ pub(super) fn run_concurrent_cli_host_surface(options: &ConcurrentCliHostOptions
 }
 
 struct ChatSessionSurface {
-    runtime: CliTurnRuntime,
+    runtime: Mutex<CliTurnRuntime>,
     options: CliChatOptions,
     term: Term,
     state: Arc<Mutex<SurfaceState>>,
@@ -200,13 +200,11 @@ enum SurfaceOverlay {
     Welcome {
         screen: TuiScreenSpec,
     },
-    SessionQueue {
+    ResumePicker {
         selected: usize,
-        items: Vec<SessionQueueItemSummary>,
-    },
-    SessionDetails {
-        title: String,
-        lines: Vec<String>,
+        items: Vec<ResumeSessionEntry>,
+        named_only: bool,
+        sort_mode: ResumeSortMode,
     },
     ReviewQueue {
         selected: usize,
@@ -249,6 +247,12 @@ enum OverlayInputKind {
     ExportTranscript,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResumeSortMode {
+    Recent,
+    Alpha,
+}
+
 impl SurfaceFocus {
     fn next(self, sidebar_visible: bool, palette_open: bool) -> Self {
         if palette_open {
@@ -284,7 +288,8 @@ enum CommandPaletteAction {
     Help,
     Status,
     History,
-    SessionQueue,
+    ResumePicker,
+    NewSession,
     Compact,
     Timeline,
     ReviewApproval,
@@ -316,9 +321,14 @@ impl CommandPaletteAction {
                 Self::History,
             ),
             (
-                "Session queue",
-                "Open the visible session/lineage inspector for this session scope",
-                Self::SessionQueue,
+                "/resume",
+                "Open the local session resume picker",
+                Self::ResumePicker,
+            ),
+            (
+                "/new",
+                "Rotate to a fresh local session",
+                Self::NewSession,
             ),
             (
                 "/compact",
@@ -450,14 +460,19 @@ struct WorkerQueueItemSummary {
 }
 
 #[derive(Clone, Debug, Default)]
-struct SessionQueueItemSummary {
+struct ResumeSessionEntry {
     session_id: String,
-    label: String,
+    primary_label: String,
+    secondary_label: Option<String>,
+    preview: Option<String>,
+    named: bool,
+    current: bool,
     state: String,
     kind: String,
     parent_session_id: Option<String>,
     turn_count: usize,
     updated_at: i64,
+    last_turn_at: Option<i64>,
     last_error: Option<String>,
 }
 
@@ -651,44 +666,111 @@ impl WorkerQueueItemSummary {
     }
 }
 
-impl SessionQueueItemSummary {
-    fn from_control_plane_summary(summary: &ChatControlPlaneSessionSummary) -> Self {
+impl ResumeSessionEntry {
+    fn from_control_plane_summary(
+        summary: &ChatControlPlaneSessionSummary,
+        current_session_id: &str,
+    ) -> Self {
+        let primary_label = summary
+            .explicit_label
+            .clone()
+            .or_else(|| summary.first_user_message.clone())
+            .unwrap_or_else(|| summary.label.clone());
+        let secondary_label = if primary_label == summary.label {
+            None
+        } else {
+            Some(summary.label.clone())
+        };
         Self {
             session_id: summary.session_id.clone(),
-            label: summary.label.clone(),
+            primary_label,
+            secondary_label,
+            preview: summary.first_user_message.clone(),
+            named: summary.explicit_label.is_some(),
+            current: summary.session_id == current_session_id,
             state: summary.state.clone(),
             kind: summary.kind.clone(),
             parent_session_id: summary.parent_session_id.clone(),
             turn_count: summary.turn_count,
             updated_at: summary.updated_at,
+            last_turn_at: summary.last_turn_at,
             last_error: summary.last_error.clone(),
         }
     }
 
     fn list_line(&self) -> String {
-        format!(
-            "{} state={} kind={} turns={}",
-            self.label, self.state, self.kind, self.turn_count
-        )
-    }
-
-    fn detail_lines(&self) -> Vec<String> {
-        let mut lines = vec![
-            format!("session_id={}", self.session_id),
-            format!("label={}", self.label),
-            format!("state={}", self.state),
-            format!("kind={}", self.kind),
-            format!("turn_count={}", self.turn_count),
-            format!("updated_at={}", self.updated_at),
-        ];
+        let mut line = self.primary_label.clone();
+        if self.current {
+            line.push_str(" · current");
+        }
+        if let Some(secondary_label) = self.secondary_label.as_deref() {
+            line.push_str(" (");
+            line.push_str(secondary_label);
+            line.push(')');
+        }
+        line.push_str(&format!(
+            " · {} · {} · turns={}",
+            self.state, self.kind, self.turn_count
+        ));
+        if let Some(last_turn_at) = self.last_turn_at {
+            line.push_str(&format!(" · last={}", format_resume_timestamp(last_turn_at)));
+        } else {
+            line.push_str(&format!(" · updated={}", format_resume_timestamp(self.updated_at)));
+        }
         if let Some(parent_session_id) = self.parent_session_id.as_deref() {
-            lines.push(format!("parent_session_id={parent_session_id}"));
+            line.push_str(" · parent=");
+            line.push_str(parent_session_id);
         }
         if let Some(last_error) = self.last_error.as_deref() {
-            lines.push(format!("last_error={last_error}"));
+            line.push_str(" · error=");
+            line.push_str(last_error);
         }
-        lines
+        if let Some(preview) = self.preview.as_deref()
+            && preview != self.primary_label
+        {
+            line.push_str(" · ");
+            line.push_str(preview);
+        }
+        line
     }
+
+}
+
+fn sort_resume_entries(entries: &mut [ResumeSessionEntry], sort_mode: ResumeSortMode) {
+    match sort_mode {
+        ResumeSortMode::Recent => entries.sort_by(|left, right| {
+            let left_rank = left.last_turn_at.unwrap_or(left.updated_at);
+            let right_rank = right.last_turn_at.unwrap_or(right.updated_at);
+            right_rank
+                .cmp(&left_rank)
+                .then_with(|| left.primary_label.cmp(&right.primary_label))
+        }),
+        ResumeSortMode::Alpha => entries.sort_by(|left, right| {
+            left.primary_label
+                .cmp(&right.primary_label)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        }),
+    }
+}
+
+fn filter_resume_entries(
+    entries: Vec<ResumeSessionEntry>,
+    named_only: bool,
+    sort_mode: ResumeSortMode,
+) -> Vec<ResumeSessionEntry> {
+    let mut entries = if named_only {
+        entries.into_iter().filter(|entry| entry.named).collect()
+    } else {
+        entries
+    };
+    sort_resume_entries(&mut entries, sort_mode);
+    entries
+}
+
+fn format_resume_timestamp(timestamp: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0)
+        .map(|datetime| datetime.format("%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| timestamp.to_string())
 }
 
 fn sync_live_surface_snapshot(live: &mut LiveSurfaceModel) {
@@ -748,11 +830,8 @@ fn terminal_surface_restore_sequence() -> String {
 }
 
 impl ChatSessionSurface {
-    fn new(runtime: CliTurnRuntime, options: CliChatOptions) -> CliResult<Self> {
-        let term = Term::stdout();
-        let startup_summary =
-            operator_surfaces::build_cli_chat_startup_summary(&runtime, &options)?;
-        let active_provider_label = runtime
+    fn active_provider_label_for_runtime(runtime: &CliTurnRuntime) -> String {
+        runtime
             .config
             .active_provider_id()
             .and_then(|profile_id| runtime.config.providers.get(profile_id))
@@ -769,13 +848,73 @@ impl ChatSessionSurface {
                     runtime.config.provider.kind.display_name(),
                     runtime.config.provider.model
                 )
+            })
+    }
+
+    fn build_visible_transcript_for_runtime(
+        runtime: &CliTurnRuntime,
+        width: usize,
+    ) -> CliResult<Vec<SurfaceEntry>> {
+        let store = ChatControlPlaneStore::new(&runtime.memory_config)?;
+        let turns = store.visible_transcript_turns(&runtime.session_id)?;
+        let mut transcript = Vec::new();
+        for turn in turns {
+            let caption = match turn.role.as_str() {
+                "user" => Some("prompt".to_owned()),
+                "assistant" => Some("reply".to_owned()),
+                _ => None,
+            };
+            let role = if turn.role == "user" {
+                "you".to_owned()
+            } else {
+                turn.role.clone()
+            };
+            transcript.push(SurfaceEntry {
+                lines: render_cli_chat_message_spec_with_width(
+                    &TuiMessageSpec {
+                        role,
+                        caption,
+                        sections: vec![TuiSectionSpec::Narrative {
+                            title: None,
+                            lines: vec![turn.content],
+                        }],
+                        footer_lines: Vec::new(),
+                    },
+                    width,
+                ),
             });
+        }
+        Ok(transcript)
+    }
+
+    fn runtime(&self) -> std::sync::MutexGuard<'_, CliTurnRuntime> {
+        match self.runtime.lock() {
+            Ok(runtime) => runtime,
+            Err(poisoned_runtime) => poisoned_runtime.into_inner(),
+        }
+    }
+
+    fn new(runtime: CliTurnRuntime, options: CliChatOptions) -> CliResult<Self> {
+        let term = Term::stdout();
+        let (_height, width) = term.size();
+        let content_width = usize::from(width).saturating_sub(36).max(24);
+        let startup_summary =
+            operator_surfaces::build_cli_chat_startup_summary(&runtime, &options)?;
+        let active_provider_label = Self::active_provider_label_for_runtime(&runtime);
+        let transcript = Self::build_visible_transcript_for_runtime(&runtime, content_width)?;
+        let overlay = if transcript.is_empty() {
+            Some(SurfaceOverlay::Welcome {
+                screen: operator_surfaces::build_cli_chat_startup_screen_spec(&startup_summary),
+            })
+        } else {
+            None
+        };
         let state = SurfaceState {
             startup_summary: Some(startup_summary.clone()),
             active_provider_label,
             session_title_override: None,
             last_approval: None,
-            transcript: Vec::new(),
+            transcript,
             composer: String::new(),
             composer_cursor: 0,
             history: Vec::new(),
@@ -787,16 +926,14 @@ impl ChatSessionSurface {
             sidebar_visible: true,
             sidebar_tab: SidebarTab::Session,
             command_palette: None,
-            overlay: Some(SurfaceOverlay::Welcome {
-                screen: operator_surfaces::build_cli_chat_startup_screen_spec(&startup_summary),
-            }),
+            overlay,
             live: LiveSurfaceModel::default(),
             footer_notice:
                 "?: help · : command menu · M mission · Esc clear · PgUp/PgDn transcript · Tab focus".to_owned(),
             pending_turn: false,
         };
         Ok(Self {
-            runtime,
+            runtime: Mutex::new(runtime),
             options,
             term,
             state: Arc::new(Mutex::new(state)),
@@ -949,7 +1086,7 @@ impl ChatSessionSurface {
             }
             Key::ArrowUp => {
                 let mut state = self.lock_state();
-                if let Some(SurfaceOverlay::SessionQueue { selected, .. }) = state.overlay.as_mut()
+                if let Some(SurfaceOverlay::ResumePicker { selected, .. }) = state.overlay.as_mut()
                 {
                     *selected = selected.saturating_sub(1);
                 } else if let Some(SurfaceOverlay::ReviewQueue { selected, .. }) =
@@ -992,7 +1129,9 @@ impl ChatSessionSurface {
             }
             Key::ArrowDown => {
                 let mut state = self.lock_state();
-                if let Some(SurfaceOverlay::SessionQueue { selected, items }) =
+                if let Some(SurfaceOverlay::ResumePicker {
+                    selected, items, ..
+                }) =
                     state.overlay.as_mut()
                 {
                     let max_index = items.len().saturating_sub(1);
@@ -1206,17 +1345,16 @@ impl ChatSessionSurface {
                     return self.execute_palette_action(action);
                 }
                 {
-                    let mut state = self.lock_state();
-                    if let Some(SurfaceOverlay::SessionQueue { selected, items }) =
+                    let state = self.lock_state();
+                    if let Some(SurfaceOverlay::ResumePicker {
+                        selected, items, ..
+                    }) =
                         state.overlay.as_ref()
                         && let Some(item) = items.get(*selected)
                     {
-                        let detail_lines = self.build_session_detail_lines(item);
-                        state.overlay = Some(SurfaceOverlay::SessionDetails {
-                            title: format!("session {}", item.session_id),
-                            lines: detail_lines,
-                        });
+                        let session_id = item.session_id.clone();
                         drop(state);
+                        self.resume_selected_session(session_id.as_str())?;
                         self.render()?;
                         return Ok(SurfaceLoopAction::Continue);
                     }
@@ -1359,23 +1497,122 @@ impl ChatSessionSurface {
                     match self.load_visible_sessions(24) {
                         Ok(items) if !items.is_empty() => {
                             state.overlay =
-                                Some(SurfaceOverlay::SessionQueue { selected: 0, items });
+                                self.open_resume_picker(0, false, ResumeSortMode::Recent)?;
                             state.focus = SurfaceFocus::Transcript;
                         }
                         Ok(_) => {}
                         Err(error) => {
                             let lines = render_control_plane_unavailable_lines_with_width(
-                                "sessions",
-                                "queue",
+                                "resume",
+                                "picker",
                                 error.as_str(),
                                 vec![
-                                    "Related sessions and worker lanes will appear here when the control-plane store is available."
+                                    "The local session picker needs a readable control-plane store before it can restore another session."
                                         .to_owned(),
                                 ],
                                 self.content_width(),
                             );
                             push_transcript_message(&mut state, lines);
                         }
+                    }
+                } else if character == 'A'
+                    && state.composer.is_empty()
+                    && state.command_palette.is_none()
+                {
+                    if let Some(SurfaceOverlay::ResumePicker {
+                        selected, items, ..
+                    }) =
+                        state.overlay.as_ref()
+                        && let Some(item) = items.get(*selected)
+                    {
+                        let selected_index = *selected;
+                        let (named_only, sort_mode) = match state.overlay.as_ref() {
+                            Some(SurfaceOverlay::ResumePicker {
+                                named_only,
+                                sort_mode,
+                                ..
+                            }) => (*named_only, *sort_mode),
+                            _ => (false, ResumeSortMode::Recent),
+                        };
+                        let session_id = item.session_id.clone();
+                        drop(state);
+                        if let Err(error) = self.archive_selected_session(session_id.as_str()) {
+                            let mut state = self.lock_state();
+                            push_transcript_message(
+                                &mut state,
+                                render_cli_chat_message_spec_with_width(
+                                    &TuiMessageSpec {
+                                        role: "resume".to_owned(),
+                                        caption: Some("archive".to_owned()),
+                                        sections: vec![TuiSectionSpec::Callout {
+                                            tone: TuiCalloutTone::Warning,
+                                            title: Some("archive failed".to_owned()),
+                                            lines: vec![error],
+                                        }],
+                                        footer_lines: Vec::new(),
+                                    },
+                                    self.content_width(),
+                                ),
+                            );
+                            self.render()?;
+                            return Ok(SurfaceLoopAction::Continue);
+                        }
+                        let overlay =
+                            self.open_resume_picker(selected_index, named_only, sort_mode)?;
+                        let mut state = self.lock_state();
+                        state.overlay = overlay;
+                        state.focus = SurfaceFocus::Transcript;
+                        self.render()?;
+                        return Ok(SurfaceLoopAction::Continue);
+                    }
+                } else if character == 'N'
+                    && state.composer.is_empty()
+                    && state.command_palette.is_none()
+                {
+                    if let Some(SurfaceOverlay::ResumePicker {
+                        selected,
+                        named_only,
+                        sort_mode,
+                        ..
+                    }) = state.overlay.as_ref()
+                    {
+                        let selected_index = *selected;
+                        let current_sort_mode = *sort_mode;
+                        let next_named_only = !named_only;
+                        drop(state);
+                        let overlay =
+                            self.open_resume_picker(selected_index, next_named_only, current_sort_mode)?;
+                        let mut state = self.lock_state();
+                        state.overlay = overlay;
+                        state.focus = SurfaceFocus::Transcript;
+                        self.render()?;
+                        return Ok(SurfaceLoopAction::Continue);
+                    }
+                } else if character == 'T'
+                    && state.composer.is_empty()
+                    && state.command_palette.is_none()
+                {
+                    if let Some(SurfaceOverlay::ResumePicker {
+                        selected,
+                        named_only,
+                        sort_mode,
+                        ..
+                    }) = state.overlay.as_ref()
+                    {
+                        let selected_index = *selected;
+                        let current_named_only = *named_only;
+                        let next_sort_mode = match sort_mode {
+                            ResumeSortMode::Recent => ResumeSortMode::Alpha,
+                            ResumeSortMode::Alpha => ResumeSortMode::Recent,
+                        };
+                        drop(state);
+                        let overlay =
+                            self.open_resume_picker(selected_index, current_named_only, next_sort_mode)?;
+                        let mut state = self.lock_state();
+                        state.overlay = overlay;
+                        state.focus = SurfaceFocus::Transcript;
+                        self.render()?;
+                        return Ok(SurfaceLoopAction::Continue);
                     }
                 } else if character == 'r'
                     && state.composer.is_empty()
@@ -1577,24 +1814,24 @@ impl ChatSessionSurface {
                     CLI_CHAT_HISTORY_COMMAND.to_owned(),
                 ));
             }
-            CommandPaletteAction::SessionQueue => match self.load_visible_sessions(24) {
+            CommandPaletteAction::ResumePicker => match self.load_visible_sessions(24) {
                 Ok(items) if items.is_empty() => {
                     push_transcript_message(
                             &mut state,
                             render_cli_chat_message_spec_with_width(
                                 &TuiMessageSpec {
-                                    role: "sessions".to_owned(),
-                                    caption: Some("queue".to_owned()),
+                                    role: "resume".to_owned(),
+                                    caption: Some("picker".to_owned()),
                                     sections: vec![TuiSectionSpec::Callout {
                                         tone: TuiCalloutTone::Info,
-                                        title: Some("no visible sessions".to_owned()),
+                                        title: Some("no resumable sessions".to_owned()),
                                         lines: vec![
-                                            "No visible sessions are currently rooted at this session scope."
+                                            "No resumable local sessions are currently available."
                                                 .to_owned(),
                                         ],
                                     }],
                                     footer_lines: vec![
-                                        "Related sessions and worker lanes will appear here when they exist."
+                                        "Use /new to start fresh, then return here after this session has transcript history."
                                             .to_owned(),
                                     ],
                                 },
@@ -1602,19 +1839,19 @@ impl ChatSessionSurface {
                             ),
                         );
                 }
-                Ok(items) => {
-                    state.overlay = Some(SurfaceOverlay::SessionQueue { selected: 0, items });
+                Ok(_items) => {
+                    state.overlay = self.open_resume_picker(0, false, ResumeSortMode::Recent)?;
                     state.focus = SurfaceFocus::Transcript;
                 }
                 Err(error) => {
                     push_transcript_message(
                             &mut state,
                             render_control_plane_unavailable_lines_with_width(
-                                "sessions",
-                                "queue",
+                                "resume",
+                                "picker",
                                 error.as_str(),
                                 vec![
-                                    "Related sessions and worker lanes will appear here when the control-plane store is available."
+                                    "The local session picker needs a readable control-plane store before it can restore another session."
                                         .to_owned(),
                                 ],
                                 self.content_width(),
@@ -1622,6 +1859,11 @@ impl ChatSessionSurface {
                         );
                 }
             },
+            CommandPaletteAction::NewSession => {
+                self.start_fresh_session()?;
+                state.overlay = None;
+                state.focus = SurfaceFocus::Composer;
+            }
             CommandPaletteAction::Compact => {
                 return Ok(SurfaceLoopAction::RunCommand(
                     CLI_CHAT_COMPACT_COMMAND.to_owned(),
@@ -1779,7 +2021,7 @@ impl ChatSessionSurface {
                 let initial = state
                     .session_title_override
                     .clone()
-                    .unwrap_or_else(|| self.runtime.session_id.clone());
+                    .unwrap_or_else(|| self.runtime().session_id.clone());
                 state.overlay = Some(SurfaceOverlay::InputPrompt {
                     kind: OverlayInputKind::RenameSession,
                     cursor: initial.chars().count(),
@@ -1788,7 +2030,7 @@ impl ChatSessionSurface {
                 state.focus = SurfaceFocus::Composer;
             }
             CommandPaletteAction::ExportTranscript => {
-                let initial = default_export_path(self.runtime.session_id.as_str());
+                let initial = default_export_path(self.runtime().session_id.as_str());
                 state.overlay = Some(SurfaceOverlay::InputPrompt {
                     kind: OverlayInputKind::ExportTranscript,
                     cursor: initial.chars().count(),
@@ -1855,10 +2097,16 @@ impl ChatSessionSurface {
             "usage: /history",
         ))?;
 
+        let new_match = classify_chat_command_match_result(parse_exact_chat_command(
+            input,
+            &[CLI_CHAT_NEW_COMMAND],
+            "usage: /new",
+        ))?;
+
         let sessions_match = classify_chat_command_match_result(parse_exact_chat_command(
             input,
-            &[CLI_CHAT_SESSIONS_COMMAND],
-            "usage: /sessions",
+            &[CLI_CHAT_RESUME_COMMAND],
+            "usage: /resume",
         ))?;
 
         let mission_match = classify_chat_command_match_result(parse_exact_chat_command(
@@ -1890,22 +2138,22 @@ impl ChatSessionSurface {
                         let session_queue_lines = items
                             .iter()
                             .take(12)
-                            .map(SessionQueueItemSummary::list_line)
+                            .map(ResumeSessionEntry::list_line)
                             .collect::<Vec<_>>();
                         if !items.is_empty() {
                             let mut state = self.lock_state();
                             state.overlay =
-                                Some(SurfaceOverlay::SessionQueue { selected: 0, items });
+                                self.open_resume_picker(0, false, ResumeSortMode::Recent)?;
                         }
                         render_cli_chat_message_spec_with_width(
                             &TuiMessageSpec {
-                                role: "sessions".to_owned(),
-                                caption: Some("visible lineage".to_owned()),
+                                role: "resume".to_owned(),
+                                caption: Some("local session picker".to_owned()),
                                 sections: vec![TuiSectionSpec::Narrative {
-                                    title: Some("queue".to_owned()),
+                                    title: Some("sessions".to_owned()),
                                     lines: if session_queue_lines.is_empty() {
                                         vec![
-                                            "No visible sessions are currently rooted at this session scope."
+                                            "No resumable local sessions are currently available."
                                                 .to_owned(),
                                         ]
                                     } else {
@@ -1913,7 +2161,7 @@ impl ChatSessionSurface {
                                     },
                                 }],
                                 footer_lines: vec![
-                                    "Use S to open the session queue overlay or Enter on the queue to inspect one session."
+                                    "Use S to open the resume picker or Enter on a selected row to restore that session."
                                         .to_owned(),
                                 ],
                             },
@@ -1921,11 +2169,11 @@ impl ChatSessionSurface {
                         )
                     }
                     Err(error) => render_control_plane_unavailable_lines_with_width(
-                        "sessions",
-                        "visible lineage",
+                        "resume",
+                        "local session picker",
                         error.as_str(),
                         vec![
-                            "Use /status or restore the control-plane store before inspecting related sessions."
+                            "Use /status or restore the control-plane store before resuming another session."
                                 .to_owned(),
                         ],
                         width,
@@ -1935,13 +2183,52 @@ impl ChatSessionSurface {
                     render_cli_chat_command_usage_lines_with_width(&usage, width)
                 }
                 ChatCommandMatchResult::NotMatched => {
-                    render_cli_chat_command_usage_lines_with_width("usage: /sessions", width)
+                    render_cli_chat_command_usage_lines_with_width("usage: /resume", width)
                 }
             };
 
             let mut state = self.lock_state();
             push_transcript_message(&mut state, lines);
             return Ok(());
+        }
+
+        if !matches!(new_match, ChatCommandMatchResult::NotMatched) {
+            match new_match {
+                ChatCommandMatchResult::Matched => {
+                    self.start_fresh_session()?;
+                    let mut state = self.lock_state();
+                    push_transcript_message(
+                        &mut state,
+                        render_cli_chat_message_spec_with_width(
+                            &TuiMessageSpec {
+                                role: "session".to_owned(),
+                                caption: Some("fresh".to_owned()),
+                                sections: vec![TuiSectionSpec::Callout {
+                                    tone: TuiCalloutTone::Success,
+                                    title: Some("new session".to_owned()),
+                                    lines: vec![
+                                        "Started a fresh local session and cleared the visible transcript."
+                                            .to_owned(),
+                                    ],
+                                }],
+                                footer_lines: vec![
+                                    "Use /resume to return to a previous local session."
+                                        .to_owned(),
+                                ],
+                            },
+                            width,
+                        ),
+                    );
+                    return Ok(());
+                }
+                ChatCommandMatchResult::UsageError(usage) => {
+                    let lines = render_cli_chat_command_usage_lines_with_width(&usage, width);
+                    let mut state = self.lock_state();
+                    push_transcript_message(&mut state, lines);
+                    return Ok(());
+                }
+                ChatCommandMatchResult::NotMatched => {}
+            }
         }
 
         if !matches!(mission_match, ChatCommandMatchResult::NotMatched) {
@@ -2006,10 +2293,11 @@ impl ChatSessionSurface {
             ChatCommandMatchResult::UsageError(usage) => {
                 render_cli_chat_command_usage_lines_with_width(&usage, width)
             }
-            ChatCommandMatchResult::NotMatched => match status_match {
+                ChatCommandMatchResult::NotMatched => match status_match {
                 ChatCommandMatchResult::Matched => {
+                    let runtime = self.runtime();
                     let summary = operator_surfaces::build_cli_chat_startup_summary(
-                        &self.runtime,
+                        &runtime,
                         &self.options,
                     )?;
                     operator_surfaces::render_cli_chat_status_lines_with_width(&summary, width)
@@ -2021,17 +2309,17 @@ impl ChatSessionSurface {
                     ChatCommandMatchResult::Matched => {
                         #[cfg(feature = "memory-sqlite")]
                         {
-                            let binding =
-                                self.runtime.conversation_binding();
+                            let runtime = self.runtime();
+                            let binding = runtime.conversation_binding();
                             let result = operator_surfaces::load_manual_compaction_result(
-                                &self.runtime.config,
-                                &self.runtime.session_id,
-                                &self.runtime.turn_coordinator,
+                                &runtime.config,
+                                &runtime.session_id,
+                                &runtime.turn_coordinator,
                                 binding,
                             )
                             .await?;
                             operator_surfaces::render_manual_compaction_lines_with_width(
-                                &self.runtime.session_id,
+                                &runtime.session_id,
                                 &result,
                                 width,
                             )
@@ -2052,16 +2340,17 @@ impl ChatSessionSurface {
                         ChatCommandMatchResult::Matched => {
                             #[cfg(feature = "memory-sqlite")]
                             {
+                                let runtime = self.runtime();
                                 let history_lines = operator_surfaces::load_history_lines(
-                                    &self.runtime.session_id,
-                                    self.runtime.config.memory.sliding_window,
-                                    self.runtime.conversation_binding(),
-                                    &self.runtime.memory_config,
+                                    &runtime.session_id,
+                                    runtime.config.memory.sliding_window,
+                                    runtime.conversation_binding(),
+                                    &runtime.memory_config,
                                 )
                                 .await?;
                                 operator_surfaces::render_cli_chat_history_lines_with_width(
-                                    &self.runtime.session_id,
-                                    self.runtime.config.memory.sliding_window,
+                                    &runtime.session_id,
+                                    runtime.config.memory.sliding_window,
                                     &history_lines,
                                     width,
                                 )
@@ -2236,17 +2525,17 @@ impl ChatSessionSurface {
                                 ChatCommandMatchResult::NotMatched => {
                                     match turn_checkpoint_repair_match {
                                         ChatCommandMatchResult::Matched => {
-                                            let outcome = self
-                                                .runtime
+                                            let runtime = self.runtime();
+                                            let outcome = runtime
                                                 .turn_coordinator
                                                 .repair_turn_checkpoint_tail(
-                                                    &self.runtime.config,
-                                                    &self.runtime.session_id,
-                                                    self.runtime.conversation_binding(),
+                                                    &runtime.config,
+                                                    &runtime.session_id,
+                                                    runtime.conversation_binding(),
                                                 )
                                                 .await?;
                                             render_turn_checkpoint_repair_lines_with_width(
-                                                &self.runtime.session_id,
+                                                &runtime.session_id,
                                                 &outcome,
                                                 width,
                                             )
@@ -2258,7 +2547,7 @@ impl ChatSessionSurface {
                                         }
                                         ChatCommandMatchResult::NotMatched => {
                                             render_cli_chat_command_usage_lines_with_width(
-                                                "usage: /help | /status | /history | /sessions | /mission | /review | /workers | /compact | /turn_checkpoint_repair | /exit",
+                                                "usage: /help | /status | /history | /resume | /new | /mission | /review | /workers | /compact | /turn_checkpoint_repair | /exit",
                                                 width,
                                             )
                                         }
@@ -2277,7 +2566,7 @@ impl ChatSessionSurface {
     }
 
     fn control_plane_store(&self) -> CliResult<ChatControlPlaneStore> {
-        ChatControlPlaneStore::new(&self.runtime.memory_config)
+        ChatControlPlaneStore::new(&self.runtime().memory_config)
     }
 
     fn try_build_mission_control_lines(
@@ -2320,7 +2609,7 @@ impl ChatSessionSurface {
             .count();
 
         let mut lines = vec![
-            format!("scope: {}", self.runtime.session_id),
+            format!("scope: {}", self.runtime().session_id),
             format!("provider: {}", state.active_provider_label),
             format!("phase: {phase} · round={provider_round} · tools={tool_calls}"),
             format!(
@@ -2350,7 +2639,7 @@ impl ChatSessionSurface {
 
         let recent_sessions = visible_sessions.iter().take(session_limit);
         let recent_session_lines = recent_sessions
-            .map(SessionQueueItemSummary::list_line)
+            .map(ResumeSessionEntry::list_line)
             .collect::<Vec<_>>();
         if !recent_session_lines.is_empty() {
             lines.push(String::new());
@@ -2361,7 +2650,7 @@ impl ChatSessionSurface {
         if !worker_items.is_empty() {
             lines.push(String::new());
             lines.push("recent workers".to_owned());
-            lines.extend(worker_items.iter().map(SessionQueueItemSummary::list_line));
+            lines.extend(worker_items.iter().map(ResumeSessionEntry::list_line));
         }
 
         if !approval_items.is_empty() {
@@ -2458,18 +2747,6 @@ impl ChatSessionSurface {
         }
     }
 
-    fn build_session_detail_lines(&self, item: &SessionQueueItemSummary) -> Vec<String> {
-        let base_lines = item.detail_lines();
-        let session_id = item.session_id.as_str();
-        let include_delegate_lifecycle = false;
-
-        self.build_session_detail_lines_with_runtime(
-            session_id,
-            base_lines,
-            include_delegate_lifecycle,
-        )
-    }
-
     fn build_worker_detail_lines(&self, item: &WorkerQueueItemSummary) -> Vec<String> {
         let base_lines = item.detail_lines();
         let session_id = item.session_id.as_str();
@@ -2480,6 +2757,158 @@ impl ChatSessionSurface {
             base_lines,
             include_delegate_lifecycle,
         )
+    }
+
+    fn resume_selected_session(&self, session_id: &str) -> CliResult<()> {
+        if session_id == self.runtime().session_id {
+            let mut state = self.lock_state();
+            push_transcript_message(
+                &mut state,
+                render_cli_chat_message_spec_with_width(
+                    &TuiMessageSpec {
+                        role: "resume".to_owned(),
+                        caption: Some("picker".to_owned()),
+                        sections: vec![TuiSectionSpec::Callout {
+                            tone: TuiCalloutTone::Info,
+                            title: Some("already current".to_owned()),
+                            lines: vec![
+                                "The selected session is already active; no restore was needed."
+                                    .to_owned(),
+                            ],
+                        }],
+                        footer_lines: Vec::new(),
+                    },
+                    self.content_width(),
+                ),
+            );
+            state.overlay = None;
+            state.focus = SurfaceFocus::Transcript;
+            return Ok(());
+        }
+
+        let store = self.control_plane_store()?;
+        let summaries = store.resumable_root_sessions(usize::MAX)?;
+        let summary = summaries
+            .into_iter()
+            .find(|summary| summary.session_id == session_id)
+            .ok_or_else(|| format!("resume session `{session_id}` not found"))?;
+        let transcript = self.load_visible_transcript(session_id)?;
+        {
+            let mut runtime = self.runtime();
+            runtime.session_id = session_id.to_owned();
+            runtime.session_address = ConversationSessionAddress::from_session_id(session_id);
+        }
+
+        let mut state = self.lock_state();
+        state.transcript = transcript;
+        state.session_title_override = summary.explicit_label.clone();
+        state.selected_entry = state.transcript.len().checked_sub(1);
+        state.scroll_offset = 0;
+        state.sticky_bottom = true;
+        state.history_index = None;
+        state.pending_turn = false;
+        state.overlay = None;
+        state.focus = SurfaceFocus::Transcript;
+        state.live = LiveSurfaceModel::default();
+        if let Some(summary_state) = state.startup_summary.as_mut() {
+            summary_state.session_id = session_id.to_owned();
+        }
+        Ok(())
+    }
+
+    fn start_fresh_session(&self) -> CliResult<()> {
+        let fresh_session_id = format!("chat-{}", unix_timestamp_millis());
+        {
+            let mut runtime = self.runtime();
+            runtime.session_id = fresh_session_id.clone();
+            runtime.session_address = ConversationSessionAddress::from_session_id(&fresh_session_id);
+        }
+
+        let mut state = self.lock_state();
+        state.transcript.clear();
+        state.composer.clear();
+        state.composer_cursor = 0;
+        state.history_index = None;
+        state.scroll_offset = 0;
+        state.sticky_bottom = true;
+        state.selected_entry = None;
+        state.session_title_override = None;
+        state.last_approval = None;
+        state.overlay = None;
+        state.focus = SurfaceFocus::Composer;
+        state.live = LiveSurfaceModel::default();
+        state.pending_turn = false;
+        if let Some(summary) = state.startup_summary.as_mut() {
+            summary.session_id = fresh_session_id;
+        }
+        Ok(())
+    }
+
+    fn archive_selected_session(&self, session_id: &str) -> CliResult<()> {
+        let current_session_id = self.runtime().session_id.clone();
+        if session_id == current_session_id {
+            return Err("cannot archive the current session".to_owned());
+        }
+
+        let store = self.control_plane_store()?;
+        let summaries = store.resumable_root_sessions(usize::MAX)?;
+        let summary = summaries
+            .into_iter()
+            .find(|summary| summary.session_id == session_id)
+            .ok_or_else(|| format!("archive session `{session_id}` not found"))?;
+        let expected_state = parse_session_state_label(summary.state.as_str())?;
+        let repo = crate::session::repository::SessionRepository::new(&self.runtime().memory_config)?;
+        let transitioned = repo.transition_session_with_event_if_current(
+            session_id,
+            crate::session::repository::TransitionSessionWithEventIfCurrentRequest {
+                expected_state,
+                next_state: expected_state,
+                last_error: summary.last_error.clone(),
+                event_kind: "session_archived".to_owned(),
+                actor_session_id: Some(current_session_id),
+                event_payload_json: serde_json::json!({
+                    "previous_state": expected_state.as_str(),
+                    "hides_from_sessions_list": true,
+                }),
+            },
+        )?;
+        if transitioned.is_none() {
+            return Err(format!("archive session `{session_id}` state changed before archive"));
+        }
+        Ok(())
+    }
+
+    fn load_visible_transcript(&self, session_id: &str) -> CliResult<Vec<SurfaceEntry>> {
+        let turns = self.control_plane_store()?.visible_transcript_turns(session_id)?;
+        let width = self.content_width();
+        let mut transcript = Vec::new();
+        for turn in turns {
+            let caption = match turn.role.as_str() {
+                "user" => Some("prompt".to_owned()),
+                "assistant" => Some("reply".to_owned()),
+                _ => None,
+            };
+            let role = if turn.role == "user" {
+                "you".to_owned()
+            } else {
+                turn.role.clone()
+            };
+            transcript.push(SurfaceEntry {
+                lines: render_cli_chat_message_spec_with_width(
+                    &TuiMessageSpec {
+                        role,
+                        caption,
+                        sections: vec![TuiSectionSpec::Narrative {
+                            title: None,
+                            lines: vec![turn.content],
+                        }],
+                        footer_lines: Vec::new(),
+                    },
+                    width,
+                ),
+            });
+        }
+        Ok(transcript)
     }
 
     fn build_session_detail_lines_with_runtime(
@@ -2582,7 +3011,7 @@ impl ChatSessionSurface {
     fn load_review_queue_items(&self, limit: usize) -> CliResult<Vec<ApprovalQueueItemSummary>> {
         let store = self.control_plane_store()?;
 
-        let approvals = store.approval_queue(&self.runtime.session_id, limit)?;
+        let approvals = store.approval_queue(&self.runtime().session_id, limit)?;
 
         let mut items = Vec::new();
         for approval in approvals {
@@ -2598,7 +3027,7 @@ impl ChatSessionSurface {
             return Ok(SurfaceLoopAction::Continue);
         }
 
-        if is_exit_command(&self.runtime.config, trimmed) {
+        if is_exit_command(&self.runtime().config, trimmed) {
             return Ok(SurfaceLoopAction::Exit);
         }
 
@@ -2644,23 +3073,23 @@ impl ChatSessionSurface {
         self.render()?;
 
         let observer = build_surface_live_observer(self.state.clone(), self.term.clone());
+        let runtime = self.runtime();
         let assistant_text = crate::agent_runtime::AgentRuntime::new()
             .run_turn_with_runtime_and_observer(
-                &self.runtime,
+                &runtime,
                 &crate::agent_runtime::AgentTurnRequest {
                     message: trimmed.to_owned(),
                     turn_mode: crate::agent_runtime::AgentTurnMode::Interactive,
-                    channel_id: self.runtime.session_address.channel_id.clone(),
-                    account_id: self.runtime.session_address.account_id.clone(),
-                    conversation_id: self.runtime.session_address.conversation_id.clone(),
-                    participant_id: self.runtime.session_address.participant_id.clone(),
-                    thread_id: self.runtime.session_address.thread_id.clone(),
+                    channel_id: runtime.session_address.channel_id.clone(),
+                    account_id: runtime.session_address.account_id.clone(),
+                    conversation_id: runtime.session_address.conversation_id.clone(),
+                    participant_id: runtime.session_address.participant_id.clone(),
+                    thread_id: runtime.session_address.thread_id.clone(),
                     metadata: std::collections::BTreeMap::new(),
-                    acp: self.runtime.explicit_acp_request,
+                    acp: runtime.explicit_acp_request,
                     acp_event_stream: false,
-                    acp_bootstrap_mcp_servers: self.runtime.effective_bootstrap_mcp_servers.clone(),
-                    acp_cwd: self
-                        .runtime
+                    acp_bootstrap_mcp_servers: runtime.effective_bootstrap_mcp_servers.clone(),
+                    acp_cwd: runtime
                         .effective_working_directory
                         .as_ref()
                         .map(|path| path.display().to_string()),
@@ -2699,14 +3128,19 @@ impl ChatSessionSurface {
 
     fn submit_input_overlay(&self, kind: OverlayInputKind, value: String) -> CliResult<()> {
         let trimmed = value.trim();
-        let mut state = self.lock_state();
         match kind {
             OverlayInputKind::RenameSession => {
+                let mut state = self.lock_state();
                 if trimmed.is_empty() {
                     state.overlay = None;
                     state.focus = SurfaceFocus::Composer;
                     return Ok(());
                 }
+                drop(state);
+                self.control_plane_store()?
+                    .update_session_label(self.runtime().session_id.as_str(), Some(trimmed.to_owned()))
+                    .map_err(|error| format!("persist session label failed: {error}"))?;
+                let mut state = self.lock_state();
                 state.session_title_override = Some(trimmed.to_owned());
                 state.transcript.push(SurfaceEntry {
                     lines: render_cli_chat_message_spec_with_width(
@@ -2719,14 +3153,19 @@ impl ChatSessionSurface {
                                 lines: vec![format!("Session title updated to `{trimmed}`.")],
                             }],
                             footer_lines: vec![
-                                "This rename is local to the current surface.".to_owned(),
+                                "This title is now persisted for future resume picks.".to_owned(),
                             ],
                         },
                         self.content_width(),
                     ),
                 });
+                state.overlay = None;
+                state.focus = SurfaceFocus::Transcript;
+                state.selected_entry = Some(state.transcript.len().saturating_sub(1));
+                state.sticky_bottom = true;
             }
             OverlayInputKind::ExportTranscript => {
+                let mut state = self.lock_state();
                 if trimmed.is_empty() {
                     state.overlay = None;
                     state.focus = SurfaceFocus::Composer;
@@ -2758,12 +3197,12 @@ impl ChatSessionSurface {
                         self.content_width(),
                     ),
                 });
+                state.overlay = None;
+                state.focus = SurfaceFocus::Transcript;
+                state.selected_entry = Some(state.transcript.len().saturating_sub(1));
+                state.sticky_bottom = true;
             }
         }
-        state.overlay = None;
-        state.focus = SurfaceFocus::Transcript;
-        state.selected_entry = Some(state.transcript.len().saturating_sub(1));
-        state.sticky_bottom = true;
         Ok(())
     }
 
@@ -2889,7 +3328,7 @@ impl ChatSessionSurface {
         let startup_summary = state
             .startup_summary
             .clone()
-            .unwrap_or_else(|| fallback_startup_summary(self.runtime.session_id.as_str()));
+            .unwrap_or_else(|| fallback_startup_summary(self.runtime().session_id.as_str()));
         let mut lines = vec![
             format!("control deck · {}", state.sidebar_tab.title()),
             format!("session {}", startup_summary.session_id),
@@ -3081,7 +3520,7 @@ impl ChatSessionSurface {
                 lines.push("t timeline overlay".to_owned());
                 lines.push("M open mission control".to_owned());
                 lines.push("r reopen latest approval".to_owned());
-                lines.push("S open session queue".to_owned());
+                lines.push("S open resume picker".to_owned());
                 lines.push("W open worker queue".to_owned());
                 lines.push("R open approval queue".to_owned());
                 lines.push("← / → / Home / End composer cursor".to_owned());
@@ -3089,7 +3528,7 @@ impl ChatSessionSurface {
                 lines.push("?: help overlay".to_owned());
                 lines.push(": or / command menu".to_owned());
                 lines.push(
-                    "/help /status /history /sessions /mission /review /workers /compact"
+                    "/help /status /history /resume /new /mission /review /workers /compact"
                         .to_owned(),
                 );
             }
@@ -3176,12 +3615,13 @@ impl ChatSessionSurface {
     }
 
     fn build_header_status_line(&self, state: &SurfaceState, width: usize) -> String {
+        let runtime = self.runtime();
         let session_id = state
             .startup_summary
             .as_ref()
             .map(|summary| summary.session_id.as_str())
-            .unwrap_or(self.runtime.session_id.as_str());
-        let acp = if self.runtime.config.acp.enabled {
+            .unwrap_or(runtime.session_id.as_str());
+        let acp = if runtime.config.acp.enabled {
             "acp:on"
         } else {
             "acp:off"
@@ -3515,8 +3955,7 @@ impl ChatSessionSurface {
             }
             SurfaceOverlay::ReviewQueue { .. }
             | SurfaceOverlay::ReviewDetails { .. }
-            | SurfaceOverlay::SessionQueue { .. }
-            | SurfaceOverlay::SessionDetails { .. }
+            | SurfaceOverlay::ResumePicker { .. }
             | SurfaceOverlay::WorkerQueue { .. }
             | SurfaceOverlay::WorkerDetails { .. }
             | SurfaceOverlay::EntryDetails { .. }
@@ -3533,7 +3972,7 @@ impl ChatSessionSurface {
 
     fn load_visible_worker_sessions(&self, limit: usize) -> CliResult<Vec<WorkerQueueItemSummary>> {
         let store = self.control_plane_store()?;
-        let sessions = store.visible_worker_sessions(&self.runtime.session_id, limit)?;
+        let sessions = store.visible_worker_sessions(&self.runtime().session_id, limit)?;
         let mut items = Vec::new();
 
         for session in sessions {
@@ -3544,17 +3983,37 @@ impl ChatSessionSurface {
         Ok(items)
     }
 
-    fn load_visible_sessions(&self, limit: usize) -> CliResult<Vec<SessionQueueItemSummary>> {
+    fn load_visible_sessions(&self, limit: usize) -> CliResult<Vec<ResumeSessionEntry>> {
         let store = self.control_plane_store()?;
-        let sessions = store.visible_sessions(&self.runtime.session_id, limit)?;
+        let sessions = store.resumable_root_sessions(limit)?;
+        let current_session_id = self.runtime().session_id.clone();
         let mut items = Vec::new();
 
         for session in sessions {
-            let item = SessionQueueItemSummary::from_control_plane_summary(&session);
+            let item =
+                ResumeSessionEntry::from_control_plane_summary(&session, current_session_id.as_str());
             items.push(item);
         }
 
         Ok(items)
+    }
+
+    fn open_resume_picker(
+        &self,
+        selected: usize,
+        named_only: bool,
+        sort_mode: ResumeSortMode,
+    ) -> CliResult<Option<SurfaceOverlay>> {
+        let items = filter_resume_entries(self.load_visible_sessions(24)?, named_only, sort_mode);
+        if items.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(SurfaceOverlay::ResumePicker {
+            selected: selected.min(items.len().saturating_sub(1)),
+            items,
+            named_only,
+            sort_mode,
+        }))
     }
 
     fn content_width(&self) -> usize {
@@ -3583,6 +4042,26 @@ impl ChatSessionSurface {
         let reserved_height = header_height + HEADER_GAP + COMPOSER_HEIGHT + STATUS_BAR_HEIGHT + 1;
 
         total_height.saturating_sub(reserved_height).max(5)
+    }
+}
+
+fn unix_timestamp_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+fn parse_session_state_label(
+    value: &str,
+) -> CliResult<crate::session::repository::SessionState> {
+    match value {
+        "ready" => Ok(crate::session::repository::SessionState::Ready),
+        "running" => Ok(crate::session::repository::SessionState::Running),
+        "completed" => Ok(crate::session::repository::SessionState::Completed),
+        "failed" => Ok(crate::session::repository::SessionState::Failed),
+        "timed_out" => Ok(crate::session::repository::SessionState::TimedOut),
+        _ => Err(format!("unknown session state `{value}`")),
     }
 }
 
@@ -4006,8 +4485,13 @@ fn render_surface_overlays(state: &SurfaceState, overlay_area: Rect, buffer: &mu
         Some(SurfaceOverlay::MissionControl { lines }) => {
             render_overlay_paragraph(overlay_area, 92, 20, " mission control ", lines, buffer);
         }
-        Some(SurfaceOverlay::SessionQueue { selected, items }) => {
-            let rendered_items = items
+        Some(SurfaceOverlay::ResumePicker {
+            selected,
+            items,
+            named_only,
+            sort_mode,
+        }) => {
+            let mut rendered_items = items
                 .iter()
                 .enumerate()
                 .map(|(index, item)| {
@@ -4015,17 +4499,26 @@ fn render_surface_overlays(state: &SurfaceState, overlay_area: Rect, buffer: &mu
                     ListItem::new(format!("{marker} {}", item.list_line()))
                 })
                 .collect::<Vec<_>>();
+            rendered_items.push(ListItem::new(""));
+            rendered_items.push(ListItem::new(
+                "Enter resume · A archive · N named-only · T sort · Esc close",
+            ));
             render_overlay_list(
                 overlay_area,
                 92,
                 18,
-                " session queue ",
+                format!(
+                    " resume sessions · named={} · sort={} ",
+                    if *named_only { "on" } else { "off" },
+                    match sort_mode {
+                        ResumeSortMode::Recent => "recent",
+                        ResumeSortMode::Alpha => "alpha",
+                    }
+                )
+                .as_str(),
                 rendered_items,
                 buffer,
             );
-        }
-        Some(SurfaceOverlay::SessionDetails { title, lines }) => {
-            render_overlay_paragraph(overlay_area, 88, 16, title, lines, buffer);
         }
         Some(SurfaceOverlay::ReviewQueue { selected, items }) => {
             let rendered_items = items
@@ -4548,8 +5041,7 @@ fn current_overlay_label(state: &SurfaceState) -> &'static str {
     match state.overlay.as_ref() {
         Some(SurfaceOverlay::Welcome { .. }) => "welcome",
         Some(SurfaceOverlay::MissionControl { .. }) => "mission",
-        Some(SurfaceOverlay::SessionQueue { .. }) => "session-queue",
-        Some(SurfaceOverlay::SessionDetails { .. }) => "session-detail",
+        Some(SurfaceOverlay::ResumePicker { .. }) => "resume-picker",
         Some(SurfaceOverlay::ReviewQueue { .. }) => "review-queue",
         Some(SurfaceOverlay::ReviewDetails { .. }) => "review-detail",
         Some(SurfaceOverlay::WorkerQueue { .. }) => "worker-queue",
@@ -4690,7 +5182,8 @@ fn slash_command_hint(value: &str) -> Option<String> {
         CLI_CHAT_HELP_COMMAND,
         CLI_CHAT_STATUS_COMMAND,
         CLI_CHAT_HISTORY_COMMAND,
-        CLI_CHAT_SESSIONS_COMMAND,
+        CLI_CHAT_RESUME_COMMAND,
+        CLI_CHAT_NEW_COMMAND,
         CLI_CHAT_MISSION_COMMAND,
         CLI_CHAT_REVIEW_COMMAND,
         CLI_CHAT_WORKERS_COMMAND,
@@ -4811,6 +5304,8 @@ fn align_scroll_offset_to_selected_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::{DEFAULT_TOKEN_TTL_S, bootstrap_kernel_context_with_config};
+    use crate::chat::tests::{cleanup_chat_test_memory, init_chat_test_memory};
 
     fn sample_surface_state() -> SurfaceState {
         SurfaceState {
@@ -4933,12 +5428,469 @@ mod tests {
     fn slash_command_hint_surfaces_matches() {
         let hint = slash_command_hint("/hi").expect("hint");
         let mission_hint = slash_command_hint("/mi").expect("mission hint");
-        let sessions_hint = slash_command_hint("/se").expect("sessions hint");
+        let sessions_hint = slash_command_hint("/re").expect("resume hint");
+        let new_hint = slash_command_hint("/ne").expect("new hint");
 
         assert!(hint.contains("/history"));
         assert!(mission_hint.contains("/mission"));
-        assert!(sessions_hint.contains("/sessions"));
+        assert!(sessions_hint.contains("/resume"));
+        assert!(new_hint.contains("/new"));
         assert!(slash_command_hint("hello").is_none());
+    }
+
+    #[test]
+    fn start_fresh_session_rotates_session_id_and_clears_visible_state() {
+        let term = Term::stdout();
+        let state = Arc::new(Mutex::new(SurfaceState {
+            startup_summary: Some(fallback_startup_summary("old-session")),
+            active_provider_label: "provider / model".to_owned(),
+            session_title_override: Some("Named".to_owned()),
+            last_approval: Some(ApprovalSurfaceSummary::default()),
+            transcript: vec![SurfaceEntry {
+                lines: vec!["hello".to_owned()],
+            }],
+            composer: "draft".to_owned(),
+            composer_cursor: 5,
+            history: vec!["draft".to_owned()],
+            history_index: Some(0),
+            scroll_offset: 8,
+            sticky_bottom: false,
+            selected_entry: Some(0),
+            focus: SurfaceFocus::Transcript,
+            sidebar_visible: true,
+            sidebar_tab: SidebarTab::Session,
+            command_palette: None,
+            overlay: Some(SurfaceOverlay::Help),
+            live: LiveSurfaceModel::default(),
+            footer_notice: String::new(),
+            pending_turn: true,
+        }));
+        let surface = ChatSessionSurface {
+            runtime: Mutex::new(CliTurnRuntime {
+                resolved_path: PathBuf::from("/tmp/loong.toml"),
+                config: crate::config::LoongConfig::default(),
+                session_id: "old-session".to_owned(),
+                session_address: ConversationSessionAddress::from_session_id("old-session"),
+                turn_coordinator: ConversationTurnCoordinator::new(),
+                runtime_kernel: crate::runtime_bridge::RuntimeKernelOwner::new(
+                    bootstrap_kernel_context_with_config(
+                        "resume-rework-test",
+                        DEFAULT_TOKEN_TTL_S,
+                        &crate::config::LoongConfig::default(),
+                    )
+                    .expect("kernel context"),
+                ),
+                explicit_acp_request: false,
+                effective_bootstrap_mcp_servers: Vec::new(),
+                effective_working_directory: None,
+                memory_label: "disabled".to_owned(),
+                #[cfg(feature = "memory-sqlite")]
+                memory_config: SessionStoreConfig::default(),
+            }),
+            options: CliChatOptions::default(),
+            term,
+            state,
+        };
+
+        surface.start_fresh_session().expect("fresh session");
+
+        assert_ne!(surface.runtime().session_id, "old-session");
+        assert!(surface.runtime().session_id.starts_with("chat-"));
+        let state = surface.lock_state();
+        assert!(state.transcript.is_empty());
+        assert!(state.composer.is_empty());
+        assert!(state.session_title_override.is_none());
+        assert!(state.overlay.is_none());
+        assert!(!state.pending_turn);
+    }
+
+    #[test]
+    fn visible_transcript_restore_filters_internal_records() {
+        let turns = vec![
+            crate::session::store::SessionTranscriptTurn {
+                role: "user".to_owned(),
+                content: "hello".to_owned(),
+                ts: 1,
+            },
+            crate::session::store::SessionTranscriptTurn {
+                role: "assistant".to_owned(),
+                content: crate::memory::build_conversation_event_content(
+                    "turn_checkpoint",
+                    serde_json::json!({"checkpoint":{"ok":true}}),
+                ),
+                ts: 2,
+            },
+            crate::session::store::SessionTranscriptTurn {
+                role: "assistant".to_owned(),
+                content: "world".to_owned(),
+                ts: 3,
+            },
+        ];
+
+        let transcript = turns
+            .into_iter()
+            .filter(|turn| {
+                !(turn.role == "assistant"
+                    && turn
+                        .content
+                        .contains(crate::memory::INTERNAL_PERSISTED_RECORD_MARKER))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(transcript.len(), 2);
+        assert_eq!(transcript[0].content, "hello");
+        assert_eq!(transcript[1].content, "world");
+    }
+
+    #[test]
+    fn parse_session_state_label_accepts_known_values() {
+        assert_eq!(
+            parse_session_state_label("ready").expect("ready"),
+            crate::session::repository::SessionState::Ready
+        );
+        assert_eq!(
+            parse_session_state_label("completed").expect("completed"),
+            crate::session::repository::SessionState::Completed
+        );
+        assert!(parse_session_state_label("mystery").is_err());
+    }
+
+    #[test]
+    fn archive_selected_session_rejects_current_session() {
+        let term = Term::stdout();
+        let state = Arc::new(Mutex::new(SurfaceState {
+            startup_summary: Some(fallback_startup_summary("current-session")),
+            active_provider_label: "provider / model".to_owned(),
+            session_title_override: None,
+            last_approval: None,
+            transcript: Vec::new(),
+            composer: String::new(),
+            composer_cursor: 0,
+            history: Vec::new(),
+            history_index: None,
+            scroll_offset: 0,
+            sticky_bottom: true,
+            selected_entry: None,
+            focus: SurfaceFocus::Composer,
+            sidebar_visible: true,
+            sidebar_tab: SidebarTab::Session,
+            command_palette: None,
+            overlay: None,
+            live: LiveSurfaceModel::default(),
+            footer_notice: String::new(),
+            pending_turn: false,
+        }));
+        let surface = ChatSessionSurface {
+            runtime: Mutex::new(CliTurnRuntime {
+                resolved_path: PathBuf::from("/tmp/loong.toml"),
+                config: crate::config::LoongConfig::default(),
+                session_id: "current-session".to_owned(),
+                session_address: ConversationSessionAddress::from_session_id("current-session"),
+                turn_coordinator: ConversationTurnCoordinator::new(),
+                runtime_kernel: crate::runtime_bridge::RuntimeKernelOwner::new(
+                    bootstrap_kernel_context_with_config(
+                        "resume-rework-test",
+                        DEFAULT_TOKEN_TTL_S,
+                        &crate::config::LoongConfig::default(),
+                    )
+                    .expect("kernel context"),
+                ),
+                explicit_acp_request: false,
+                effective_bootstrap_mcp_servers: Vec::new(),
+                effective_working_directory: None,
+                memory_label: "disabled".to_owned(),
+                #[cfg(feature = "memory-sqlite")]
+                memory_config: SessionStoreConfig::default(),
+            }),
+            options: CliChatOptions::default(),
+            term,
+            state,
+        };
+
+        let error = surface
+            .archive_selected_session("current-session")
+            .expect_err("current session archive should fail");
+        assert!(error.contains("cannot archive the current session"));
+    }
+
+    #[test]
+    fn resume_selected_session_noops_for_current_session() {
+        let term = Term::stdout();
+        let state = Arc::new(Mutex::new(SurfaceState {
+            startup_summary: Some(fallback_startup_summary("current-session")),
+            active_provider_label: "provider / model".to_owned(),
+            session_title_override: None,
+            last_approval: None,
+            transcript: vec![SurfaceEntry {
+                lines: vec!["existing entry".to_owned()],
+            }],
+            composer: String::new(),
+            composer_cursor: 0,
+            history: Vec::new(),
+            history_index: None,
+            scroll_offset: 0,
+            sticky_bottom: true,
+            selected_entry: Some(0),
+            focus: SurfaceFocus::Transcript,
+            sidebar_visible: true,
+            sidebar_tab: SidebarTab::Session,
+            command_palette: None,
+            overlay: Some(SurfaceOverlay::ResumePicker {
+                selected: 0,
+                named_only: false,
+                sort_mode: ResumeSortMode::Recent,
+                items: vec![ResumeSessionEntry {
+                    session_id: "current-session".to_owned(),
+                    primary_label: "Current".to_owned(),
+                    secondary_label: None,
+                    preview: None,
+                    named: true,
+                    current: true,
+                    state: "ready".to_owned(),
+                    kind: "root".to_owned(),
+                    parent_session_id: None,
+                    turn_count: 1,
+                    updated_at: 1,
+                    last_turn_at: Some(1),
+                    last_error: None,
+                }],
+            }),
+            live: LiveSurfaceModel::default(),
+            footer_notice: String::new(),
+            pending_turn: false,
+        }));
+        let surface = ChatSessionSurface {
+            runtime: Mutex::new(CliTurnRuntime {
+                resolved_path: PathBuf::from("/tmp/loong.toml"),
+                config: crate::config::LoongConfig::default(),
+                session_id: "current-session".to_owned(),
+                session_address: ConversationSessionAddress::from_session_id("current-session"),
+                turn_coordinator: ConversationTurnCoordinator::new(),
+                runtime_kernel: crate::runtime_bridge::RuntimeKernelOwner::new(
+                    bootstrap_kernel_context_with_config(
+                        "resume-rework-test",
+                        DEFAULT_TOKEN_TTL_S,
+                        &crate::config::LoongConfig::default(),
+                    )
+                    .expect("kernel context"),
+                ),
+                explicit_acp_request: false,
+                effective_bootstrap_mcp_servers: Vec::new(),
+                effective_working_directory: None,
+                memory_label: "disabled".to_owned(),
+                #[cfg(feature = "memory-sqlite")]
+                memory_config: SessionStoreConfig::default(),
+            }),
+            options: CliChatOptions::default(),
+            term,
+            state,
+        };
+
+        surface
+            .resume_selected_session("current-session")
+            .expect("current session no-op");
+
+        let state = surface.lock_state();
+        assert_eq!(state.transcript.len(), 2);
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn visible_transcript_sessions_skip_welcome_overlay_on_startup() {
+        let term = Term::stdout();
+        let runtime = CliTurnRuntime {
+            resolved_path: PathBuf::from("/tmp/loong.toml"),
+            config: crate::config::LoongConfig::default(),
+            session_id: "restored-session".to_owned(),
+            session_address: ConversationSessionAddress::from_session_id("restored-session"),
+            turn_coordinator: ConversationTurnCoordinator::new(),
+            runtime_kernel: crate::runtime_bridge::RuntimeKernelOwner::new(
+                bootstrap_kernel_context_with_config(
+                    "resume-rework-test",
+                    DEFAULT_TOKEN_TTL_S,
+                    &crate::config::LoongConfig::default(),
+                )
+                .expect("kernel context"),
+            ),
+            explicit_acp_request: false,
+            effective_bootstrap_mcp_servers: Vec::new(),
+            effective_working_directory: None,
+            memory_label: "disabled".to_owned(),
+            #[cfg(feature = "memory-sqlite")]
+            memory_config: SessionStoreConfig::default(),
+        };
+
+        let state = Arc::new(Mutex::new(SurfaceState {
+            startup_summary: Some(fallback_startup_summary("restored-session")),
+            active_provider_label: "provider / model".to_owned(),
+            session_title_override: None,
+            last_approval: None,
+            transcript: vec![SurfaceEntry {
+                lines: vec!["restored".to_owned()],
+            }],
+            composer: String::new(),
+            composer_cursor: 0,
+            history: Vec::new(),
+            history_index: None,
+            scroll_offset: 0,
+            sticky_bottom: true,
+            selected_entry: Some(0),
+            focus: SurfaceFocus::Composer,
+            sidebar_visible: true,
+            sidebar_tab: SidebarTab::Session,
+            command_palette: None,
+            overlay: None,
+            live: LiveSurfaceModel::default(),
+            footer_notice: String::new(),
+            pending_turn: false,
+        }));
+
+        let surface = ChatSessionSurface {
+            runtime: Mutex::new(runtime),
+            options: CliChatOptions::default(),
+            term,
+            state,
+        };
+
+        let state = surface.lock_state();
+        assert!(!state.transcript.is_empty());
+        assert!(state.overlay.is_none());
+    }
+
+    #[test]
+    fn new_surface_restores_visible_transcript_from_persisted_session() {
+        let (mut config, memory_config, sqlite_path) = init_chat_test_memory("surface-resume");
+        crate::session::store::append_session_turn_direct(
+            "restored-session",
+            "user",
+            "hello",
+            &memory_config,
+        )
+        .expect("append user turn");
+        crate::session::store::append_session_turn_direct(
+            "restored-session",
+            "assistant",
+            "world",
+            &memory_config,
+        )
+        .expect("append assistant turn");
+        config.memory.sqlite_path = sqlite_path.display().to_string();
+
+        let runtime = CliTurnRuntime {
+            resolved_path: PathBuf::from("/tmp/loong.toml"),
+            config,
+            session_id: "restored-session".to_owned(),
+            session_address: ConversationSessionAddress::from_session_id("restored-session"),
+            turn_coordinator: ConversationTurnCoordinator::new(),
+            runtime_kernel: crate::runtime_bridge::RuntimeKernelOwner::new(
+                bootstrap_kernel_context_with_config(
+                    "resume-rework-test",
+                    DEFAULT_TOKEN_TTL_S,
+                    &crate::config::LoongConfig::default(),
+                )
+                .expect("kernel context"),
+            ),
+            explicit_acp_request: false,
+            effective_bootstrap_mcp_servers: Vec::new(),
+            effective_working_directory: None,
+            memory_label: sqlite_path.display().to_string(),
+            memory_config,
+        };
+
+        let surface = ChatSessionSurface::new(runtime, CliChatOptions::default())
+            .expect("surface should initialize from persisted session");
+        let state = surface.lock_state();
+        assert_eq!(state.transcript.len(), 2);
+        assert!(state.overlay.is_none());
+
+        cleanup_chat_test_memory(&sqlite_path);
+    }
+
+    #[test]
+    fn filter_resume_entries_honors_named_only_and_alpha_sort() {
+        let entries = vec![
+            ResumeSessionEntry {
+                session_id: "b".to_owned(),
+                primary_label: "Beta".to_owned(),
+                secondary_label: None,
+                preview: None,
+                named: false,
+                current: false,
+                state: "ready".to_owned(),
+                kind: "root".to_owned(),
+                parent_session_id: None,
+                turn_count: 1,
+                updated_at: 10,
+                last_turn_at: Some(10),
+                last_error: None,
+            },
+            ResumeSessionEntry {
+                session_id: "a".to_owned(),
+                primary_label: "Alpha".to_owned(),
+                secondary_label: None,
+                preview: None,
+                named: true,
+                current: false,
+                state: "ready".to_owned(),
+                kind: "root".to_owned(),
+                parent_session_id: None,
+                turn_count: 1,
+                updated_at: 20,
+                last_turn_at: Some(20),
+                last_error: None,
+            },
+        ];
+
+        let named_only = filter_resume_entries(entries.clone(), true, ResumeSortMode::Recent);
+        assert_eq!(named_only.len(), 1);
+        assert_eq!(named_only[0].primary_label, "Alpha");
+
+        let alpha = filter_resume_entries(entries, false, ResumeSortMode::Alpha);
+        assert_eq!(alpha[0].primary_label, "Alpha");
+        assert_eq!(alpha[1].primary_label, "Beta");
+    }
+
+    #[test]
+    fn resume_picker_overlay_stores_named_only_and_sort_mode() {
+        let items = vec![ResumeSessionEntry {
+            session_id: "a".to_owned(),
+            primary_label: "Alpha".to_owned(),
+            secondary_label: None,
+            preview: None,
+            named: true,
+            current: false,
+            state: "ready".to_owned(),
+            kind: "root".to_owned(),
+            parent_session_id: None,
+            turn_count: 1,
+            updated_at: 20,
+            last_turn_at: Some(20),
+            last_error: None,
+        }];
+
+        let overlay = SurfaceOverlay::ResumePicker {
+            selected: 0,
+            items,
+            named_only: true,
+            sort_mode: ResumeSortMode::Alpha,
+        };
+
+        match overlay {
+            SurfaceOverlay::ResumePicker {
+                named_only,
+                sort_mode,
+                ..
+            } => {
+                assert!(named_only);
+                assert_eq!(sort_mode, ResumeSortMode::Alpha);
+            }
+            _ => panic!("expected resume picker overlay"),
+        }
+    }
+
+    #[test]
+    fn format_resume_timestamp_renders_compact_month_day_and_time() {
+        assert_eq!(format_resume_timestamp(1_700_000_000), "11-14 22:13");
     }
 
     #[test]
@@ -5006,6 +5958,47 @@ mod tests {
         let filtered = filtered_command_palette_items("time");
         assert!(filtered.iter().any(|item| item.0 == "Timeline"));
         assert!(!filtered.iter().any(|item| item.0 == "/compact"));
+    }
+
+    #[test]
+    fn resume_entry_prefers_explicit_label_then_first_user_message() {
+        let summary = ChatControlPlaneSessionSummary {
+            session_id: "session-1".to_owned(),
+            label: "root".to_owned(),
+            explicit_label: Some("Named Session".to_owned()),
+            first_user_message: Some("Summarize the repo".to_owned()),
+            state: "ready".to_owned(),
+            kind: "root".to_owned(),
+            parent_session_id: None,
+            turn_count: 3,
+            updated_at: 200,
+            last_turn_at: Some(210),
+            last_error: None,
+        };
+        let entry = ResumeSessionEntry::from_control_plane_summary(&summary, "other-session");
+        assert_eq!(entry.primary_label, "Named Session");
+        assert_eq!(entry.secondary_label.as_deref(), Some("root"));
+        assert_eq!(entry.preview.as_deref(), Some("Summarize the repo"));
+    }
+
+    #[test]
+    fn resume_entry_falls_back_to_first_user_message_when_not_named() {
+        let summary = ChatControlPlaneSessionSummary {
+            session_id: "session-2".to_owned(),
+            label: "root".to_owned(),
+            explicit_label: None,
+            first_user_message: Some("Look at github.com/chumyin".to_owned()),
+            state: "ready".to_owned(),
+            kind: "root".to_owned(),
+            parent_session_id: None,
+            turn_count: 1,
+            updated_at: 100,
+            last_turn_at: Some(100),
+            last_error: None,
+        };
+        let entry = ResumeSessionEntry::from_control_plane_summary(&summary, "other-session");
+        assert_eq!(entry.primary_label, "Look at github.com/chumyin");
+        assert_eq!(entry.secondary_label.as_deref(), Some("root"));
     }
 
     #[test]
