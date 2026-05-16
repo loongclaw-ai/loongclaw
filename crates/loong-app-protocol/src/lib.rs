@@ -12,14 +12,17 @@ use loong_runtime::{
     ChildBudgetPolicy, ExecutionArtifact, RuntimeExecutorRequest, RuntimeExecutorResult,
     RuntimeInteractiveExecution, RuntimeInteractiveExecutor, RuntimeInteractiveExecutorRequest,
     RuntimeInteractiveExecutorResult, RuntimeInteractiveRequest, RuntimeOneshotExecution,
-    RuntimeOneshotExecutor, Session, SessionEvent, Task, TaskBudget, TaskEvent, TaskExecutionMode,
-    TaskLifecycle, WorkspaceContext,
+    RuntimeOneshotExecutor, RuntimeTaskStatusExecution, RuntimeTaskStatusExecutor,
+    RuntimeTaskStatusExecutorResult, RuntimeTaskStatusRequest, Session, SessionEvent, Task,
+    TaskBudget, TaskEvent, TaskExecutionMode, TaskLifecycle, WorkspaceContext,
 };
 pub use loong_runtime::{
     RuntimeExecutorRequest as AppProtocolRuntimeExecutorRequest,
     RuntimeExecutorResult as AppProtocolRuntimeExecutorResult,
     RuntimeInteractiveExecutorRequest as AppProtocolRuntimeInteractiveExecutorRequest,
     RuntimeInteractiveExecutorResult as AppProtocolRuntimeInteractiveExecutorResult,
+    RuntimeTaskStatusExecutorResult as AppProtocolRuntimeTaskStatusExecutorResult,
+    RuntimeTaskStatusRequest as AppProtocolRuntimeTaskStatusRequest,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,7 +148,7 @@ impl From<&Session> for SessionProjection {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AppResponse {
     Ack,
     Task(TaskProjection),
@@ -157,6 +160,7 @@ pub enum AppResponse {
     Artifacts(Vec<ExecutionArtifact>),
     OneshotTurn(RuntimeOneshotExecution),
     InteractiveShell(RuntimeInteractiveExecution),
+    TaskStatus(RuntimeTaskStatusExecution),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,6 +242,12 @@ pub struct InteractiveShellRequest {
     pub acp_cwd: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskStatusRequest {
+    pub current_session_id: String,
+    pub task_id: String,
+}
+
 #[async_trait]
 pub trait AppProtocolInteractiveExecutor: Send + Sync {
     async fn run_interactive(
@@ -287,6 +297,48 @@ pub async fn execute_interactive_shell<E: AppProtocolInteractiveExecutor>(
     loong_runtime::execute_interactive_shell(&runtime_request, &adapter).await
 }
 
+#[async_trait]
+pub trait AppProtocolTaskStatusExecutor: Send + Sync {
+    async fn load_task_status(
+        &self,
+        request: RuntimeTaskStatusRequest,
+    ) -> Result<RuntimeTaskStatusExecutorResult, String>;
+}
+
+struct RuntimeTaskStatusExecutorAdapter<'a, E> {
+    inner: &'a E,
+}
+
+#[async_trait]
+impl<E> RuntimeTaskStatusExecutor for RuntimeTaskStatusExecutorAdapter<'_, E>
+where
+    E: AppProtocolTaskStatusExecutor,
+{
+    async fn load_task_status(
+        &self,
+        request: RuntimeTaskStatusRequest,
+    ) -> Result<RuntimeTaskStatusExecutorResult, String> {
+        self.inner.load_task_status(request).await
+    }
+}
+
+pub async fn execute_task_status<E: AppProtocolTaskStatusExecutor>(
+    request: &TaskStatusRequest,
+    workspace: WorkspaceContext,
+    executor: &E,
+) -> Result<RuntimeTaskStatusExecution, String> {
+    let adapter = RuntimeTaskStatusExecutorAdapter { inner: executor };
+    loong_runtime::execute_task_status(
+        &RuntimeTaskStatusRequest {
+            current_session_id: request.current_session_id.clone(),
+            task_id: request.task_id.clone(),
+            workspace,
+        },
+        &adapter,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,6 +380,38 @@ mod tests {
             Ok(RuntimeInteractiveExecutorResult {
                 session_id: "interactive-session".to_owned(),
                 exit_state: "completed".to_owned(),
+            })
+        }
+    }
+
+    struct MockTaskStatusExecutor;
+
+    #[async_trait]
+    impl AppProtocolTaskStatusExecutor for MockTaskStatusExecutor {
+        async fn load_task_status(
+            &self,
+            request: RuntimeTaskStatusRequest,
+        ) -> Result<RuntimeTaskStatusExecutorResult, String> {
+            assert_eq!(request.current_session_id, "ops-root");
+            assert_eq!(request.task_id, "delegate:task-1");
+            Ok(RuntimeTaskStatusExecutorResult {
+                detail: serde_json::json!({
+                    "task_id": "delegate:task-1",
+                    "owner_session_id": "delegate:task-1",
+                    "label": "Release Check",
+                    "task_status": { "kind": "approval_pending" },
+                    "workflow": {
+                        "binding": {
+                            "execution_surface": "delegate.async",
+                            "worktree": {
+                                "workspace_root": "/tmp/loong/tasks-cli/delegate:task-1"
+                            }
+                        }
+                    },
+                    "session": {
+                        "kind": "delegate_child"
+                    }
+                }),
             })
         }
     }
@@ -390,5 +474,31 @@ mod tests {
         assert_eq!(execution.task.task_id, "chat-shell:interactive-session");
         assert_eq!(execution.task.lifecycle, TaskLifecycle::Completed);
         assert_eq!(execution.exit_state, "completed");
+    }
+
+    #[tokio::test]
+    async fn protocol_task_status_routes_into_runtime_execution() {
+        let workspace = WorkspaceContext::new(
+            "/tmp/tasks",
+            "/tmp/tasks",
+            "/tmp/tasks",
+            "/tmp/tasks",
+            "feature/tasks".to_owned(),
+        );
+
+        let execution = execute_task_status(
+            &TaskStatusRequest {
+                current_session_id: "ops-root".to_owned(),
+                task_id: "delegate:task-1".to_owned(),
+            },
+            workspace,
+            &MockTaskStatusExecutor,
+        )
+        .await
+        .expect("execute task status");
+
+        assert_eq!(execution.session.session_id, "delegate:task-1");
+        assert_eq!(execution.task.task_id, "delegate:task-1");
+        assert_eq!(execution.task.lifecycle, TaskLifecycle::WaitingForApproval);
     }
 }

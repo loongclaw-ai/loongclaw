@@ -6,6 +6,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub use loong_core::{
     ApprovalState, ArtifactDurabilityClass, ChildBudgetPolicy, DiagnosticSeverity,
@@ -265,6 +266,33 @@ pub struct RuntimeInteractiveExecution {
     pub exit_state: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeTaskStatusRequest {
+    pub current_session_id: String,
+    pub task_id: String,
+    pub workspace: WorkspaceContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeTaskStatusExecutorResult {
+    pub detail: Value,
+}
+
+#[async_trait]
+pub trait RuntimeTaskStatusExecutor: Send + Sync {
+    async fn load_task_status(
+        &self,
+        request: RuntimeTaskStatusRequest,
+    ) -> Result<RuntimeTaskStatusExecutorResult, String>;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeTaskStatusExecution {
+    pub session: RuntimeSessionDescriptor,
+    pub task: RuntimeTaskDescriptor,
+    pub detail: Value,
+}
+
 pub async fn execute_interactive_shell<E: RuntimeInteractiveExecutor>(
     request: &RuntimeInteractiveRequest,
     executor: &E,
@@ -329,6 +357,159 @@ pub async fn execute_interactive_shell<E: RuntimeInteractiveExecutor>(
         task_events: task.fact_events().to_vec(),
         exit_state: executor_result.exit_state,
     })
+}
+
+pub async fn execute_task_status<E: RuntimeTaskStatusExecutor>(
+    request: &RuntimeTaskStatusRequest,
+    executor: &E,
+) -> Result<RuntimeTaskStatusExecution, String> {
+    let executor_result = executor.load_task_status(request.clone()).await?;
+    let detail = executor_result.detail;
+    let task_id = required_string_field(&detail, "task_id", "runtime task status detail")?;
+    let owner_session_id = detail
+        .get("owner_session_id")
+        .and_then(Value::as_str)
+        .unwrap_or(task_id.as_str())
+        .to_owned();
+    let label = detail
+        .get("label")
+        .and_then(Value::as_str)
+        .unwrap_or(task_id.as_str())
+        .to_owned();
+    let task_status_kind = detail
+        .get("task_status")
+        .and_then(|value| value.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let session_workspace = task_workspace_context(&detail, &request.workspace);
+
+    let mut session = Session::new(
+        owner_session_id.clone(),
+        session_workspace.clone(),
+        SessionBudgetOverlay::default(),
+    );
+    session
+        .spawn_task(
+            task_id.as_str(),
+            label,
+            TaskBudget::default(),
+            task_execution_mode_from_detail(&detail),
+        )
+        .map_err(|error| error.to_string())?;
+    let task = session
+        .task_mut(task_id.as_str())
+        .ok_or_else(|| "runtime task status task missing after spawn".to_owned())?;
+    apply_task_lifecycle(task, task_status_kind)?;
+
+    let task = session
+        .task(task_id.as_str())
+        .ok_or_else(|| "runtime task status task missing after lifecycle mapping".to_owned())?;
+
+    Ok(RuntimeTaskStatusExecution {
+        session: RuntimeSessionDescriptor {
+            session_id: owner_session_id,
+            workspace: session_workspace,
+        },
+        task: RuntimeTaskDescriptor {
+            task_id: task.task_id.clone(),
+            objective: task.objective.clone(),
+            lifecycle: task.lifecycle().clone(),
+            execution_mode: task.execution_mode.clone(),
+            current_turn_id: task.current_turn().map(|turn| turn.turn_id.clone()),
+            artifact_count: task.artifacts().len(),
+        },
+        detail,
+    })
+}
+
+fn apply_task_lifecycle(task: &mut Task, task_status_kind: &str) -> Result<(), String> {
+    match task_status_kind {
+        "queued" => Ok(()),
+        "running" | "cancel_requested" => task
+            .transition_to(TaskLifecycle::Running)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        "approval_pending" => {
+            task.transition_to(TaskLifecycle::Running)
+                .map_err(|error| error.to_string())?;
+            task.transition_to(TaskLifecycle::WaitingForApproval)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        "overdue" => {
+            task.transition_to(TaskLifecycle::Running)
+                .map_err(|error| error.to_string())?;
+            task.transition_to(TaskLifecycle::Blocked)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        "completed" => {
+            task.transition_to(TaskLifecycle::Running)
+                .map_err(|error| error.to_string())?;
+            task.transition_to(TaskLifecycle::Completed)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        "failed" | "timed_out" => {
+            task.transition_to(TaskLifecycle::Running)
+                .map_err(|error| error.to_string())?;
+            task.transition_to(TaskLifecycle::Failed)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn task_execution_mode_from_detail(detail: &Value) -> TaskExecutionMode {
+    let execution_surface = detail
+        .get("workflow")
+        .and_then(|value| value.get("binding"))
+        .and_then(|value| value.get("execution_surface"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let session_kind = detail
+        .get("session")
+        .and_then(|value| value.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    if execution_surface == "delegate.async" || session_kind == "delegate_child" {
+        return TaskExecutionMode::DetachedBackground;
+    }
+
+    TaskExecutionMode::RemoteControlledAttached
+}
+
+fn task_workspace_context(detail: &Value, fallback: &WorkspaceContext) -> WorkspaceContext {
+    let workflow_binding = detail
+        .get("workflow")
+        .and_then(|value| value.get("binding"));
+    let worktree = workflow_binding.and_then(|value| value.get("worktree"));
+    let workspace_root = worktree
+        .and_then(|value| value.get("workspace_root"))
+        .and_then(Value::as_str)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| fallback.workspace_root.clone());
+    let worktree_root = workspace_root.clone();
+    let repo_root = fallback.repo_root.clone();
+    let cwd = fallback.cwd.clone();
+    let branch_identity = fallback.branch_identity.clone();
+    WorkspaceContext::new(
+        workspace_root,
+        repo_root,
+        worktree_root,
+        cwd,
+        branch_identity,
+    )
+}
+
+fn required_string_field(value: &Value, field: &str, context: &str) -> Result<String, String> {
+    let text = value
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{context} missing string field `{field}`"))?;
+    Ok(text.to_owned())
 }
 
 #[cfg(test)]
@@ -459,5 +640,68 @@ mod tests {
         assert_eq!(execution.task.lifecycle, TaskLifecycle::Completed);
         assert_eq!(execution.task.current_turn_id.as_deref(), Some("turn-1"));
         assert_eq!(execution.exit_state, "completed");
+    }
+
+    struct MockTaskStatusExecutor;
+
+    #[async_trait]
+    impl RuntimeTaskStatusExecutor for MockTaskStatusExecutor {
+        async fn load_task_status(
+            &self,
+            request: RuntimeTaskStatusRequest,
+        ) -> Result<RuntimeTaskStatusExecutorResult, String> {
+            assert_eq!(request.current_session_id, "ops-root");
+            assert_eq!(request.task_id, "delegate:task-1");
+            Ok(RuntimeTaskStatusExecutorResult {
+                detail: serde_json::json!({
+                    "task_id": "delegate:task-1",
+                    "owner_session_id": "delegate:task-1",
+                    "label": "Release Check",
+                    "task_status": { "kind": "approval_pending" },
+                    "workflow": {
+                        "binding": {
+                            "execution_surface": "delegate.async",
+                            "worktree": {
+                                "worktree_id": "delegate:task-1",
+                                "workspace_root": "/tmp/loong/tasks-cli/delegate:task-1"
+                            }
+                        }
+                    },
+                    "session": {
+                        "kind": "delegate_child"
+                    }
+                }),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_task_status_execution_builds_visible_core_truth() {
+        let workspace = WorkspaceContext::new(
+            "/tmp/ops-root",
+            "/tmp/ops-root",
+            "/tmp/ops-root",
+            "/tmp/ops-root",
+            "feature/tasks".to_owned(),
+        );
+        let request = RuntimeTaskStatusRequest {
+            current_session_id: "ops-root".to_owned(),
+            task_id: "delegate:task-1".to_owned(),
+            workspace,
+        };
+
+        let execution = execute_task_status(&request, &MockTaskStatusExecutor)
+            .await
+            .expect("execute task status");
+
+        assert_eq!(execution.session.session_id, "delegate:task-1");
+        assert_eq!(execution.task.task_id, "delegate:task-1");
+        assert_eq!(execution.task.objective, "Release Check");
+        assert_eq!(execution.task.lifecycle, TaskLifecycle::WaitingForApproval);
+        assert_eq!(
+            execution.task.execution_mode,
+            TaskExecutionMode::DetachedBackground
+        );
+        assert_eq!(execution.detail["task_id"], "delegate:task-1");
     }
 }

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::ChildBudgetPolicy;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TaskExecutionMode {
     InteractiveAttached,
     DetachedBackground,
