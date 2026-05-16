@@ -502,7 +502,10 @@ fn channel_inventory_reports_managed_bridge_plugin_statuses_per_surface() {
         .plugin_bridge_discovery
         .as_ref()
         .expect("weixin managed discovery");
-    assert!(qqbot.plugin_bridge_discovery.is_none());
+    let qqbot_discovery = qqbot
+        .plugin_bridge_discovery
+        .as_ref()
+        .expect("qqbot managed discovery");
     let onebot_discovery = onebot
         .plugin_bridge_discovery
         .as_ref()
@@ -519,6 +522,19 @@ fn channel_inventory_reports_managed_bridge_plugin_statuses_per_surface() {
     assert_eq!(
         weixin_discovery.plugins[0].status,
         ChannelDiscoveredPluginBridgeStatus::CompatibleReady
+    );
+
+    assert_eq!(
+        qqbot_discovery.status,
+        ChannelPluginBridgeDiscoveryStatus::MatchesFound
+    );
+    assert_eq!(qqbot_discovery.compatible_plugins, 0);
+    assert_eq!(qqbot_discovery.incomplete_plugins, 0);
+    assert_eq!(qqbot_discovery.incompatible_plugins, 1);
+    assert_eq!(qqbot_discovery.plugins.len(), 1);
+    assert_eq!(
+        qqbot_discovery.plugins[0].status,
+        ChannelDiscoveredPluginBridgeStatus::UnsupportedChannelSurface
     );
 
     assert_eq!(
