@@ -223,7 +223,7 @@ async fn run_command(command: Commands, invoked_as_default_entry: bool) -> CliRe
                 acp_bootstrap_mcp_server,
                 acp_cwd,
             } => {
-                run_ask_cli(
+                run_turn_run_cli(
                     config.as_deref(),
                     session.as_deref(),
                     &message,
