@@ -120,18 +120,16 @@ pub(super) const SLACK_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
 pub(super) const LINE_CHANNEL_REGISTRY_DESCRIPTOR: ChannelRegistryDescriptor =
     ChannelRegistryDescriptor {
         id: "line",
-        runtime: Some(ChannelRuntimeDescriptor {
-            family: LINE_COMMAND_FAMILY_DESCRIPTOR,
-        }),
+        runtime: None,
         snapshot_builder: Some(build_line_snapshots),
         selection_order: 60,
         selection_label: "consumer messaging bot",
-        blurb: "Shipped LINE Messaging API surface with push sends and signed webhook reply-loop runtime support.",
-        implementation_status: ChannelCatalogImplementationStatus::RuntimeBacked,
-        capabilities: LINE_CAPABILITIES,
+        blurb: "Plugin-backed LINE surface for Messaging API bridges that externalize push send and webhook reply-loop contract ownership into a managed bridge plugin.",
+        implementation_status: ChannelCatalogImplementationStatus::PluginBacked,
+        capabilities: PLUGIN_BACKED_CHANNEL_CAPABILITIES,
         label: "LINE",
         aliases: &["line-bot"],
-        transport: "line_messaging_api",
+        transport: "line_messaging_api_or_plugin_bridge",
         onboarding: LINE_ONBOARDING_DESCRIPTOR,
         operations: LINE_OPERATIONS,
     };

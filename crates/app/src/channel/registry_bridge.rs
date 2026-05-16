@@ -461,6 +461,13 @@ const MATRIX_PLUGIN_BRIDGE_STABLE_TARGETS: &[ChannelPluginBridgeStableTarget] =
         description: "Matrix room id for bridged conversation routing",
     }];
 
+const LINE_PLUGIN_BRIDGE_STABLE_TARGETS: &[ChannelPluginBridgeStableTarget] =
+    &[ChannelPluginBridgeStableTarget {
+        template: "line:<account>:conversation:<user_or_group_id>",
+        target_kind: ChannelCatalogTargetKind::Conversation,
+        description: "LINE user, room, or group id for bridged conversation routing",
+    }];
+
 const WHATSAPP_PERSONAL_PLUGIN_BRIDGE_STABLE_TARGETS: &[ChannelPluginBridgeStableTarget] = &[
     ChannelPluginBridgeStableTarget {
         template: "whatsapp-personal:<account>:contact:<e164-or-jid>",
@@ -670,6 +677,7 @@ pub(super) fn plugin_bridge_stable_targets_for_channel_id(
     match channel_id {
         "weixin" => WEIXIN_PLUGIN_BRIDGE_STABLE_TARGETS,
         "qqbot" => QQBOT_PLUGIN_BRIDGE_STABLE_TARGETS,
+        "line" => LINE_PLUGIN_BRIDGE_STABLE_TARGETS,
         "matrix" => MATRIX_PLUGIN_BRIDGE_STABLE_TARGETS,
         "wecom" => WECOM_PLUGIN_BRIDGE_STABLE_TARGETS,
         "onebot" => ONEBOT_PLUGIN_BRIDGE_STABLE_TARGETS,

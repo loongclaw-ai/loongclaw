@@ -234,6 +234,7 @@ fn resolve_channel_catalog_entry_exposes_plugin_bridge_contracts() {
     let telegram = resolve_channel_catalog_entry("telegram").expect("telegram entry");
     let weixin = resolve_channel_catalog_entry("weixin").expect("weixin entry");
     let matrix = resolve_channel_catalog_entry("matrix").expect("matrix entry");
+    let line = resolve_channel_catalog_entry("line").expect("line entry");
     let qqbot = resolve_channel_catalog_entry("qqbot").expect("qqbot entry");
     let wecom = resolve_channel_catalog_entry("wecom").expect("wecom entry");
     let onebot = resolve_channel_catalog_entry("onebot").expect("onebot entry");
@@ -273,6 +274,22 @@ fn resolve_channel_catalog_entry_exposes_plugin_bridge_contracts() {
         ]
     );
     assert_eq!(matrix_contract.manifest_channel_id, "matrix");
+
+    let line_contract = line
+        .plugin_bridge_contract
+        .as_ref()
+        .expect("line plugin bridge contract");
+    assert_eq!(
+        line.operations
+            .iter()
+            .map(|operation| operation.availability)
+            .collect::<Vec<_>>(),
+        vec![
+            ChannelCatalogOperationAvailability::ManagedBridge,
+            ChannelCatalogOperationAvailability::ManagedBridge,
+        ]
+    );
+    assert_eq!(line_contract.manifest_channel_id, "line");
     assert_eq!(weixin_contract.required_setup_surface, "channel");
     assert_eq!(weixin_contract.runtime_owner, "external_plugin");
     assert_eq!(weixin_contract.supported_operations, vec!["send", "serve"]);
@@ -346,6 +363,7 @@ fn resolve_channel_catalog_entry_exposes_plugin_bridge_contracts() {
 fn resolve_channel_catalog_entry_exposes_plugin_bridge_stable_targets() {
     let weixin = resolve_channel_catalog_entry("wechat").expect("weixin entry");
     let matrix = resolve_channel_catalog_entry("matrix").expect("matrix entry");
+    let line = resolve_channel_catalog_entry("line").expect("line entry");
     let qqbot = resolve_channel_catalog_entry("qq").expect("qqbot entry");
     let wecom = resolve_channel_catalog_entry("qywx").expect("wecom entry");
     let onebot = resolve_channel_catalog_entry("onebot-v11").expect("onebot entry");
@@ -358,6 +376,10 @@ fn resolve_channel_catalog_entry_exposes_plugin_bridge_stable_targets() {
         .plugin_bridge_contract
         .as_ref()
         .expect("matrix plugin bridge contract");
+    let line_contract = line
+        .plugin_bridge_contract
+        .as_ref()
+        .expect("line plugin bridge contract");
     let qqbot_contract = qqbot
         .plugin_bridge_contract
         .as_ref()
@@ -402,6 +424,19 @@ fn resolve_channel_catalog_entry_exposes_plugin_bridge_stable_targets() {
             "matrix:<account>:room:!<room_id>",
             ChannelCatalogTargetKind::Conversation,
             "Matrix room id for bridged conversation routing",
+        )]
+    );
+
+    assert_eq!(
+        line_contract
+            .stable_targets
+            .iter()
+            .map(|target| { (target.template, target.target_kind, target.description,) })
+            .collect::<Vec<_>>(),
+        vec![(
+            "line:<account>:conversation:<user_or_group_id>",
+            ChannelCatalogTargetKind::Conversation,
+            "LINE user, room, or group id for bridged conversation routing",
         )]
     );
 
@@ -511,6 +546,14 @@ fn validate_plugin_channel_bridge_manifest_reports_contract_mismatches() {
         .expect("matrix plugin bridge validation");
     assert_eq!(
         matrix_validation.status,
+        ChannelPluginBridgeManifestStatus::Compatible
+    );
+
+    let line_manifest = sample_channel_bridge_manifest(Some("line"), Some("channel"));
+    let line_validation = validate_plugin_channel_bridge_manifest(&line_manifest)
+        .expect("line plugin bridge validation");
+    assert_eq!(
+        line_validation.status,
         ChannelPluginBridgeManifestStatus::Compatible
     );
 

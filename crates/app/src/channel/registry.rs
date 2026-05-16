@@ -1170,9 +1170,9 @@ const LINE_SERVE_REQUIREMENTS: &[ChannelCatalogOperationRequirement] = &[
 ];
 const LINE_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SEND_ID,
-    label: "push send",
+    label: "bridge send",
     command: "channels send line",
-    availability: ChannelCatalogOperationAvailability::Implemented,
+    availability: ChannelCatalogOperationAvailability::ManagedBridge,
     tracks_runtime: false,
     requirements: LINE_SEND_REQUIREMENTS,
     default_target_kind: None,
@@ -1180,10 +1180,10 @@ const LINE_SEND_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
 };
 const LINE_SERVE_OPERATION: ChannelCatalogOperation = ChannelCatalogOperation {
     id: CHANNEL_OPERATION_SERVE_ID,
-    label: "webhook reply loop",
+    label: "bridge serve",
     command: "channels serve line",
-    availability: ChannelCatalogOperationAvailability::Implemented,
-    tracks_runtime: true,
+    availability: ChannelCatalogOperationAvailability::ManagedBridge,
+    tracks_runtime: false,
     requirements: LINE_SERVE_REQUIREMENTS,
     default_target_kind: None,
     supported_target_kinds: &[ChannelCatalogTargetKind::Address],
@@ -1223,18 +1223,11 @@ const LINE_OPERATIONS: &[ChannelRegistryOperationDescriptor] = &[
         doctor_checks: LINE_SERVE_DOCTOR_CHECKS,
     },
 ];
-const LINE_CAPABILITIES: &[ChannelCapability] = &[
-    ChannelCapability::RuntimeBacked,
-    ChannelCapability::MultiAccount,
-    ChannelCapability::Send,
-    ChannelCapability::Serve,
-    ChannelCapability::RuntimeTracking,
-];
 const LINE_ONBOARDING_DESCRIPTOR: ChannelOnboardingDescriptor = ChannelOnboardingDescriptor {
-    strategy: ChannelOnboardingStrategy::ManualConfig,
-    setup_hint: "configure LINE Messaging API credentials in loong.toml under line or line.accounts.<account>; outbound push send and inbound webhook serve are shipped, and line-serve requires --bind plus an optional --path override at runtime",
+    strategy: ChannelOnboardingStrategy::PluginBridge,
+    setup_hint: "install and configure a LINE bridge plugin that declares setup.surface=channel plus line channel access tokens, channel secrets, and any webhook/runtime requirements before serving the managed bridge surface",
     status_command: "loong doctor",
-    repair_command: Some("loong doctor --fix"),
+    repair_command: None,
 };
 
 const WECOM_ENABLED_REQUIREMENT: ChannelCatalogOperationRequirement =
@@ -8106,7 +8099,7 @@ mod tests {
             .expect("line surface");
         assert_eq!(
             line.catalog.implementation_status,
-            ChannelCatalogImplementationStatus::RuntimeBacked
+            ChannelCatalogImplementationStatus::PluginBacked
         );
         assert_eq!(line.configured_accounts.len(), 1);
         assert_eq!(
