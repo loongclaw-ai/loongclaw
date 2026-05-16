@@ -6,7 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use loong_runtime::*;
+use loong_runtime::{
+    ChildBudgetPolicy, ExecutionArtifact, Session, SessionEvent, Task, TaskBudget, TaskEvent,
+    TaskExecutionMode, TaskLifecycle, WorkspaceContext,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartTaskRequest {
@@ -138,6 +141,7 @@ pub enum AppResponse {
     Tasks(Vec<TaskProjection>),
     Session(SessionProjection),
     Sessions(Vec<SessionProjection>),
+    SessionEvents(Vec<SessionEvent>),
     Events(Vec<TaskEvent>),
     Artifacts(Vec<ExecutionArtifact>),
 }

@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use loong_app_protocol::*;
+use loong_app_protocol::{AppCommand, AppResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CliCommandKind {
@@ -35,6 +35,12 @@ pub struct CliCommandSurface {
 pub struct FirstPartyCliSpine {
     pub interactive_task_shell: CliCommandSurface,
     pub namespaces: Vec<CliCommandSurface>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliDispatchEnvelope {
+    pub command: AppCommand,
+    pub expected_response: Option<AppResponse>,
 }
 
 impl Default for FirstPartyCliSpine {

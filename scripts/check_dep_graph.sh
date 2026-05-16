@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Validate that the crate dependency graph matches the documented architecture.
+# Validate that the crate dependency graph matches the documented architecture
+# contract and the additive local-only Phase 2 spine.
 #
-# Architecture contract (from CLAUDE.md):
+# Repository-visible contract:
 #   contracts (leaf — zero internal deps)
 #   ├── kernel → contracts
 #   ├── protocol (independent leaf)
 #   ├── bridge-runtime → contracts, kernel, protocol
 #   ├── app → contracts, kernel
 #   ├── spec → contracts, kernel, protocol, bridge-runtime
-#   ├── bench → contracts, kernel, spec
-#   └── daemon (binary) → all of the above
+#   ├── bench → kernel, spec
+#   └── daemon (binary) → app, bench, contracts, kernel, spec, bridge-runtime
+#
+# Additive local-only Phase 2 spine:
+#   loong-core (leaf)
+#   ├── loong-runtime → loong-core
+#   ├── loong-app-protocol → loong-runtime
+#   ├── loong-cli → loong-app-protocol
+#   └── loong-plugin-sdk → loong-core
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -19,22 +27,40 @@ cd "$REPO_ROOT"
 violations=0
 
 # Extract workspace-internal dependency edges from cargo metadata.
-# Output: "from_crate -> to_crate" lines for loong-* packages only.
-PREFIX="loong-"
+# Output: "<crate-alias> -> <crate-alias>" lines for every checked workspace package.
 edges="$(cargo metadata --format-version 1 2>/dev/null \
   | python3 -c '
 import json, sys
-PREFIX = "loong-"
 meta = json.load(sys.stdin)
-ws_ids = {p["id"] for p in meta["packages"] if p["name"].startswith(PREFIX)}
-ws_names = {p["id"]: p["name"][len(PREFIX):] for p in meta["packages"] if p["id"] in ws_ids}
+workspace_root = meta["workspace_root"].rstrip("/")
+ALIASES = {
+    "loong-contracts": "contracts",
+    "loong-kernel": "kernel",
+    "loong-protocol": "protocol",
+    "loong-bridge-runtime": "bridge-runtime",
+    "loong-app": "app",
+    "loong-spec": "spec",
+    "loong-bench": "bench",
+    "loong": "daemon",
+    "loong-core": "core",
+    "loong-runtime": "runtime",
+    "loong-app-protocol": "app-protocol",
+    "loong-cli": "cli",
+    "loong-plugin-sdk": "plugin-sdk",
+}
+ws_ids = {
+    p["id"]: ALIASES[p["name"]]
+    for p in meta["packages"]
+    if p["manifest_path"].startswith(workspace_root + "/")
+    and p["name"] in ALIASES
+}
 for node in meta["resolve"]["nodes"]:
     if node["id"] not in ws_ids:
         continue
-    src = ws_names[node["id"]]
+    src = ws_ids[node["id"]]
     for dep in node["deps"]:
         if dep["pkg"] in ws_ids:
-            dst = ws_names[dep["pkg"]]
+            dst = ws_ids[dep["pkg"]]
             print(f"{src} -> {dst}")
 ' | sort -u)"
 
@@ -50,7 +76,6 @@ allowed=(
   "spec -> contracts"
   "spec -> kernel"
   "spec -> protocol"
-  "bench -> contracts"
   "bench -> kernel"
   "bench -> spec"
   "daemon -> contracts"
@@ -60,6 +85,10 @@ allowed=(
   "daemon -> bridge-runtime"
   "daemon -> spec"
   "daemon -> bench"
+  "runtime -> core"
+  "app-protocol -> runtime"
+  "cli -> app-protocol"
+  "plugin-sdk -> core"
 )
 
 is_allowed() {

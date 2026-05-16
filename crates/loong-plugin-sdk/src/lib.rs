@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use loong_core::*;
+use loong_core::ArtifactDurabilityClass;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PluginExecutionModel {
