@@ -3,9 +3,11 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use clap::Subcommand;
 use loong_app_protocol::{
-    AppProtocolOneshotExecutor, AppProtocolRuntimeExecutorRequest,
-    AppProtocolRuntimeExecutorResult, AppProtocolWorkspaceContext, OneshotTurnRequest,
-    execute_oneshot_turn, render_oneshot_turn_output,
+    AppProtocolInteractiveExecutor, AppProtocolOneshotExecutor, AppProtocolRuntimeExecutorRequest,
+    AppProtocolRuntimeExecutorResult, AppProtocolRuntimeInteractiveExecutorRequest,
+    AppProtocolRuntimeInteractiveExecutorResult, AppProtocolWorkspaceContext,
+    InteractiveShellRequest, OneshotTurnRequest, execute_interactive_shell, execute_oneshot_turn,
+    render_oneshot_turn_output,
 };
 
 use crate::CliResult;
@@ -50,8 +52,57 @@ pub async fn run_chat_cli(
     acp_bootstrap_mcp_server: &[String],
     acp_cwd: Option<&str>,
 ) -> CliResult<()> {
-    let options = build_cli_chat_options(acp, acp_event_stream, acp_bootstrap_mcp_server, acp_cwd);
-    mvp::chat::run_cli_chat(config_path, session, &options).await
+    if !configured_chat_path_exists(config_path)? {
+        let options =
+            build_cli_chat_options(acp, acp_event_stream, acp_bootstrap_mcp_server, acp_cwd);
+        return mvp::chat::run_cli_chat(config_path, session, &options).await;
+    }
+
+    run_spine_chat_cli(
+        config_path,
+        session,
+        acp,
+        acp_event_stream,
+        acp_bootstrap_mcp_server,
+        acp_cwd,
+    )
+    .await
+}
+
+async fn run_spine_chat_cli(
+    config_path: Option<&str>,
+    session: Option<&str>,
+    acp: bool,
+    acp_event_stream: bool,
+    acp_bootstrap_mcp_server: &[String],
+    acp_cwd: Option<&str>,
+) -> CliResult<()> {
+    let protocol_request = InteractiveShellRequest {
+        config_path: config_path.map(ToOwned::to_owned),
+        session_hint: session.map(ToOwned::to_owned),
+        acp,
+        acp_event_stream,
+        acp_bootstrap_mcp_servers: acp_bootstrap_mcp_server.to_vec(),
+        acp_cwd: acp_cwd.map(ToOwned::to_owned),
+    };
+    let (resolved_path, config) = mvp::config::load(config_path)?;
+    let executor = LegacyInteractiveExecutor::new(resolved_path, config);
+    let workspace = migrated_turn_workspace_context(executor.config())?;
+    let _execution = execute_interactive_shell(&protocol_request, workspace, &executor).await?;
+    Ok(())
+}
+
+fn configured_chat_path_exists(config_path: Option<&str>) -> CliResult<bool> {
+    let resolved_config_path = config_path
+        .map(mvp::config::expand_path)
+        .unwrap_or_else(mvp::config::default_config_path);
+    let exists = resolved_config_path.try_exists().map_err(|error| {
+        format!(
+            "failed to access config path {}: {error}",
+            resolved_config_path.display()
+        )
+    })?;
+    Ok(exists)
 }
 
 pub async fn run_ask_cli(
@@ -201,6 +252,81 @@ impl AppProtocolOneshotExecutor for LegacyOneshotExecutor {
             event_count: result.event_count,
         })
     }
+}
+
+// Transitional Phase 3 adapter.
+// Delete condition: once `loong-runtime` owns the real interactive shell
+// executor without calling back into `loong-app`, remove this daemon-side
+// bridge and route `chat` directly through the runtime-owned implementation.
+struct LegacyInteractiveExecutor {
+    resolved_path: PathBuf,
+    config: mvp::config::LoongConfig,
+}
+
+impl LegacyInteractiveExecutor {
+    fn new(resolved_path: PathBuf, config: mvp::config::LoongConfig) -> Self {
+        Self {
+            resolved_path,
+            config,
+        }
+    }
+
+    fn config(&self) -> &mvp::config::LoongConfig {
+        &self.config
+    }
+}
+
+#[async_trait]
+impl AppProtocolInteractiveExecutor for LegacyInteractiveExecutor {
+    async fn run_interactive(
+        &self,
+        request: AppProtocolRuntimeInteractiveExecutorRequest,
+    ) -> Result<AppProtocolRuntimeInteractiveExecutorResult, String> {
+        let options = build_cli_chat_options(
+            request.acp,
+            request.acp_event_stream,
+            &request.acp_bootstrap_mcp_servers,
+            request.acp_cwd.as_deref(),
+        );
+        let resolved_path = self.resolved_path.to_string_lossy().into_owned();
+        mvp::chat::run_cli_chat(
+            Some(resolved_path.as_str()),
+            request.session_hint.as_deref(),
+            &options,
+        )
+        .await?;
+
+        Ok(AppProtocolRuntimeInteractiveExecutorResult {
+            session_id: resolved_interactive_session_id(
+                self.config(),
+                request.session_hint.as_deref(),
+            )?,
+            exit_state: "completed".to_owned(),
+        })
+    }
+}
+
+fn resolved_interactive_session_id(
+    config: &mvp::config::LoongConfig,
+    session_hint: Option<&str>,
+) -> CliResult<String> {
+    let session_id = session_hint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("default");
+
+    #[cfg(feature = "memory-sqlite")]
+    if session_id == mvp::session::LATEST_SESSION_SELECTOR {
+        let memory_config =
+            mvp::session::store::SessionStoreConfig::from_memory_config(&config.memory);
+        let latest_session_id = mvp::session::latest_resumable_root_session_id(&memory_config)?
+            .ok_or_else(|| {
+                "CLI session selector `latest` did not find any resumable root session".to_owned()
+            })?;
+        return Ok(latest_session_id);
+    }
+
+    Ok(session_id.to_owned())
 }
 
 fn migrated_turn_workspace_context(
