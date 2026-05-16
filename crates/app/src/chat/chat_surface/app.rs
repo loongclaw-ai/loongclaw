@@ -7643,7 +7643,6 @@ fn spawn_pending_turn(
                     participant_id: runtime.session_address.participant_id.clone(),
                     thread_id: runtime.session_address.thread_id.clone(),
                     metadata: std::collections::BTreeMap::new(),
-                    acp: runtime.explicit_acp_request,
                     live_surface_enabled: true,
                 },
                 None,

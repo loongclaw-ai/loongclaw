@@ -74,14 +74,13 @@ pub(super) async fn turn_submit(
         };
         let turn_request = mvp::agent_runtime::AgentTurnRequest {
             message: input,
-            turn_mode: mvp::agent_runtime::AgentTurnMode::Acp,
+            turn_mode: mvp::agent_runtime::AgentTurnMode::Oneshot,
             channel_id,
             account_id,
             conversation_id,
             participant_id: request.participant_id.clone(),
             thread_id,
             metadata,
-            acp: true,
             live_surface_enabled: false,
         };
         let turn_service =
@@ -90,6 +89,7 @@ pub(super) async fn turn_submit(
                 .without_runtime_environment_init();
         let turn_options = crate::mvp::agent_runtime::TurnExecutionOptions {
             event_sink: Some(&event_forwarder),
+            acp_routing_intent: crate::mvp::acp::AcpRoutingIntent::Explicit,
             acp_event_stream: true,
             acp_working_directory: working_directory.map(std::path::PathBuf::from),
             ..Default::default()

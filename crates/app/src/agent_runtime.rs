@@ -45,7 +45,6 @@ pub struct AgentTurnRequest {
     pub participant_id: Option<String>,
     pub thread_id: Option<String>,
     pub metadata: BTreeMap<String, String>,
-    pub acp: bool,
     pub live_surface_enabled: bool,
 }
 
@@ -115,6 +114,7 @@ pub struct TurnExecutionOptions<'a> {
     pub provenance: AcpTurnProvenance<'a>,
     pub provider_error_mode: crate::conversation::ProviderErrorMode,
     pub retry_progress: crate::provider::ProviderRetryProgressCallback,
+    pub acp_routing_intent: crate::acp::AcpRoutingIntent,
     pub acp_event_stream: bool,
     pub acp_bootstrap_mcp_servers: Vec<String>,
     pub acp_working_directory: Option<PathBuf>,
@@ -134,6 +134,7 @@ impl Default for TurnExecutionOptions<'_> {
             provenance: AcpTurnProvenance::default(),
             provider_error_mode: crate::conversation::ProviderErrorMode::InlineMessage,
             retry_progress: None,
+            acp_routing_intent: crate::acp::AcpRoutingIntent::Automatic,
             acp_event_stream: false,
             acp_bootstrap_mcp_servers: Vec::new(),
             acp_working_directory: None,
@@ -181,15 +182,18 @@ impl<'a> RuntimeTurnExecutionService<'a> {
             let message = request.message.as_str();
             let turn_address = resolved_session_address(runtime, request);
             let explicit_acp_request = runtime.explicit_acp_request
-                || request.acp
-                || matches!(request.turn_mode, AgentTurnMode::Acp);
+                || matches!(
+                    options.acp_routing_intent,
+                    crate::acp::AcpRoutingIntent::Explicit
+                );
 
             if explicit_acp_request {
                 let turn_config = load_runtime_turn_config(runtime)?;
                 let acp_options = acp_turn_options_from_runtime(
                     runtime,
                     event_sink,
-                    request,
+                    Some(&request.metadata),
+                    options.acp_routing_intent,
                     acp_bootstrap_mcp_servers.as_slice(),
                     acp_working_directory.as_deref(),
                 )
@@ -351,6 +355,7 @@ impl TurnExecutionService {
                 provenance,
                 provider_error_mode,
                 retry_progress,
+                acp_routing_intent: options.acp_routing_intent,
                 acp_event_stream: options.acp_event_stream,
                 acp_bootstrap_mcp_servers: options.acp_bootstrap_mcp_servers.clone(),
                 acp_working_directory: options.acp_working_directory.clone(),
@@ -391,14 +396,11 @@ impl AgentRuntime {
         }
 
         let turn_service = load_turn_execution_service(config_path)?;
-        let acp_event_printer = request
-            .acp
-            .then(|| JsonlAcpTurnEventSink::stderr_with_prefix("acp-event> "));
+        let acp_event_printer = JsonlAcpTurnEventSink::stderr_with_prefix("acp-event> ");
         let turn_options = TurnExecutionOptions {
-            event_sink: acp_event_printer
-                .as_ref()
-                .map(|printer| printer as &dyn AcpTurnEventSink),
-            acp_event_stream: request.acp,
+            event_sink: Some(&acp_event_printer),
+            acp_routing_intent: crate::acp::AcpRoutingIntent::Explicit,
+            acp_event_stream: true,
             ..Default::default()
         };
 
@@ -512,7 +514,12 @@ impl AgentRuntime {
             provenance,
             provider_error_mode,
             retry_progress: None,
-            acp_event_stream: runtime.explicit_acp_request || request.acp,
+            acp_routing_intent: if runtime.explicit_acp_request {
+                crate::acp::AcpRoutingIntent::Explicit
+            } else {
+                crate::acp::AcpRoutingIntent::Automatic
+            },
+            acp_event_stream: runtime.explicit_acp_request,
             acp_bootstrap_mcp_servers: runtime.effective_bootstrap_mcp_servers.clone(),
             acp_working_directory: runtime.effective_working_directory.clone(),
         };
@@ -735,11 +742,14 @@ impl AgentRuntime {
 /// The rest of the request remains turn-local and is passed later to the
 /// coordinator/provider pipeline.
 fn cli_chat_options_for_turn_request(
-    request: &AgentTurnRequest,
+    _request: &AgentTurnRequest,
     options: &TurnExecutionOptions<'_>,
 ) -> CliChatOptions {
     CliChatOptions {
-        acp_requested: request.acp || matches!(request.turn_mode, AgentTurnMode::Acp),
+        acp_requested: matches!(
+            options.acp_routing_intent,
+            crate::acp::AcpRoutingIntent::Explicit
+        ),
         acp_event_stream: options.acp_event_stream,
         acp_bootstrap_mcp_servers: options.acp_bootstrap_mcp_servers.clone(),
         acp_working_directory: normalized_turn_working_directory(
@@ -791,11 +801,14 @@ fn resolved_session_address(
 fn acp_turn_options_from_runtime<'a>(
     runtime: &'a crate::chat::CliTurnRuntime,
     event_sink: Option<&'a dyn AcpTurnEventSink>,
-    request: &'a AgentTurnRequest,
+    metadata: Option<&'a BTreeMap<String, String>>,
+    routing_intent: crate::acp::AcpRoutingIntent,
     additional_bootstrap_mcp_servers: &'a [String],
     working_directory: Option<&'a std::path::Path>,
 ) -> crate::acp::AcpConversationTurnOptions<'a> {
-    let base = if runtime.explicit_acp_request || request.acp {
+    let base = if runtime.explicit_acp_request
+        || matches!(routing_intent, crate::acp::AcpRoutingIntent::Explicit)
+    {
         crate::acp::AcpConversationTurnOptions::explicit()
     } else {
         crate::acp::AcpConversationTurnOptions::automatic()
@@ -803,7 +816,7 @@ fn acp_turn_options_from_runtime<'a>(
     base.with_event_sink(event_sink)
         .with_additional_bootstrap_mcp_servers(additional_bootstrap_mcp_servers)
         .with_working_directory(working_directory)
-        .with_metadata(Some(&request.metadata))
+        .with_metadata(metadata)
 }
 
 fn acp_session_state_label(state: crate::acp::AcpSessionState) -> &'static str {
@@ -829,7 +842,7 @@ fn kernel_scope_for_turn_mode(turn_mode: AgentTurnMode) -> &'static str {
         AgentTurnMode::Interactive => "agent-runtime-interactive",
         AgentTurnMode::Oneshot => "agent-runtime-oneshot",
         AgentTurnMode::Delegate => "agent-runtime-delegate",
-        AgentTurnMode::Acp => "agent-runtime-acp",
+        AgentTurnMode::Acp => "agent-runtime-oneshot",
     }
 }
 
@@ -1031,10 +1044,10 @@ mod tests {
     #[test]
     fn cli_chat_options_for_turn_request_uses_execution_options_acp_envelope() {
         let request = AgentTurnRequest {
-            acp: true,
             ..AgentTurnRequest::default()
         };
         let options = TurnExecutionOptions {
+            acp_routing_intent: crate::acp::AcpRoutingIntent::Explicit,
             acp_event_stream: true,
             acp_bootstrap_mcp_servers: vec!["filesystem".to_owned(), "search".to_owned()],
             acp_working_directory: Some(PathBuf::from("/workspace/project")),
