@@ -2514,14 +2514,14 @@ data: [DONE]\n\n",
             &json!({"code": 0, "msg": "duplicate_event"})
         );
 
-        let feishu_requests = wait_for_request_match(&feishu_requests, |request| {
+        let feishu_request_snapshot = wait_for_request_match(&feishu_requests, |request| {
             request.path == "/open-apis/im/v1/messages/om_inbound_timeout_terminal_1/reply"
                 && request.body.contains("attempt 2/2")
                 && !request.body.contains("[provider_error]")
         })
         .await;
         assert_eq!(
-            feishu_requests
+            feishu_request_snapshot
                 .iter()
                 .filter(|request| request.path
                     == "/open-apis/im/v1/messages/om_inbound_timeout_terminal_1/reactions")
@@ -2530,13 +2530,22 @@ data: [DONE]\n\n",
             "inline timeout reply must not duplicate ack reactions"
         );
         assert!(
-            feishu_requests.iter().any(|request| {
+            feishu_request_snapshot.iter().any(|request| {
                 request.path == "/open-apis/im/v1/messages/om_inbound_timeout_terminal_1/reply"
                     && request.body.contains("attempt 2/2")
                     && !request.body.contains("[provider_error]")
             }),
             "the first retry should create a dedicated Feishu status message"
         );
+        let feishu_requests = wait_for_request_match(&feishu_requests, |request| {
+            (request.path == "/open-apis/im/v1/messages/om_reply_unused"
+                || request.path == "/open-apis/im/v1/messages/om_inbound_timeout_terminal_1/reply")
+                && request
+                    .body
+                    .contains("Sorry, I couldn't finish this request")
+                && !request.body.contains("[provider_error]")
+        })
+        .await;
         assert!(
             feishu_requests.iter().any(|request| {
                 (request.path == "/open-apis/im/v1/messages/om_reply_unused"
