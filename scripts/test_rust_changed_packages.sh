@@ -59,12 +59,17 @@ assert_equal(
     [
         "loong-contracts",
         "loong-kernel",
+        "loong-plugin-sdk",
+        "loong-core",
         "loong-protocol",
         "loong-bridge-runtime",
         "loong-spec",
         "loong-bench",
         "loong-app",
+        "loong-app-protocol",
+        "loong-runtime",
         "loong",
+        "loong-cli",
     ],
     "lockfile selects all packages",
 )
