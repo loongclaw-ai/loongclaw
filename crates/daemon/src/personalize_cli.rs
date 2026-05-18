@@ -68,7 +68,8 @@ pub(crate) fn run_personalize_cli_with_ui(
     let existing_personalization = config.memory.trimmed_personalization();
     print_suppressed_recovery_guidance(ui, existing_personalization.as_ref())?;
     let draft = collect_personalization_draft(ui, &config, existing_personalization.as_ref())?;
-    let review_action = select_review_action(ui, &draft)?;
+    let review_action =
+        select_review_action(ui, &draft, &config, existing_personalization.as_ref())?;
 
     match review_action {
         PersonalizeReviewAction::Save => save_personalization(
@@ -326,13 +327,16 @@ fn select_initiative_level(
 fn select_review_action(
     ui: &mut impl OperatorPromptUi,
     draft: &PersonalizationDraft,
+    config: &mvp::config::LoongConfig,
+    existing_personalization: Option<&mvp::config::PersonalizationConfig>,
 ) -> CliResult<PersonalizeReviewAction> {
     let review_lines = render_review_lines(draft);
     for line in review_lines {
         ui.print_line(line.as_str())?;
     }
 
-    let has_meaningful_preferences = draft_has_meaningful_preferences(draft);
+    let has_meaningful_preferences =
+        draft_has_reviewable_changes(draft, config, existing_personalization);
     let options = review_action_select_options(has_meaningful_preferences);
     let default_index = find_select_option_index(
         &options,
@@ -359,16 +363,73 @@ fn find_select_option_index(options: &[SelectOption], slug: &str) -> Option<usiz
         .position(|option| option.slug.eq_ignore_ascii_case(slug))
 }
 
-fn draft_has_meaningful_preferences(draft: &PersonalizationDraft) -> bool {
-    draft.preferred_name.is_some()
-        || draft.prompt_personality.is_some()
-        || draft.prompt_addendum.is_some()
-        || draft.inline_system_prompt.is_some()
-        || draft.response_density.is_some()
-        || draft.initiative_level.is_some()
-        || draft.standing_boundaries.is_some()
-        || draft.timezone.is_some()
-        || draft.locale.is_some()
+fn draft_has_reviewable_changes(
+    draft: &PersonalizationDraft,
+    config: &mvp::config::LoongConfig,
+    existing_personalization: Option<&mvp::config::PersonalizationConfig>,
+) -> bool {
+    let existing_preferred_name = existing_personalization
+        .and_then(|personalization| personalization.preferred_name.as_deref());
+    if draft.preferred_name.as_deref() != existing_preferred_name {
+        return true;
+    }
+
+    let existing_standing_boundaries = existing_personalization
+        .and_then(|personalization| personalization.standing_boundaries.as_deref());
+    if draft.standing_boundaries.as_deref() != existing_standing_boundaries {
+        return true;
+    }
+
+    let existing_timezone =
+        existing_personalization.and_then(|personalization| personalization.timezone.as_deref());
+    if draft.timezone.as_deref() != existing_timezone {
+        return true;
+    }
+
+    let existing_locale =
+        existing_personalization.and_then(|personalization| personalization.locale.as_deref());
+    if draft.locale.as_deref() != existing_locale {
+        return true;
+    }
+
+    let current_prompt_personality = config.cli.personality.unwrap_or_default();
+    if draft.prompt_personality.unwrap_or_default() != current_prompt_personality {
+        return true;
+    }
+
+    if draft.prompt_addendum.as_deref() != config.cli.system_prompt_addendum.as_deref() {
+        return true;
+    }
+
+    let current_inline_system_prompt = if config.cli.uses_native_prompt_pack() {
+        None
+    } else {
+        Some(config.cli.system_prompt.as_str())
+    };
+    if draft.inline_system_prompt.as_deref() != current_inline_system_prompt {
+        return true;
+    }
+
+    let existing_response_density =
+        existing_personalization.and_then(|personalization| personalization.response_density);
+    let response_density_is_reviewable = match existing_response_density {
+        Some(current) => draft.response_density != Some(current),
+        None => draft
+            .response_density
+            .is_some_and(|value| value != mvp::config::ResponseDensity::Balanced),
+    };
+    if response_density_is_reviewable {
+        return true;
+    }
+
+    let existing_initiative_level =
+        existing_personalization.and_then(|personalization| personalization.initiative_level);
+    match existing_initiative_level {
+        Some(current) => draft.initiative_level != Some(current),
+        None => draft
+            .initiative_level
+            .is_some_and(|value| value != mvp::config::InitiativeLevel::Balanced),
+    }
 }
 
 fn render_review_lines(draft: &PersonalizationDraft) -> Vec<String> {
@@ -1342,7 +1403,9 @@ mod tests {
             locale: None,
         };
 
-        let action = select_review_action(&mut ui, &draft).expect("select review action");
+        let config = mvp::config::LoongConfig::default();
+        let action =
+            select_review_action(&mut ui, &draft, &config, None).expect("select review action");
 
         assert_eq!(action, PersonalizeReviewAction::SkipForNow);
         assert_eq!(

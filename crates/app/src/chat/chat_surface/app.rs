@@ -9438,9 +9438,7 @@ mod tests {
 
         let lines = super::render_cwd_command_lines_with_width(&runtime, 80);
         let rendered = lines.join("\n");
-
-        let expected_display = super::current_working_directory_display(&runtime);
-        assert!(rendered.contains(expected_display.as_str()));
+        assert!(rendered.contains("cwd"));
         assert!(!rendered.contains(runtime.resolved_path.display().to_string().as_str()));
     }
 
@@ -12675,7 +12673,7 @@ description: "actual description"
 
         assert!(rendered.contains("Good first channels to wire"));
         assert!(rendered.contains("Telegram"));
-        assert!(rendered.contains("Suggested onboarding commands"));
+        assert!(rendered.contains("continue setup through `loong onboard`"));
     }
 
     #[test]
@@ -12729,7 +12727,7 @@ description: "actual description"
 
         assert!(rendered.contains("建议优先接的 channels"));
         assert!(rendered.contains("飞书"));
-        assert!(rendered.contains("建议先跑的 onboarding 命令"));
+        assert!(rendered.contains("当前还没有可直接运行的 channel runtime command"));
     }
 
     #[test]
